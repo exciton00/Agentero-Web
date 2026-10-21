@@ -8,6 +8,7 @@ import {
 import { type RefObject, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { ViewportFloating } from "@/components/ui/viewport-floating";
+import { isWebHost } from "@/lib/core/tauri";
 import { cn } from "@/lib/core/utils";
 import { TRASH_VIRTUAL_PATH } from "@/lib/paper/api";
 import {
@@ -354,7 +355,7 @@ export function TreeContextMenuPortal({
 							</span>
 						</button>
 					) : null}
-					{menuCount === 1 && onReveal ? (
+					{menuCount === 1 && onReveal && !isWebHost() ? (
 						<button
 							type="button"
 							role="menuitem"
@@ -367,7 +368,7 @@ export function TreeContextMenuPortal({
 							</span>
 						</button>
 					) : null}
-					{menuCount === 1 && onOpenInTerminal ? (
+					{menuCount === 1 && onOpenInTerminal && !isWebHost() ? (
 						<button
 							type="button"
 							role="menuitem"

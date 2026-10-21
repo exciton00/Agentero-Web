@@ -411,6 +411,8 @@ mod tests {
     #[test]
     fn ignored_paths_are_internal_state_vcs_and_dependencies() {
         assert!(is_ignored("/vault/.agentero/catalog.sqlite"));
+        // Derived hidden caches (tag index) must never surface as user file events.
+        assert!(is_ignored("/vault/.agentero/tag-index.json"));
         assert!(is_ignored("/vault/.git/index"));
         assert!(is_ignored("/vault/node_modules/pkg/a.js"));
         assert!(is_ignored(r"C:\vault\.git\index"));

@@ -193,7 +193,18 @@
 		"refreshMetadataNoTargets": "没有可刷新的论文（需要 DOI、arXiv 编号或标题）",
 		"refreshMetadataTaskTitle": "同步出版信息",
 		"refreshMetadataTaskDetail": "{{current}} / {{total}} · 已更新 {{updated}} · 失败 {{failed}} · 未找到 {{empty}}",
-		"refreshMetadataPartial": "已更新 {{updated}} 篇，失败 {{failed}} 篇，未找到 {{empty}} 篇"
+		"refreshMetadataPartial": "已更新 {{updated}} 篇，失败 {{failed}} 篇，未找到 {{empty}} 篇",
+		"rowAddTag": "添加标签",
+		"rowUploadPdf": "上传 / 覆盖 PDF",
+		"addTagTitle": "标签",
+		"addTagPlaceholder": "标签名，回车添加",
+		"addTagSaved": "标签已保存",
+		"noTagsYet": "暂无标签",
+		"tagSuggestions": "已有标签",
+		"uploadPdfDone": "PDF 已上传",
+		"uploadPdfFailed": "上传 PDF 失败",
+		"tagFilterLabel": "标签：",
+		"untaggedOnlyHint": "未选择标签：仅显示无标签文献"
 	},
 	"plaza": {
 		"plaza": "广场",
@@ -450,5 +461,7 @@
 			"remoteUnsupported": "远程 Vault 暂不支持编辑元数据。",
 			"saveFailed": "元数据保存失败。"
 		}
-	}
+	},
+	"tagsExpanded": "按标签展开",
+	"tagsEmpty": "暂无标签"
 }

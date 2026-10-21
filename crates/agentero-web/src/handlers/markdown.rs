@@ -361,6 +361,11 @@ pub async fn wiki_move(_ctx: &RpcCtx, args: &Value) -> HandlerResult {
                     &args.from_rel,
                     &args.to_rel,
                 );
+                // Renamed paper folders change tag-index paths.
+                agentero_core::features::paper::catalog::tag_index::invalidate_tag_index(&vault);
+                agentero_core::features::paper::catalog::tag_index::ensure_tag_index_best_effort(
+                    &vault,
+                );
                 ApiResult::ok(result)
             }
             Err(error) => {

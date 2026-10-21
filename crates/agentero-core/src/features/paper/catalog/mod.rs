@@ -3,8 +3,10 @@
 //! Authoritative store for paper set + structured metadata.
 //! See `docs/backend/catalog.md`.
 
+pub mod bibtex_export;
 pub mod move_paper;
 pub mod papers;
+pub mod tag_index;
 mod schema;
 pub mod sidecar;
 

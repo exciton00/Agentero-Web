@@ -8,7 +8,7 @@
 use serde_json::Value;
 
 use crate::error::HandlerResult;
-use crate::handlers::{agent, layout, markdown, paper, search, vault};
+use crate::handlers::{agent, layout, markdown, paper, search, tags, vault};
 use crate::rpc::RpcCtx;
 
 pub async fn dispatch(ctx: &RpcCtx, command: &str, args: &Value) -> Option<HandlerResult> {
@@ -20,6 +20,9 @@ pub async fn dispatch(ctx: &RpcCtx, command: &str, args: &Value) -> Option<Handl
     let result = match command {
         // ---- Vault file search ----
         "vault_search" => search::vault_search(ctx, args).await,
+
+        // ---- Vault tag index (sidebar "by tag" tree + Library tag filter) ----
+        "tags_index_read" => tags::read(ctx, args).await,
 
         // ---- Remote PDF layout analysis (MinerU / Paddle / OpenAI-compatible) ----
         "layout_remote_analyze_pdf" => layout::analyze_pdf(ctx, args).await,

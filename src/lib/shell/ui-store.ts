@@ -67,6 +67,16 @@ type UiStore = {
 	 * without opening the row.
 	 */
 	hoveredPaperPath: string | null;
+	/**
+	 * Vault-relative path of the selected Library row (single click). The left
+	 * Paper Info panel follows it; double-click / Enter opens the paper.
+	 */
+	selectedPaperPath: string | null;
+	/**
+	 * Tag names selected from the "expand by tag" tree node (or the Library
+	 * tags-column popover). Empty = Library shows untagged papers only.
+	 */
+	tagFilter: string[];
 	skillImportDraft: SkillDiscovery[] | null;
 	/** Title-search candidates queued for the picker; the head is shown first. */
 	paperSearchDraft: PaperSearchDraftGroup[] | null;
@@ -87,6 +97,8 @@ export const uiStore = createStore<UiStore>(() => ({
 	commandMode: "go",
 	settingsOpen: false,
 	hoveredPaperPath: null,
+	selectedPaperPath: null,
+	tagFilter: [],
 	skillImportDraft: null,
 	paperSearchDraft: null,
 }));
@@ -210,6 +222,38 @@ export function setHoveredPaperPath(path: string | null): void {
 	uiStore.setState({ hoveredPaperPath: path });
 }
 
+/** Select a Library row (Paper Info follows the selection). */
+export function setSelectedPaperPath(path: string | null): void {
+	if (uiStore.getState().selectedPaperPath === path) return;
+	uiStore.setState({ selectedPaperPath: path });
+}
+
+/** Add/remove one tag from the Library filter (OR across selected tags). */
+export function toggleTagFilter(name: string): void {
+	uiStore.setState((s) => ({
+		tagFilter: s.tagFilter.includes(name)
+			? s.tagFilter.filter((tag) => tag !== name)
+			: [...s.tagFilter, name],
+	}));
+}
+
+export function setTagFilter(names: string[]): void {
+	const unique = [...new Set(names.filter(Boolean))];
+	const current = uiStore.getState().tagFilter;
+	if (
+		current.length === unique.length &&
+		current.every((name, index) => name === unique[index])
+	) {
+		return;
+	}
+	uiStore.setState({ tagFilter: unique });
+}
+
+export function clearTagFilter(): void {
+	if (uiStore.getState().tagFilter.length === 0) return;
+	uiStore.setState({ tagFilter: [] });
+}
+
 export function setSkillImportDraft(draft: SkillDiscovery[] | null): void {
 	uiStore.setState({ skillImportDraft: draft });
 }
@@ -324,6 +368,8 @@ export function clearUiVaultState(): void {
 		skillImportDraft: null,
 		paperSearchDraft: null,
 		hoveredPaperPath: null,
+		selectedPaperPath: null,
+		tagFilter: [],
 		zoteroOpen: false,
 		zoteroSyncOpen: false,
 		commandOpen: false,

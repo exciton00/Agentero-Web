@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use agentero_core::features::paper::catalog::tag_index;
 use agentero_core::features::vault::{self, trash, tree};
 
 use crate::error::{
@@ -187,7 +188,11 @@ pub async fn path_trash(_ctx: &RpcCtx, args: &Value) -> HandlerResult {
     };
     let result = blocking(move || {
         let vault = vault_root(&args.vault_path)?;
-        trash::trash_paths(&vault, &args.rels).map_err(|error| error.to_string())
+        let result = trash::trash_paths(&vault, &args.rels).map_err(|error| error.to_string())?;
+        // Trashed papers left the catalog → refresh the cached tag index.
+        tag_index::invalidate_tag_index(&vault);
+        tag_index::ensure_tag_index_best_effort(&vault);
+        Ok(result)
     })
     .await;
     match result {
@@ -224,6 +229,9 @@ pub async fn path_restore_item(_ctx: &RpcCtx, args: &Value) -> HandlerResult {
         let vault = vault_root(&args.vault_path)?;
         let rel = trash::restore_item(&vault, &args.batch_id, &args.stored)
             .map_err(|error| error.to_string())?;
+        // Restored catalog rows change the tag inventory.
+        tag_index::invalidate_tag_index(&vault);
+        tag_index::ensure_tag_index_best_effort(&vault);
         Ok(PathRestoreItemResult { rel })
     })
     .await;

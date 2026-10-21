@@ -11,6 +11,7 @@ import {
 	NotebookPen,
 	Radio,
 	ScrollText,
+	Tags as TagsIcon,
 	Trash2,
 } from "lucide-react";
 import { useState } from "react";
@@ -38,15 +39,19 @@ import {
 	TooltipContent,
 	TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useUiStore } from "@/hooks/use-app-stores";
 import { contextPathIcon } from "@/lib/agent/context-path-icon";
 import { cn } from "@/lib/core/utils";
 import { isPapersRoot } from "@/lib/paper";
 import { TRASH_VIRTUAL_PATH } from "@/lib/paper/api";
+import { TAGS_VIRTUAL_PATH, type TagsIndexTag } from "@/lib/paper/tags-index";
 import {
 	PLAZA_VIRTUAL_PATH,
 	type PlazaSource,
 	plazaSourceLabel,
 } from "@/lib/plaza";
+import { toggleTagFilter } from "@/lib/shell/ui-store";
+import { isTagColorId, tagSwatchStyle } from "@/lib/ui/tag-colors";
 import type { FileNode } from "@/lib/vault";
 import type { TexCompileActions as TexCompileHookActions } from "./hooks/use-tex-compile";
 import { DOWNLOAD_REASON_KEYS } from "./tree-helpers";
@@ -478,6 +483,89 @@ function TexCompileActions({
 				</PopoverContent>
 			</Popover>
 		</FileTreeActions>
+	);
+}
+
+/** "Expand by tag" virtual node under `papers/` (Library folder). */
+export function TagsTreeRow() {
+	const { t } = useTranslation("sidebar");
+	const { expandedPaths, togglePath } = useFileTree();
+	const isExpanded = expandedPaths.has(TAGS_VIRTUAL_PATH);
+	return (
+		<button
+			type="button"
+			role="treeitem"
+			data-path={TAGS_VIRTUAL_PATH}
+			aria-expanded={isExpanded}
+			className="group flex h-7 min-h-7 w-full items-center gap-1 rounded px-4 text-left text-sm transition-colors duration-75 hover:bg-sidebar-accent/80 active:bg-sidebar-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand/80"
+			onClick={(event) => {
+				event.stopPropagation();
+				event.currentTarget.focus();
+				togglePath(TAGS_VIRTUAL_PATH);
+			}}
+		>
+			<FileTreeDisclosureIcon
+				isExpanded={isExpanded}
+				icon={<TagsIcon className="size-4 text-muted-foreground" aria-hidden />}
+			/>
+			<FileTreeName className="min-w-0 flex-1 truncate">
+				{t("tagsExpanded")}
+			</FileTreeName>
+		</button>
+	);
+}
+
+/** One tag row: toggles the shared Library tag filter (multi-select, OR). */
+export function TagTreeRow({ tag }: { tag: TagsIndexTag }) {
+	const tagFilter = useUiStore((state) => state.tagFilter);
+	const selected = tagFilter.includes(tag.name);
+	return (
+		<button
+			type="button"
+			role="treeitem"
+			aria-selected={selected}
+			title={tag.name}
+			className={cn(
+				"group flex h-7 min-h-7 w-full items-center gap-1 rounded px-4 text-left text-sm transition-colors duration-75 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand/80",
+				selected
+					? "bg-accent font-medium text-accent-foreground hover:bg-accent"
+					: "hover:bg-sidebar-accent/80 active:bg-sidebar-accent",
+			)}
+			onClick={(event) => {
+				event.stopPropagation();
+				event.currentTarget.focus();
+				toggleTagFilter(tag.name);
+			}}
+		>
+			<span className="flex size-4 shrink-0 items-center justify-center">
+				<span
+					className={cn(
+						"size-2 rounded-full",
+						!isTagColorId(tag.color) && "bg-muted-foreground/60",
+					)}
+					style={
+						isTagColorId(tag.color) ? tagSwatchStyle(tag.color) : undefined
+					}
+					aria-hidden
+				/>
+			</span>
+			<FileTreeName className="min-w-0 flex-1 truncate">
+				{tag.name}
+			</FileTreeName>
+			<span className="shrink-0 text-caption text-muted-foreground tabular-nums">
+				{tag.count}
+			</span>
+		</button>
+	);
+}
+
+/** Placeholder shown when the vault has no tags yet. */
+export function TagEmptyRow() {
+	const { t } = useTranslation("sidebar");
+	return (
+		<div className="flex h-7 min-h-7 items-center px-4 text-muted-foreground text-xs">
+			{t("tagsEmpty")}
+		</div>
 	);
 }
 

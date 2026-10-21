@@ -193,7 +193,18 @@
 		"refreshMetadataNoTargets": "No papers with DOI, arXiv ID, or title to refresh",
 		"refreshMetadataTaskTitle": "Sync publication info",
 		"refreshMetadataTaskDetail": "{{current}} / {{total}} · {{updated}} updated · {{failed}} failed · {{empty}} not found",
-		"refreshMetadataPartial": "{{updated}} updated, {{failed}} failed, {{empty}} not found"
+		"refreshMetadataPartial": "{{updated}} updated, {{failed}} failed, {{empty}} not found",
+		"rowAddTag": "Add tag",
+		"rowUploadPdf": "Upload / replace PDF",
+		"addTagTitle": "Tags",
+		"addTagPlaceholder": "Tag name, press Enter",
+		"addTagSaved": "Tags saved",
+		"noTagsYet": "No tags yet",
+		"tagSuggestions": "Existing tags",
+		"uploadPdfDone": "PDF uploaded",
+		"uploadPdfFailed": "Failed to upload PDF",
+		"tagFilterLabel": "Tags:",
+		"untaggedOnlyHint": "No tag selected — showing untagged papers"
 	},
 	"plaza": {
 		"plaza": "Plaza",
@@ -451,5 +462,7 @@
 			"remoteUnsupported": "Editing metadata is not supported for remote vaults yet.",
 			"saveFailed": "Failed to save metadata."
 		}
-	}
+	},
+	"tagsExpanded": "Expand by tag",
+	"tagsEmpty": "No tags yet"
 }

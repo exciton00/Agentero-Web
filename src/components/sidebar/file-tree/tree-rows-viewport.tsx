@@ -25,6 +25,9 @@ import {
 	PaperTreeRow,
 	PlazaRow,
 	PlazaSourceRow,
+	TagEmptyRow,
+	TagsTreeRow,
+	TagTreeRow,
 	ZoteroCollectionReferenceRow,
 } from "./tree-rows";
 import type { FlatRow, TreeRenameDraft } from "./types";
@@ -127,6 +130,9 @@ function renderRow(row: FlatRow, props: TreeRowsViewportProps): ReactNode {
 	if (row.kind === "plaza")
 		return <PlazaRow expanded={props.expanded.has(PLAZA_VIRTUAL_PATH)} />;
 	if (row.kind === "plazaSource") return <PlazaSourceRow source={row.source} />;
+	if (row.kind === "tags") return <TagsTreeRow />;
+	if (row.kind === "tag") return <TagTreeRow tag={row.tag} />;
+	if (row.kind === "tagEmpty") return <TagEmptyRow />;
 	if (row.kind === "zoteroCollectionReference") {
 		return (
 			<ZoteroCollectionReferenceRow

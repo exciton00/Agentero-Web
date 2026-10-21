@@ -137,6 +137,7 @@ export function VaultSidebar() {
 	const papers = useLibraryStore((s) => s.papers);
 	const lookupOpenSignal = useUiStore((s) => s.lookupOpenSignal);
 	const hoveredPaperPath = useUiStore((s) => s.hoveredPaperPath);
+	const selectedPaperPath = useUiStore((s) => s.selectedPaperPath);
 	const paperTreeLabelMode = useSettings((s) => s.paperTreeLabelMode);
 	const paperTreeSortMode = useSettings((s) => s.paperTreeSortMode);
 	const activeTab = useWorkspaceStore(
@@ -173,8 +174,15 @@ export function VaultSidebar() {
 	const hoveredPaperMeta = hoveredPaperKey
 		? (paperMetaByRelPath.get(hoveredPaperKey) ?? null)
 		: null;
-	// Auto-hide on non-paper surfaces; only papers and Library hover are shown.
-	const displayedPaperMeta = activePaperMeta ?? hoveredPaperMeta;
+	// Single-clicking a Library row selects it (Paper Info follows selection).
+	const selectedPaperKey = normalizePaperRelPath(selectedPaperPath);
+	const selectedPaperMeta = selectedPaperKey
+		? (paperMetaByRelPath.get(selectedPaperKey) ?? null)
+		: null;
+	// The focused tab wins; on the Library tab (no paper) the single-click
+	// selection drives Paper Info, with hover as the last fallback.
+	const displayedPaperMeta =
+		activePaperMeta ?? selectedPaperMeta ?? hoveredPaperMeta;
 	const onPaperTagsChange = useCallback(
 		async (tags: PaperTag[]) => {
 			if (!displayedPaperMeta) return;

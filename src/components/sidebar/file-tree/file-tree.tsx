@@ -2,6 +2,7 @@ import {
 	forwardRef,
 	memo,
 	useCallback,
+	useEffect,
 	useImperativeHandle,
 	useMemo,
 	useRef,
@@ -9,8 +10,8 @@ import {
 import { useTranslation } from "react-i18next";
 import { FileTree as AiFileTree } from "@/components/ai-elements/file-tree";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { isWebHost } from "@/lib/core/tauri";
 import { useSettings } from "@/hooks/use-app-stores";
+import { isWebHost } from "@/lib/core/tauri";
 import { cn } from "@/lib/core/utils";
 import type {
 	PaperLibraryRow,
@@ -18,6 +19,11 @@ import type {
 	PaperTreeLabelMode,
 	PaperTreeSortMode,
 } from "@/lib/paper";
+import {
+	deriveTagsIndexFromPapers,
+	refreshTagsIndex,
+	useTagsIndex,
+} from "@/lib/paper/tags-index";
 import {
 	PLAZA_VIRTUAL_PATH,
 	type PlazaSource,
@@ -250,6 +256,20 @@ export const FileTree = memo(
 			onLoadDirChildren,
 		});
 
+		// Tag index for the "expand by tag" node: server RPC first, catalog
+		// rows as the offline fallback (older hosts / desktop without the RPC).
+		const hostTagsIndex = useTagsIndex(vaultPath);
+		const derivedTagsIndex = useMemo(
+			() => deriveTagsIndexFromPapers(zoteroCollectionPapers),
+			[zoteroCollectionPapers],
+		);
+		const tagsIndex = hostTagsIndex ?? derivedTagsIndex;
+		// Tag writes bump catalog rows; re-read the (server-cached) index then.
+		// biome-ignore lint/correctness/useExhaustiveDependencies: catalog rows are the refresh trigger
+		useEffect(() => {
+			if (vaultPath) void refreshTagsIndex(vaultPath);
+		}, [vaultPath, zoteroCollectionPapers]);
+
 		const { selectableOrder, flatRows } = useTreeRows({
 			displayNodes,
 			expanded: expansion.expanded,
@@ -258,6 +278,7 @@ export const FileTree = memo(
 			plazaEnabled,
 			plazaHiddenSources,
 			zoteroCollectionReferences,
+			tagsIndex,
 		});
 
 		const selection = useTreeSelection({

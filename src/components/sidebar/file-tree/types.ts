@@ -1,4 +1,5 @@
 import type { PaperLibraryRow } from "@/lib/paper";
+import type { TagsIndexTag } from "@/lib/paper/tags-index";
 import type { PlazaSource } from "@/lib/plaza";
 import type { FileNode } from "@/lib/vault";
 
@@ -22,6 +23,12 @@ export type FlatRow =
 	| { key: string; kind: "trash" }
 	| { key: string; kind: "plaza" }
 	| { key: string; kind: "plazaSource"; source: PlazaSource }
+	/** "Expand by tag" virtual node under `papers/`. */
+	| { key: string; kind: "tags"; depth: number }
+	/** One selectable tag row (toggles the Library tag filter). */
+	| { key: string; kind: "tag"; depth: number; tag: TagsIndexTag }
+	/** Placeholder row when the vault has no tags yet. */
+	| { key: string; kind: "tagEmpty"; depth: number }
 	| {
 			key: string;
 			kind: "zoteroCollectionReference";
