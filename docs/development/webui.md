@@ -107,14 +107,14 @@ agentero-core（已有，tauri-free）
 
 - **服务端**：`POST /api/rpc` 100+ 条命令（settings/vault/paper/trash/wiki/search/marks/import/jobs/sync/**agent 38 条**/doctor）、`/api/events` WS（定向路由 + 断连清理）、`/api/file|dir|upload|mkdir|rename`、多标签 watcher、服务端任务中心、云同步、静态托管、`main()` 前置 PDFium worker dispatch。
 - **前端**：16 个传输垫片；`isTauri()` 分诊 158 处 → `hasHostTransport()`；服务端 Vault 在 web 启动时权威生效（不再被旧 localStorage 遮蔽）。
-- **Agent**：`crates/agentero-host`（20.6K LOC，0 tauri）+ web 侧 38 条 RPC 接入完成；**浏览器实测**：Agent 面板列出服务器上的 agent（fake ACP），发消息后 `agent:status/stream/tool/usage/completed` 全部定向到发起标签，回复正常渲染。
+- **Agent**：`crates/agentero-host`（20.6K LOC，0 tauri）+ web 侧 38 条 RPC 接入完成。**真实 Agent 浏览器实测通过**：把服务器上的 `dsh --profile acp`（真实 ACP CLI）注册为 agent → 面板显示模型/模式列表 → 中文提问「用一句话总结当前打开的论文」→ 真实模型流式返回中文总结（含 Chain of Thought 折叠、论文上下文注入）。fake ACP 亦验证了 `agent:status/stream/tool/usage/completed` 定向到发起标签。
 - **导入**：`paper_import_local_pdf`（上传→识别→入库，含识别失败降级）、`paper_resolve_identifier`（arXiv/DOI）、`paper_import`（BibTeX）、`lookup_import_batch`、`paper_export`、ParseBody/ParseRefs 服务端任务（PAPER.md + agentero-cite.json 落盘）。
 - **部署**：三阶段 Docker 镜像构建成功（170MB，含 Node 22 + PDFium），`docker compose up` 实测：容器 `/vault` 数据、浏览器 library/PDF/笔记正常；健康检查用内置 Node 探活。
 
 ### 尚未完成 / 下一轮
 
 - **魔棒入库的 renderer 任务**：桌面把 Import/LayoutAnalyze/CitingScan/LibraryIo/MetadataRefresh 通过 `job:offer` 交给前端执行；web 服务端目前只有 look-up 版本，导致浏览器魔法棒「按标识符导入」走 `job_import_enqueue` 后拿不到候选 picker。下一步在 TaskCenter 实现 `job:offer` → 浏览器 `job_report` 的 offer/claim/report 协议（前端执行器已存在），一次性打通魔棒、版面分析、引用扫描等 renderer 类任务。
-- **真实 Agent CLI**：镜像需按需安装 `claude`/`codex` CLI（或挂载），目前用 fake ACP 验证了全链路；`doctor_check_host/doctor_install_node` 已可用。
+- **真实 Agent CLI**：已用服务器上的 `dsh --profile acp` 完成真实模型端到端（浏览器中文问答）；镜像需按需安装 `claude`/`codex`/`dsh` CLI 并配置 API key（`doctor_check_host`/`doctor_install_node` 已可用）。
 - **版面分析（ONNX）**：仍暂缓，等 renderer offer 协议落地后浏览器 wasm 可直接跑。
 - 多文件串行识别（性能）、deferred RecognizeMetadata runner、其余 JobKind。
 

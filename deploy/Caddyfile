@@ -1,0 +1,28 @@
+# Reverse proxy for the headless Agentero web host.
+#
+# The app itself has no built-in auth (single-user, trusted network model), so
+# this layer owns TLS + authentication. Replace the hostname and the basic_auth
+# hash before deploying:
+#
+#   caddy hash-password --plaintext 'your-password'
+#
+# Then: docker compose -f docker-compose.prod.yml up -d
+
+agentero.example.com {
+	encode zstd gzip
+
+	basic_auth {
+		you $2a$14$REPLACE_WITH_BCRYPT_HASH
+	}
+
+	# The app is served from one origin; no CORS needed.
+	reverse_proxy agentero-web:8787 {
+		# WebSocket upgrade for /api/events (streaming, watcher, job progress).
+		header_up X-Forwarded-Proto {scheme}
+	}
+
+	# Large PDFs / attachments: allow big request bodies (uploads).
+	request_body {
+		max_size 512MB
+	}
+}

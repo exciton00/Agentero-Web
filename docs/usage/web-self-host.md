@@ -20,7 +20,21 @@ open http://127.0.0.1:8787
 
 首次访问会进入欢迎页；在 VAULT 目录里新建/打开一个 Vault 即可（也可以复用已有 Vault：把 `AGENTERO_VAULT_DIR` 指向它）。
 
-## 反向代理（推荐）
+## 生产部署（Caddy 反向代理 + 鉴权）
+
+仓库内置了生产编排：`docker-compose.prod.yml` + `deploy/Caddyfile`。应用端口不再发布到宿主机，只由 Caddy 反代并通过 basic auth 保护：
+
+```bash
+# 1. 生成密码哈希
+docker run --rm caddy:2 caddy hash-password --plaintext 'your-password'
+# 2. 把哈希写进 deploy/Caddyfile 的 basic_auth，域名改成自己的
+# 3. 启动（80/443 需可达，Caddy 自动签发 TLS）
+AGENTERO_VAULT_DIR=/srv/agentero/vault \
+AGENTERO_DATA_DIR=/srv/agentero/data \
+  docker compose -f docker-compose.prod.yml up -d --build
+```
+
+## 反向代理（手工配置）
 
 Caddy 示例（自动 HTTPS + basic auth）：
 
@@ -81,6 +95,24 @@ AGENTERO_WEB_DIST=$PWD/dist \
 ```
 
 `systemd` 单元里把这些环境变量写进 `Environment=` 即可；`PDFIUM_LIB_PATH` 指向 PDF 解析所需的 `libpdfium.so` 目录（镜像已内置）。
+
+## 接入 Agent（服务器上跑 CLI）
+
+Agent 运行在服务器上（BYOA/ACP），浏览器只发指令、看流式输出、答权限弹窗：
+
+1. **CLI**：镜像默认只有 Node 22（ACP adapters 需要 Node）。用自定义镜像安装所需 CLI，例如：
+
+   ```dockerfile
+   FROM agentero-web:local
+   # 以 DeepSeek Harness ACP 为例；也可装 claude / codex 及其 ACP adapter
+   RUN npm i -g @deepseek-ai/dsh@latest
+   ```
+
+   或者在宿主机安装后 bind-mount 进容器（注意 glibc 兼容）。
+2. **凭据**：把 API key 用环境变量传给容器（`DEEPSEEK_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`…），或在宿主机的 `~/.dsh/.env` 里配置并挂载。
+3. **注册**：设置 → Agent → 重新扫描/添加（对应 `agent_scan_catalog` / `agent_upsert_agent`），探测通过即可在右侧 Agent 面板对话。
+
+已验证：服务器上运行 `dsh --profile acp` 作为真实 ACP Agent，浏览器发出中文问题后返回真实模型的中文总结（含 Chain of Thought 与论文上下文）。
 
 ## 已知边界（当前）
 

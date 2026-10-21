@@ -1,0 +1,61 @@
+# Production compose: the app is not published directly; Caddy terminates TLS
+# and enforces basic auth. Copy this file next to docker-compose.yml, edit the
+# hostname in deploy/Caddyfile, then:
+#
+#   AGENTERO_VAULT_DIR=/srv/agentero/vault \
+#   AGENTERO_DATA_DIR=/srv/agentero/data \
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Caddy fetches certificates automatically (ports 80/443 must be reachable).
+services:
+  agentero-web:
+    build:
+      context: .
+      args:
+        AGENTERO_BUILD_VERSION: ${AGENTERO_BUILD_VERSION:-dev}
+    image: agentero-web:local
+    container_name: agentero-web
+    restart: unless-stopped
+    # No host port: only reachable through the Caddy network.
+    expose:
+      - "8787"
+    environment:
+      AGENTERO_WEB_ADDR: 0.0.0.0:8787
+      AGENTERO_WEB_VAULT: /vault
+      AGENTERO_WEB_DIST: /app/dist
+      RUST_LOG: info
+      # Optional: extra roots the file endpoints may read (colon separated).
+      # AGENTERO_WEB_ALLOW_ROOTS: /data/imports
+      # ACP agents: mount a config dir with agents.json + adapters, or install
+      # the CLI (claude/codex/dsh) inside the image and set the API keys here.
+      # DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      # ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      - ${AGENTERO_VAULT_DIR:-./vault}:/vault
+      - ${AGENTERO_DATA_DIR:-./data}:/data
+      # Mount ACP adapters (staged by `pnpm adapters:stage`) when using bundled
+      # agent CLIs: - ./src-tauri/adapters:/app/adapters:ro
+      # AGENTERO_RESOURCE_DIR: /app
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  caddy:
+    image: caddy:2
+    container_name: agentero-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - agentero-web
+
+volumes:
+  caddy_data:
+  caddy_config:
