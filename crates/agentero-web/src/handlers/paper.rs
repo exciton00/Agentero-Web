@@ -14,6 +14,7 @@ use serde_json::Value;
 use agentero_core::features::paper::analyze::refs;
 use agentero_core::features::paper::catalog::move_paper::move_with_index;
 use agentero_core::features::paper::catalog::papers::{self, PaperRecord};
+use agentero_core::features::paper::catalog::tag_index;
 use agentero_core::features::paper::import::seed_notes_template;
 use agentero_core::features::paper::venue;
 use agentero_core::features::pdf::marks::activity;
@@ -341,7 +342,12 @@ pub async fn set_tags(_ctx: &RpcCtx, args: &Value) -> HandlerResult {
     let result = blocking(move || {
         let vault = vault_root(&args.vault_path)?;
         let path = normalize_paper_path(&args.path)?;
-        papers::set_tags(&vault, &path, &args.tags).map_err(|error| error.to_string())
+        let record =
+            papers::set_tags(&vault, &path, &args.tags).map_err(|error| error.to_string())?;
+        // Keep the hidden tag index warm for the next sidebar/Library read.
+        tag_index::invalidate_tag_index(&vault);
+        tag_index::ensure_tag_index_best_effort(&vault);
+        Ok(record)
     })
     .await;
     match result {
@@ -377,7 +383,12 @@ pub async fn update_meta(_ctx: &RpcCtx, args: &Value) -> HandlerResult {
     let result = blocking(move || {
         let vault = vault_root(&args.vault_path)?;
         let path = normalize_paper_path(&args.path)?;
-        papers::update_meta(&vault, &path, &args.patch).map_err(|error| error.to_string())
+        let record =
+            papers::update_meta(&vault, &path, &args.patch).map_err(|error| error.to_string())?;
+        // A title/alias patch changes the tag index projection too.
+        tag_index::invalidate_tag_index(&vault);
+        tag_index::ensure_tag_index_best_effort(&vault);
+        Ok(record)
     })
     .await;
     match result {
@@ -396,14 +407,18 @@ pub async fn move_paper(_ctx: &RpcCtx, args: &Value) -> HandlerResult {
     let result = blocking(move || {
         let vault = vault_root(&args.vault_path)?;
         let mut guard = lock_wiki_index()?;
-        move_with_index(
+        let result = move_with_index(
             &vault,
             &args.from_rel,
             &args.dest_parent_rel,
             &args.dirty_paths,
             &mut guard,
         )
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+        // Paper paths moved → refresh the cached tag index.
+        tag_index::invalidate_tag_index(&vault);
+        tag_index::ensure_tag_index_best_effort(&vault);
+        Ok(result)
     })
     .await;
     match result {
@@ -422,6 +437,8 @@ pub async fn repath(_ctx: &RpcCtx, args: &Value) -> HandlerResult {
         let vault = vault_root(&args.vault_path)?;
         let count = papers::move_under_path(&vault, &args.from_rel, &args.to_rel)
             .map_err(|error| error.to_string())?;
+        tag_index::invalidate_tag_index(&vault);
+        tag_index::ensure_tag_index_best_effort(&vault);
         Ok(PaperRepathResult { count })
     })
     .await;
@@ -432,14 +449,21 @@ pub async fn repath(_ctx: &RpcCtx, args: &Value) -> HandlerResult {
 }
 
 /// `paper_rescan({vaultPath})` → `ApiResult<PaperRescanResult>`.
-pub async fn rescan(_ctx: &RpcCtx, args: &Value) -> HandlerResult {
+pub async fn rescan(ctx: &RpcCtx, args: &Value) -> HandlerResult {
     let args: PaperRescanArgs = match parse_args(args) {
         Ok(args) => args,
         Err(error) => return fail_msg(error),
     };
+    let caps = ctx.state.caps.clone();
     let result = blocking(move || {
         let vault = vault_root(&args.vault_path)?;
         let count = papers::rebuild_from_disk(&vault).map_err(|error| error.to_string())?;
+        tag_index::invalidate_tag_index(&vault);
+        tag_index::ensure_tag_index_best_effort(&vault);
+        // A rescan follows file-level changes the catalog cannot see (e.g. a
+        // PDF uploaded/overwritten from the browser), so the per-paper caps
+        // cache must be dropped or `paper_list.has_pdf` stays stale.
+        caps.clear();
         Ok(PaperRescanResult { count })
     })
     .await;

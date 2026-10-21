@@ -18,6 +18,8 @@
  * plugin-fs rejection semantics.
  */
 
+import { markSelfAuthoredWrite } from "@/lib/vault/file-change-gate";
+
 /** Entry shape returned by `readDir` (subset used by the frontend). */
 export type DirEntry = {
 	name: string;
@@ -135,6 +137,7 @@ export async function writeFile(
 		body: Uint8Array.from(data).buffer,
 	});
 	if (!response.ok) throw await failure(response);
+	markSelfAuthoredWrite(path);
 }
 
 /** Write UTF-8 text (or raw bytes); parent directories are created server-side. */
@@ -153,6 +156,7 @@ export async function writeTextFile(
 		body: data,
 	});
 	if (!response.ok) throw await failure(response);
+	markSelfAuthoredWrite(path);
 }
 
 /**
@@ -173,6 +177,7 @@ export async function mkdir(
 	);
 	const response = await fetch(url.toString(), { method: "POST" });
 	if (!response.ok) throw await failure(response);
+	markSelfAuthoredWrite(path);
 }
 
 /**
@@ -190,6 +195,7 @@ export async function remove(
 		{ method: "DELETE" },
 	);
 	if (!response.ok) throw await failure(response);
+	markSelfAuthoredWrite(path);
 }
 
 /** List a directory (files and subdirectories). */
