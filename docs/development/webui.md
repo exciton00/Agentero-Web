@@ -122,6 +122,9 @@ agentero-core（已有，tauri-free）
 - `layout_remote_probe` → `mineru 4.0.9`；`layout_remote_analyze_pdf`（1.2MB 论文 PDF）→ 9 pages / 182 boxes，约 6 秒；WS `layout-remote:progress`（uploading → running → downloading）payload 与 requestId 均匹配。
 - 浏览器端到端：打开论文 → 版面分析 job 走 renderer offer → 前端 headless 执行器检测 `settings.layout.backend=mineru` → 服务端调用 MinerU → 写 `source/layout.json`（`source.mode="mineru-layout"`，183 regions）与 `layout-index.json` → PDF 工具栏「Analysis」打开 **FIGURES 面板（15 个图/表，缩略图 + caption + 页码跳转）**。
 - 隐私：MinerU URL/key 只存在运行时 `settings.json`，仓库零泄露（提交前扫描通过）。
+- **Vault 云同步（git 远程）**：`sync_configure`（backend=git、本地 bare repo）→ `sync_now` 首次 pass `uploaded=91`、version 1，裸仓库出现 `refs/heads/main` 提交（116 objects）；`sync_get_status`/`sync_disconnect` 正常。S3/WebDAV 走同一 core engine，凭据只存服务器 XDG `sync.json`。
+- **renderer 任务协议**：`job_import_enqueue` 等改为 `job:offer`（定向标签）→ 浏览器执行 → `job_report`；WS 实测 offer→report→`job:changed`/`job:completed` 全链路；前端 Import 执行器与 layout 执行器已接入。
+- **LaTeX / Zotero / 站点代理**：均按决策隐藏或返回 unsupported（`detect_latex_engines=[]`、`zotero_scan` business error、Plaza 区块在 web 隐藏）。
 
 ### 尚未完成 / 下一轮
 

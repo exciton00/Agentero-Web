@@ -96,6 +96,16 @@ AGENTERO_WEB_DIST=$PWD/dist \
 
 `systemd` 单元里把这些环境变量写进 `Environment=` 即可；`PDFIUM_LIB_PATH` 指向 PDF 解析所需的 `libpdfium.so` 目录（镜像已内置）。
 
+## 版面分析（自建 MinerU）
+
+设置 → Layout → 选择 **MinerU**、打开 **Self-hosted**、填 Base URL 与 API Key（BYOK，只写入服务器 `settings.json`，不进镜像/仓库）。之后新入库或手动 Force re-parse 的论文由**服务端**调用 MinerU 解析，写 `source/layout.json` + `layout-index.json`；PDF 工具栏「Analysis」里的 FIGURES 面板展示检测到的图/表/算法/公式（缩略图 + caption + 页码跳转）。未配置远程服务时回退到浏览器本地 ONNX 模型。
+
+## Vault 同步（NAS 友好）
+
+设置 → Sync 支持 **git 远程**（本地路径或 SSH URL）、S3 兼容存储、WebDAV：
+- **git**：`gitRemote` 指向 NAS 上的 bare repo（如 `/srv/git/agentero-vault.git`）或 `ssh://nas/...`，凭据走系统 credential helper / SSH agent；无需对象存储即可多设备同步。
+- S3/WebDAV 凭据同样只存在服务器 XDG `sync.json`。
+
 ## 接入 Agent（服务器上跑 CLI）
 
 Agent 运行在服务器上（BYOA/ACP），浏览器只发指令、看流式输出、答权限弹窗：
