@@ -5,6 +5,8 @@ RUN corepack enable
 
 # Dependency manifests first for layer caching.
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+# patchedDependencies in pnpm-workspace.yaml reference this directory.
+COPY patches ./patches
 RUN pnpm install --frozen-lockfile --ignore-scripts
 
 # Only the frontend inputs are needed for `build:web`.
@@ -17,8 +19,10 @@ RUN pnpm build:web
 # --- Stage 2: Rust server *and* runtime assets ------------------------------
 FROM rust:bookworm AS builder
 WORKDIR /src
+# tesseract-rs (liteparse OCR dependency) builds tesseract+leptonica from
+# source at compile time, so cmake/unzip and a C++ toolchain are required.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-		build-essential pkg-config ca-certificates curl xz-utils \
+		build-essential pkg-config ca-certificates curl xz-utils cmake unzip \
 	&& rm -rf /var/lib/apt/lists/*
 
 # Workspace manifests + all members (cargo resolves the whole workspace).
@@ -26,6 +30,10 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY cli ./cli
 COPY src-tauri ./src-tauri
+# agentero-core's build.rs embeds the Vault onboarding templates.
+COPY templates ./templates
+# Release helper scripts (PDFium staging; host-triple detection needs rustc).
+COPY scripts ./scripts
 
 # Debug symbols/PGO are not needed for the server; the release profile in the
 # workspace already strips + LTOs.
@@ -33,8 +41,10 @@ RUN cargo build --release -p agentero-web
 # PDFium staging needs Node (the script pins the platform release).
 COPY --from=frontend /usr/local/bin/node /usr/local/bin/node
 # Download PDFium (liteparse dlopens it at runtime; `PDFIUM_LIB_PATH` points at
-# the staged directory in the runtime image).
-RUN node scripts/prepare-pdfium.mjs || true
+# the staged directory in the runtime image). The directory must exist even if
+# the download fails so the runtime stage's COPY succeeds.
+RUN node scripts/prepare-pdfium.mjs && ls -la src-tauri/pdfium \
+    || (echo "WARN: pdfium staging failed; PDF text parsing will be unavailable" && mkdir -p src-tauri/pdfium)
 
 # --- Stage 3: runtime -------------------------------------------------------
 FROM debian:bookworm-slim AS runtime
@@ -66,7 +76,9 @@ ENV PDFIUM_LIB_PATH=/app/pdfium
 # them under /app/adapters. The agent host resolves this path at runtime.
 VOLUME ["/vault", "/data"]
 EXPOSE 8787
+# Node ships in the image (ACP adapters), so use it for the probe instead of
+# adding wget/curl to the runtime layer.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
-	CMD wget -qO- http://127.0.0.1:8787/api/healthz >/dev/null 2>&1 || exit 1
+	CMD node -e "fetch('http://127.0.0.1:8787/api/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/app/agentero-web"]

@@ -3,7 +3,7 @@
 Agentero 的 headless Web 宿主把同一个 Vault 与工作台界面跑在一台**常开的机器**上（NAS / VPS / 小主机），用浏览器访问。
 单用户设计：**不内置登录**，请在前面放一层反向代理做 TLS 与鉴权（Caddy / nginx / Tailscale）。
 
-> 状态：M0/M1 已跑通（Vault 树 / 论文库 / PDF 阅读 / NOTES 编辑 / 设置 / 文件端点 / watcher / 任务中心 / 云同步）。Agent 与部署镜像在收尾。设计见 [docs/development/webui.md](../development/webui.md)。
+> 状态：核心链路已跑通并在浏览器验证：Vault 树 / 论文库 / PDF 阅读 / NOTES 编辑 / 设置 / 文件端点 / 多标签 watcher / 服务端任务中心 / 云同步 / 本地 PDF 与标识符导入 / Agent 对话（ACP，需在服务器安装 CLI）。Docker 镜像与 compose 已实测。设计见 [docs/development/webui.md](../development/webui.md)。
 
 ## 快速开始（Docker Compose）
 

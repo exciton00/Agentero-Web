@@ -10,8 +10,8 @@ services:
     container_name: agentero-web
     restart: unless-stopped
     ports:
-      # Bind to loopback by default; flip to "8787:8787" only behind a proxy.
-      - "127.0.0.1:8787:8787"
+      # Bind to loopback by default; flip the bind address only behind a proxy.
+      - "${AGENTERO_WEB_BIND:-127.0.0.1}:${AGENTERO_WEB_PORT:-8787}:8787"
     environment:
       AGENTERO_WEB_ADDR: 0.0.0.0:8787
       AGENTERO_WEB_VAULT: /vault

@@ -103,12 +103,20 @@ agentero-core（已有，tauri-free）
 | **M3 Agent + 同步**（进行中） | Agent 域已移植为 `crates/agentero-host`（20.6K LOC，0 tauri 依赖，229+7 测试通过）；云同步 RPC 已接 core（本地 bare git 仓库 e2e 通过）；剩余：32 条 `agent_*` RPC handler + sessionId→label 路由（约 2–3 人日） | 浏览器里与服务器上的 Agent 对话；S3/WebDAV 同步可用 |
 | **M4 部署交付** | Dockerfile / compose、环境变量、健康检查、文档、备份说明 | `docker compose up` 在 NAS 上跑通全流程 |
 
-## 5. 进度快照（2026-10-21）
+## 5. 进度快照（2026-10-21，第二轮）
 
-- 服务端：`POST /api/rpc` 60+ 条命令、`/api/events` WS（定向路由 + 断连清理）、`/api/file|dir|upload|mkdir|rename`、watcher、任务中心、云同步、静态托管。
-- 前端：16 个传输垫片模块；`isTauri()` 分诊 158 处 → `hasHostTransport()`（保留 144 处真桌面能力）；`pnpm build:web` 产物由服务端托管。
-- Agent：`crates/agentero-host` 完成移植（229 lib + 7 集成测试通过），剩余 web handler 接入。
-- 部署：Dockerfile（三阶段：SPA / Rust / runtime 含 Node + PDFium）、docker-compose、自托管文档。
+- **服务端**：`POST /api/rpc` 100+ 条命令（settings/vault/paper/trash/wiki/search/marks/import/jobs/sync/**agent 38 条**/doctor）、`/api/events` WS（定向路由 + 断连清理）、`/api/file|dir|upload|mkdir|rename`、多标签 watcher、服务端任务中心、云同步、静态托管、`main()` 前置 PDFium worker dispatch。
+- **前端**：16 个传输垫片；`isTauri()` 分诊 158 处 → `hasHostTransport()`；服务端 Vault 在 web 启动时权威生效（不再被旧 localStorage 遮蔽）。
+- **Agent**：`crates/agentero-host`（20.6K LOC，0 tauri）+ web 侧 38 条 RPC 接入完成；**浏览器实测**：Agent 面板列出服务器上的 agent（fake ACP），发消息后 `agent:status/stream/tool/usage/completed` 全部定向到发起标签，回复正常渲染。
+- **导入**：`paper_import_local_pdf`（上传→识别→入库，含识别失败降级）、`paper_resolve_identifier`（arXiv/DOI）、`paper_import`（BibTeX）、`lookup_import_batch`、`paper_export`、ParseBody/ParseRefs 服务端任务（PAPER.md + agentero-cite.json 落盘）。
+- **部署**：三阶段 Docker 镜像构建成功（170MB，含 Node 22 + PDFium），`docker compose up` 实测：容器 `/vault` 数据、浏览器 library/PDF/笔记正常；健康检查用内置 Node 探活。
+
+### 尚未完成 / 下一轮
+
+- **魔棒入库的 renderer 任务**：桌面把 Import/LayoutAnalyze/CitingScan/LibraryIo/MetadataRefresh 通过 `job:offer` 交给前端执行；web 服务端目前只有 look-up 版本，导致浏览器魔法棒「按标识符导入」走 `job_import_enqueue` 后拿不到候选 picker。下一步在 TaskCenter 实现 `job:offer` → 浏览器 `job_report` 的 offer/claim/report 协议（前端执行器已存在），一次性打通魔棒、版面分析、引用扫描等 renderer 类任务。
+- **真实 Agent CLI**：镜像需按需安装 `claude`/`codex` CLI（或挂载），目前用 fake ACP 验证了全链路；`doctor_check_host/doctor_install_node` 已可用。
+- **版面分析（ONNX）**：仍暂缓，等 renderer offer 协议落地后浏览器 wasm 可直接跑。
+- 多文件串行识别（性能）、deferred RecognizeMetadata runner、其余 JobKind。
 
 ## 6. 待确认 / 需要产品决策
 
