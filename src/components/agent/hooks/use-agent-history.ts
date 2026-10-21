@@ -46,7 +46,7 @@ import {
 	displayHistoryTitle,
 	stripPromptEnvelopeForDisplay,
 } from "@/lib/agent/prompt-display";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import { mapLimit } from "@/lib/core/utils";
 import { nextLineId } from "@/lib/pdf-visual/ids";
 
@@ -434,7 +434,7 @@ export function useAgentHistory({
 	);
 
 	const loadAgentHistory = useCallback(async () => {
-		if (!isTauri() || !selectedAgentId) {
+		if (!hasHostTransport() || !selectedAgentId) {
 			setHistoryLoaded(true);
 			return;
 		}

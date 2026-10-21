@@ -6,7 +6,7 @@
 import { track } from "@/lib/activity";
 import { commands } from "@/lib/core/bindings";
 import { callApi } from "@/lib/core/ipc";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 
 export type SearchHit = {
 	/** Vault-relative md file, e.g. papers/x/NOTES.md */
@@ -33,7 +33,7 @@ export async function searchVault(opts: {
 	query: string;
 	limit?: number;
 }): Promise<VaultSearchResult> {
-	if (!isTauri()) return EMPTY;
+	if (!hasHostTransport()) return EMPTY;
 	const query = opts.query.trim();
 	if (!query) return EMPTY;
 	const wire = await callApi(

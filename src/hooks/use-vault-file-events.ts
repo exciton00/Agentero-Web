@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import { isPaperAssetPath, isUnderPapers } from "@/lib/paper/paths";
 import { listenVaultFileChangedGated } from "@/lib/vault/file-change-gate";
 import {
@@ -51,7 +51,7 @@ export function useVaultFileEvents({
 	// only a fresh start (no cleanup-stop, which could race the new start). Window
 	// close is handled by the Host's on_window_event(Destroyed).
 	useEffect(() => {
-		if (!isTauri()) return;
+		if (!hasHostTransport()) return;
 		if (!vaultPath) {
 			void stopVaultWatch().catch(() => {});
 			return;

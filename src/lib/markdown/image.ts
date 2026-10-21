@@ -6,7 +6,7 @@
 import { nanoid } from "nanoid";
 
 import i18n from "@/i18n";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport, isTauri } from "@/lib/core/tauri";
 import { writeVaultBytes } from "@/lib/vault";
 import { imageMimeFromPath } from "@/lib/workspace/viewer";
 
@@ -86,7 +86,11 @@ export async function deleteManagedMarkdownAsset(
 	mdFilePath: string,
 	url: string,
 ): Promise<boolean> {
-	if (!isTauri() || !mdFilePath?.trim() || !isManagedMarkdownAssetUrl(url)) {
+	if (
+		!hasHostTransport() ||
+		!mdFilePath?.trim() ||
+		!isManagedMarkdownAssetUrl(url)
+	) {
 		return false;
 	}
 	const abs = resolveMarkdownImageAbs(mdFilePath, url);
@@ -357,7 +361,7 @@ export async function saveBytesToMarkdownAssets(
 	bytes: Uint8Array,
 	opts?: { preferredName?: string; ext?: string },
 ): Promise<string> {
-	if (!isTauri()) {
+	if (!hasHostTransport()) {
 		throw new Error(i18n.t("app:vault.writeDesktopOnly"));
 	}
 	if (!mdFilePath?.trim()) {
@@ -406,7 +410,7 @@ export async function copyFileToMarkdownAssets(
 	mdFilePath: string,
 	sourceAbsPath: string,
 ): Promise<string> {
-	if (!isTauri()) {
+	if (!hasHostTransport()) {
 		throw new Error(i18n.t("app:vault.writeDesktopOnly"));
 	}
 	const { readFile } = await import("@tauri-apps/plugin-fs");

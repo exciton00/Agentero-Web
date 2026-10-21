@@ -1,4 +1,4 @@
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import {
 	preparePdfVisualTraceImageWrite,
 	visualTraceImageAssetPath,
@@ -420,7 +420,7 @@ export async function writePdfVisualTrace(
 	paperAbsPath: string,
 	trace: PdfVisualSessionTrace,
 ): Promise<void> {
-	if (!isTauri()) {
+	if (!hasHostTransport()) {
 		// Memory path keeps runtime object (may include image.data for previews).
 		await store.write(paperAbsPath, {
 			...trace,
@@ -450,7 +450,7 @@ export async function deletePdfVisualTrace(
 	paperAbsPath: string,
 	id: string,
 ): Promise<void> {
-	if (!isTauri()) {
+	if (!hasHostTransport()) {
 		await store.remove(paperAbsPath, id);
 		return;
 	}

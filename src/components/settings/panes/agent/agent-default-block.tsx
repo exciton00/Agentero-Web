@@ -26,7 +26,7 @@ import {
 } from "@/lib/agent";
 import { errorText } from "@/lib/core/error";
 import { notifyError } from "@/lib/core/notify";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 
 export function AgentDefaultBlock({
 	catalog,
@@ -53,7 +53,7 @@ export function AgentDefaultBlock({
 	);
 
 	const onDefaultAgentChange = async (value: string) => {
-		if (!isTauri() || value === NO_DEFAULT_AGENT_CHOICE) return;
+		if (!hasHostTransport() || value === NO_DEFAULT_AGENT_CHOICE) return;
 		const choice = defaultAgentChoices.find((c) => c.value === value);
 		if (!choice) return;
 		setSavingDefaultValue(value);
@@ -86,7 +86,7 @@ export function AgentDefaultBlock({
 						value={selectedDefaultValue}
 						onValueChange={(v) => void onDefaultAgentChange(v)}
 						disabled={
-							!isTauri() ||
+							!hasHostTransport() ||
 							defaultAgentChoices.length === 0 ||
 							Boolean(savingDefaultValue)
 						}

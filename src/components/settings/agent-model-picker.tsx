@@ -13,7 +13,7 @@ import {
 	warmAgent,
 } from "@/lib/agent";
 import { ensureModelsInclude } from "@/lib/agent/chat-state";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import { listAvailableAgents } from "@/lib/translate";
 import { SettingsRow } from "./settings-layout";
 
@@ -55,7 +55,7 @@ export function useAgentModelCatalog({
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: registryRefreshKey intentionally re-fetches listAgents
 	useEffect(() => {
-		if (controlled || !active || !isTauri()) {
+		if (controlled || !active || !hasHostTransport()) {
 			if (!controlled && !active) setInternalRegistry(null);
 			return;
 		}
@@ -95,7 +95,7 @@ export function useAgentModelCatalog({
 				cached?.currentId,
 			]),
 		);
-		if (!isTauri()) return;
+		if (!hasHostTransport()) return;
 		let cancelled = false;
 		void warmAgent({ agentId: resolvedAgentId }).catch(() => undefined);
 		const tmr = window.setTimeout(() => {

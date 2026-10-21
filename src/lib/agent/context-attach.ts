@@ -8,7 +8,7 @@
  * cross-window popout.
  */
 
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import { broadcastSafe } from "@/lib/core/tauri-events";
 
 export const AGENT_ATTACH_CONTEXT_EVENT = "agent:attach-context";
@@ -63,7 +63,7 @@ export function broadcastAgentAttachContext(paths: string[]): void {
 export async function listenAgentAttachContext(
 	handler: (paths: string[]) => void,
 ): Promise<() => void> {
-	if (!isTauri()) return () => {};
+	if (!hasHostTransport()) return () => {};
 	const { listen } = await import("@tauri-apps/api/event");
 	return listen<AgentAttachContextPayload>(
 		AGENT_ATTACH_CONTEXT_EVENT,

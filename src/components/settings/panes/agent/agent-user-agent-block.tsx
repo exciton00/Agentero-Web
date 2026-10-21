@@ -17,7 +17,7 @@ import { Input } from "@/components/ui/input";
 import { setAgentUserAgent, USER_AGENT_PRESETS } from "@/lib/agent";
 import { errorText } from "@/lib/core/error";
 import { notifyError } from "@/lib/core/notify";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 
 export function AgentUserAgentBlock({
 	initialUserAgent,
@@ -47,7 +47,7 @@ export function AgentUserAgentBlock({
 
 	const commitUserAgent = useCallback(
 		async (override?: { userAgent?: string; providerIds?: string }) => {
-			if (!isTauri()) return;
+			if (!hasHostTransport()) return;
 			const ua = (override?.userAgent ?? userAgentDraft).trim();
 			const providers = (
 				override?.providerIds ?? userAgentProviderDraft
@@ -90,7 +90,7 @@ export function AgentUserAgentBlock({
 								placeholder={t("agent.userAgent.placeholder")}
 								spellCheck={false}
 								autoComplete="off"
-								disabled={!isTauri()}
+								disabled={!hasHostTransport()}
 								className="h-8 w-44 pr-7 text-xs sm:w-52"
 							/>
 							<DropdownMenu>
@@ -102,7 +102,7 @@ export function AgentUserAgentBlock({
 										className="absolute top-1/2 right-1 size-6 -translate-y-1/2"
 										aria-label={t("agent.userAgent.presetsAria")}
 										title={t("agent.userAgent.presetsAria")}
-										disabled={!isTauri()}
+										disabled={!hasHostTransport()}
 									>
 										<ChevronDown className="size-3.5" aria-hidden />
 									</Button>
@@ -140,7 +140,7 @@ export function AgentUserAgentBlock({
 						placeholder={t("agent.userAgent.providerIdsPlaceholder")}
 						spellCheck={false}
 						autoComplete="off"
-						disabled={!isTauri() || !userAgentDraft.trim()}
+						disabled={!hasHostTransport() || !userAgentDraft.trim()}
 						className="h-8 w-56 text-xs"
 					/>
 				</SettingsRow>

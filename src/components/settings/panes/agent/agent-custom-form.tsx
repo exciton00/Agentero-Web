@@ -5,7 +5,7 @@ import { AgentLogo } from "@/components/agent/agent-logo";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 
 export type CustomAgentFormDraft = {
 	id?: string;
@@ -63,7 +63,7 @@ export function AgentCustomForm({
 						variant="ghost"
 						size="icon-xs"
 						className="size-7"
-						disabled={!isTauri()}
+						disabled={!hasHostTransport()}
 						aria-label={adding ? t("common:cancel") : t("agent.addCustom")}
 						title={adding ? t("common:cancel") : t("agent.addCustom")}
 						onClick={() => setAdding((v) => !v)}

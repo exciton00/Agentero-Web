@@ -15,7 +15,7 @@ import {
 } from "@/lib/core/bindings";
 import { callApi, callApiResult } from "@/lib/core/ipc";
 import { normalizeRelPath } from "@/lib/core/path";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import type {
 	PaperLibraryRow,
 	PaperMetadata,
@@ -124,7 +124,7 @@ export function filterPapersByScope<T extends PaperMetadata>(
 export async function listPapers(
 	vaultPath: string,
 ): Promise<PaperLibraryRow[]> {
-	if (!isTauri()) return [];
+	if (!hasHostTransport()) return [];
 	const { isRemoteVaultHandle, remotePaperList, remoteSessionIdFromHandle } =
 		await import("@/lib/vault/remote/remote-vault");
 	if (isRemoteVaultHandle(vaultPath)) {
@@ -143,7 +143,7 @@ export async function listPapers(
 
 /** Rebuild catalog rows from papers/ on disk (recover disk-only papers). */
 export async function rescanPapers(vaultPath: string): Promise<number> {
-	if (!isTauri()) return 0;
+	if (!hasHostTransport()) return 0;
 	const { isRemoteVaultHandle, remotePaperRescan, remoteSessionIdFromHandle } =
 		await import("@/lib/vault/remote/remote-vault");
 	if (isRemoteVaultHandle(vaultPath)) {
@@ -166,7 +166,7 @@ export async function rescanPapers(vaultPath: string): Promise<number> {
 export async function listPaperPageCounts(
 	vaultPath: string,
 ): Promise<Map<string, number>> {
-	if (!isTauri()) return new Map();
+	if (!hasHostTransport()) return new Map();
 	const { isRemoteVaultHandle } = await import(
 		"@/lib/vault/remote/remote-vault"
 	);
@@ -187,7 +187,7 @@ export async function savePaperPageCounts(
 	vaultPath: string,
 	counts: ReadonlyMap<string, number>,
 ): Promise<void> {
-	if (!isTauri() || counts.size === 0) return;
+	if (!hasHostTransport() || counts.size === 0) return;
 	const { isRemoteVaultHandle } = await import(
 		"@/lib/vault/remote/remote-vault"
 	);
@@ -216,7 +216,7 @@ export async function trashPaths(
 	vaultPath: string,
 	rels: string[],
 ): Promise<TrashResult> {
-	if (!isTauri()) {
+	if (!hasHostTransport()) {
 		throw new Error(i18n.t("sidebar:fileTree.deleteDesktopOnly"));
 	}
 	return callApiResult(() => commands.pathTrash({ vaultPath, rels }), {
@@ -228,7 +228,7 @@ export type { TrashEntry };
 
 /** List all items currently in the recycle bin (`.agentero/.trash/`). */
 export async function listTrash(vaultPath: string): Promise<TrashEntry[]> {
-	if (!isTauri()) return [];
+	if (!hasHostTransport()) return [];
 	return callApiResult(() => commands.pathListTrash({ vaultPath }), {
 		fallback: i18n.t("sidebar:recycleBin.loadFailed"),
 	});
@@ -281,7 +281,7 @@ export async function movePaperFolder(
 	destParentRel: string,
 	dirtyPaths: string[],
 ): Promise<PaperMoveResult> {
-	if (!isTauri()) {
+	if (!hasHostTransport()) {
 		throw new Error(i18n.t("sidebar:fileTree.moveDesktopOnly"));
 	}
 	return callApiResult(
@@ -298,7 +298,7 @@ export async function setPaperIsRead(
 	path: string,
 	isRead: boolean,
 ): Promise<PaperMetadata> {
-	if (!isTauri()) {
+	if (!hasHostTransport()) {
 		throw new Error(i18n.t("sidebar:fileTree.readDesktopOnly"));
 	}
 	const { isRemoteVaultHandle, remoteSessionIdFromHandle } = await import(
@@ -337,7 +337,7 @@ export async function setPaperTags(
 	path: string,
 	tags: PaperTagInput[],
 ): Promise<PaperMetadata> {
-	if (!isTauri()) {
+	if (!hasHostTransport()) {
 		throw new Error(i18n.t("sidebar:paperInfo.tagsDesktopOnly"));
 	}
 	const { isRemoteVaultHandle, remoteSessionIdFromHandle } = await import(
@@ -383,7 +383,7 @@ export async function syncPublication(
 	vaultPath: string,
 	paths: string[],
 ): Promise<PublicationSyncResult> {
-	if (!isTauri() || paths.length === 0) {
+	if (!hasHostTransport() || paths.length === 0) {
 		return { updated: 0, metricsUpdated: 0, metricsFailed: 0 };
 	}
 	const report = await callApi(
@@ -427,7 +427,7 @@ export async function updatePaperMeta(
 	path: string,
 	patch: PaperMetaPatch,
 ): Promise<PaperMetadata> {
-	if (!isTauri()) {
+	if (!hasHostTransport()) {
 		throw new Error(i18n.t("sidebar:paperInfo.editMeta.desktopOnly"));
 	}
 	const { isRemoteVaultHandle } = await import(
@@ -475,7 +475,7 @@ export type PaperExportResult = {
 export async function resolveIdentifierMetadata(
 	text: string,
 ): Promise<PaperMetadata> {
-	if (!isTauri()) {
+	if (!hasHostTransport()) {
 		throw new Error(i18n.t("sidebar:paperInfo.editMeta.desktopOnly"));
 	}
 	const { getSettings } = await import("@/lib/settings/react-store");
@@ -515,7 +515,7 @@ export async function exportLibrary(opts: {
 	/** Default bibtex */
 	format?: string;
 }): Promise<PaperExportResult> {
-	if (!isTauri()) {
+	if (!hasHostTransport()) {
 		throw new Error(i18n.t("sidebar:papersLibrary.desktopOnly"));
 	}
 	return callApi(
@@ -562,7 +562,7 @@ export async function importLibraryText(opts: {
 	parentDir?: string;
 	settings?: AppSettings;
 }): Promise<PaperImportResult> {
-	if (!isTauri()) {
+	if (!hasHostTransport()) {
 		throw new Error(i18n.t("sidebar:papersLibrary.desktopOnly"));
 	}
 	return callApiResult(

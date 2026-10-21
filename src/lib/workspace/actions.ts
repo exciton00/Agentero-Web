@@ -20,7 +20,7 @@ import { errorText } from "@/lib/core/error";
 import { notifyError, notifyUndo, notifyWarning } from "@/lib/core/notify";
 import { openExternalUrl } from "@/lib/core/open-external";
 import { closeTopOverlay } from "@/lib/core/overlay-stack";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport, isTauri } from "@/lib/core/tauri";
 import { decideSync, registerDecision } from "@/lib/decision/registry";
 import { lifecycle } from "@/lib/lifecycle";
 import {
@@ -1739,7 +1739,8 @@ function persistTextLike(
 	content: string,
 	lastSaved: string,
 ): Promise<boolean> {
-	if (!isTauri() || !getVaultPath() || !path) return Promise.resolve(false);
+	if (!hasHostTransport() || !getVaultPath() || !path)
+		return Promise.resolve(false);
 	const queues = persistQueues[kind];
 	const normalizedPath = normalizeTabPath(path);
 	const previous = queues.get(normalizedPath) ?? Promise.resolve(false);
@@ -1831,7 +1832,7 @@ const placeholderLoads = new Set<string>();
 
 /** Load resources for restored panels only when their dock group exposes them. */
 export function hydratePlaceholderTabs(tabIds: readonly string[]): void {
-	if (!isTauri() || !getVaultPath()) return;
+	if (!hasHostTransport() || !getVaultPath()) return;
 	if (!getTabs().length) {
 		ensureLibraryTabPresent();
 		return;
@@ -1900,7 +1901,7 @@ export function hydratePlaceholderTabs(tabIds: readonly string[]): void {
  * first hydration. Reset those tabs to placeholders and hydrate them again.
  */
 export function rehydrateMisclassifiedPaperTabs(): void {
-	if (!isTauri() || !getVaultPath()) return;
+	if (!hasHostTransport() || !getVaultPath()) return;
 	const { paperFolders } = vaultStore.getState();
 	if (!paperFolders.length) return;
 

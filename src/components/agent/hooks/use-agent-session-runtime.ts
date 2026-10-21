@@ -68,7 +68,7 @@ import {
 	type StreamSlice,
 	ThinkTagParser,
 } from "@/lib/agent/stream-parse";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import {
 	completeTrace,
 	failTrace,
@@ -642,7 +642,7 @@ export function useAgentSessionRuntime({
 	);
 
 	useEffect(() => {
-		if (!isTauri()) return;
+		if (!hasHostTransport()) return;
 		let cancelled = false;
 		const unsubs: Array<() => void> = [];
 		setAgentListenersReady(false);

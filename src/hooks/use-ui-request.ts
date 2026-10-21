@@ -11,7 +11,7 @@ import { useEffect } from "react";
 import { takePendingUiRequest } from "@/lib/cli/api";
 import { events, type UiRequestPayload } from "@/lib/core/bindings";
 import { notifyError } from "@/lib/core/notify";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import { listenEventSafe } from "@/lib/core/tauri-events";
 import { openLocalVaultPath } from "@/lib/vault/actions";
 import { joinVaultPath } from "@/lib/vault/path";
@@ -130,7 +130,7 @@ async function dispatch(payload: UiRequestPayload): Promise<void> {
 
 export function useUiRequest(): void {
 	useEffect(() => {
-		if (!isTauri()) return;
+		if (!hasHostTransport()) return;
 		let cancelled = false;
 		/** In-flight key so event + pending take do not double-open. */
 		let inflight: string | null = null;

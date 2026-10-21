@@ -5,7 +5,7 @@
  * `agent:registry-changed` after each probe so a later-mounted panel refreshes.
  */
 import { probeCatalogAgent, scanCatalog } from "@/lib/agent/api";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 
 let started = false;
 
@@ -14,7 +14,7 @@ let started = false;
  * yet ready. Skips already-ready rows; idempotent across Strict Mode remounts.
  */
 export function prefetchAgentCatalog(): void {
-	if (!isTauri() || started) return;
+	if (!hasHostTransport() || started) return;
 	started = true;
 	void (async () => {
 		try {

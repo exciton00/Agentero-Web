@@ -9,7 +9,7 @@ import type { Json } from "@/lib/core/bindings";
 import { errorText } from "@/lib/core/error";
 import { logger } from "@/lib/core/logger";
 import { toVaultRelative } from "@/lib/core/path";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import { getVaultPath } from "@/lib/vault/store";
 
 const FLUSH_MS = 5000;
@@ -42,7 +42,7 @@ export function track(
 		logger.warn("activity: unknown kind", { kind });
 		return;
 	}
-	if (!isTauri()) return;
+	if (!hasHostTransport()) return;
 
 	const vault = getVaultPath() ?? undefined;
 	const path = normalizePath(vault, payload.path);

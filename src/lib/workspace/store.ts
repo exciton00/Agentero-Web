@@ -6,7 +6,7 @@
  */
 
 import { createStore } from "zustand/vanilla";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import {
 	createPlaceholderTab,
 	type DocTab,
@@ -56,7 +56,7 @@ let initialized = false;
 export function initWorkspaceStore(): void {
 	if (initialized) return;
 	initialized = true;
-	if (!isTauri()) return;
+	if (!hasHostTransport()) return;
 	const persisted = loadPersistedTabs();
 	if (!persisted?.tabs.length) return;
 	workspaceStore.setState({

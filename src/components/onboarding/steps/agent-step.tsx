@@ -24,7 +24,7 @@ import {
 	scanCatalog,
 } from "@/lib/agent/api";
 import { errorText } from "@/lib/core/error";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import { cn } from "@/lib/core/utils";
 import {
 	DESKTOP_APP_IDS,
@@ -109,7 +109,7 @@ export const AgentStep = forwardRef<AgentStepHandle>(
 		// Best-effort: show popular desktop apps that lack ACP support so users
 		// understand why they cannot be picked as an agent.
 		useEffect(() => {
-			if (!isTauri()) return;
+			if (!hasHostTransport()) return;
 			void (async () => {
 				try {
 					const list = await probeDesktopApps();

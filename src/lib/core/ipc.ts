@@ -17,7 +17,7 @@
  */
 
 import type { ApiResult } from "@/lib/core/bindings";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 
 export type ApiError = Error & { details?: unknown };
 
@@ -44,12 +44,17 @@ type RuntimeErrorBody = {
 	details?: unknown;
 };
 
-function ensureDesktop(opts: CallApiOptions): void {
-	if (isTauri()) return;
+/**
+ * Host commands work in both shells: the Tauri desktop app (IPC) and the
+ * headless web host (HTTP + WS). Only a plain browser without a Host (e.g.
+ * tests, or the dev server with no backend) is rejected.
+ */
+function ensureHost(opts: CallApiOptions): void {
+	if (hasHostTransport()) return;
 	throw new Error(
 		opts.desktopOnly ??
 			opts.fallback ??
-			"This action requires the Tauri desktop app.",
+			"This action requires the Agentero Host.",
 	);
 }
 
@@ -71,7 +76,7 @@ export async function callApi<T>(
 	fn: () => Promise<ApiResult<T>>,
 	opts: CallApiOptions = {},
 ): Promise<T> {
-	ensureDesktop(opts);
+	ensureHost(opts);
 	const res = await fn();
 	if (!res.ok) throw hostError(res.error, opts.fallback);
 	return res.data as T;
@@ -85,7 +90,7 @@ export async function callApiResult<T>(
 	fn: () => Promise<TypedResult<ApiResult<T>>>,
 	opts: CallApiOptions = {},
 ): Promise<T> {
-	ensureDesktop(opts);
+	ensureHost(opts);
 	const res = await fn();
 	if (res.status === "error") throw ipcError(res.error, opts.fallback);
 	if (!res.data.ok) throw hostError(res.data.error, opts.fallback);
@@ -100,7 +105,7 @@ export async function callResult<T>(
 	fn: () => Promise<TypedResult<T>>,
 	opts: CallApiOptions = {},
 ): Promise<T> {
-	ensureDesktop(opts);
+	ensureHost(opts);
 	const res = await fn();
 	if (res.status === "error") throw ipcError(res.error, opts.fallback);
 	return res.data;

@@ -7,7 +7,7 @@ import {
 	BUILTIN_PROVIDER_ID,
 	loadBuiltinProviderStatus,
 } from "@/lib/core/builtin";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import { invokeTranslateText } from "@/lib/translate/api";
 import type {
 	CommercialTranslateProviderId,
@@ -89,7 +89,7 @@ async function probeOne(
 	opts: ProbeFreeMtOptions,
 ): Promise<boolean> {
 	if (opts.signal?.aborted) return false;
-	if (!isTauri()) return false;
+	if (!hasHostTransport()) return false;
 	try {
 		const text = await invokeTranslateText({
 			text: PROBE_TEXT,
@@ -140,7 +140,7 @@ export async function probeCommercialMtProvider(
 ): Promise<boolean> {
 	if (opts.signal?.aborted) return false;
 	if (!isCommercialProviderConfigured(id, opts.config)) return false;
-	if (!isTauri()) return false;
+	if (!hasHostTransport()) return false;
 	const rawKey = opts.config.apiKey.trim();
 	try {
 		const text = await invokeTranslateText({

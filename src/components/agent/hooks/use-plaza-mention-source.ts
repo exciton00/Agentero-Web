@@ -15,7 +15,7 @@ import {
 	registerPlazaMentionEntries,
 } from "@/lib/agent/plaza-mention";
 import type { FeedItem, RecommendItem } from "@/lib/core/bindings";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import {
 	cleanFeedSummary,
 	feedsItems,
@@ -71,7 +71,7 @@ export function usePlazaMentionSource(
 		// expandable into a prompt (and no vault must keep any registry).
 		setEntries([]);
 		registerPlazaMentionEntries([]);
-		if (!vaultPath || !isTauri()) {
+		if (!vaultPath || !hasHostTransport()) {
 			return;
 		}
 		let cancelled = false;

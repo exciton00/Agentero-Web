@@ -6,13 +6,13 @@ import { useEffect } from "react";
 import { takePendingVaultOpen } from "@/lib/cli/api";
 import { events } from "@/lib/core/bindings";
 import { notifyError } from "@/lib/core/notify";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import { listenEventSafe } from "@/lib/core/tauri-events";
 import { openLocalVaultPath } from "@/lib/vault/actions";
 
 export function useVaultOpenRequest(): void {
 	useEffect(() => {
-		if (!isTauri()) return;
+		if (!hasHostTransport()) return;
 		let cancelled = false;
 		/** In-flight path so event + pending take do not double-activate. */
 		let inflight: string | null = null;

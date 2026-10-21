@@ -41,7 +41,7 @@ import { errorText } from "@/lib/core/error";
 import { callApiResult } from "@/lib/core/ipc";
 import { logger } from "@/lib/core/logger";
 import { joinTaskDetail, paperTaskLabel } from "@/lib/core/task-label";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import { toSafeDisposer } from "@/lib/core/tauri-events";
 
 export type { JobKind, JobOfferPayload, JobState };
@@ -124,7 +124,7 @@ async function claimRunningJobOffers(): Promise<void> {
 
 export function startJobCenterExecutorListener(): void {
 	if (offerSubscription) return;
-	if (isTauri()) {
+	if (hasHostTransport()) {
 		offerSubscription = toSafeDisposer(
 			events.jobOffer.listen((event) => {
 				dispatchJobOffer(event.payload);
@@ -432,7 +432,7 @@ const wiredJobCancels = new Set<string>();
  */
 export function startJobTaskProjection(): void {
 	if (projectionSubscription) return;
-	if (isTauri()) {
+	if (hasHostTransport()) {
 		projectionSubscription = toSafeDisposer(
 			events.jobChanged.listen((event) => {
 				projectJobToBackgroundTask(event.payload.job);
@@ -578,7 +578,7 @@ let progressSubscription: (() => void) | null = null;
  */
 export function startJobProgressListener(): void {
 	if (progressSubscription) return;
-	if (isTauri()) {
+	if (hasHostTransport()) {
 		progressSubscription = toSafeDisposer(
 			events.jobProgress.listen((event) => handleJobProgress(event.payload)),
 		);

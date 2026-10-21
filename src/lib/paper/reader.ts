@@ -26,7 +26,7 @@ import { updateBackgroundTask } from "@/lib/core/background-tasks";
 import { commands } from "@/lib/core/bindings";
 import { errorText } from "@/lib/core/error";
 import { runLocalActivity } from "@/lib/core/tasks";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import { setPaperIsRead } from "@/lib/paper/api";
 import { loadPaperMetadata } from "@/lib/paper/load-meta";
 import { paperTaskLabel } from "@/lib/paper/task-label";
@@ -172,7 +172,7 @@ export async function runPaperReaderWorkflow(opts: {
 	/** Vault-relative paper folder, e.g. papers/1706.03762 */
 	paperPath: string;
 }): Promise<void> {
-	if (!isTauri()) {
+	if (!hasHostTransport()) {
 		throw new Error(i18n.t("sidebar:fileTree.readDesktopOnly"));
 	}
 	const paperRel = opts.paperPath.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
@@ -256,7 +256,7 @@ export async function maybeAutoRunPaperReader(opts: {
 	/** Caller-known asset flags after ingest */
 	assetsReady: boolean;
 }): Promise<boolean> {
-	if (!opts.assetsReady || !isTauri()) return false;
+	if (!opts.assetsReady || !hasHostTransport()) return false;
 	if (!loadSettings().autoPaperReader) return false;
 	const paperRel = opts.paperPath.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
 	if (!paperRel || inflightReads.has(paperRel)) return false;

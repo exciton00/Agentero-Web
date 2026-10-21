@@ -84,7 +84,7 @@ import {
 	takeVisualDrafts,
 	visualDraftsForSession,
 } from "@/lib/agent/visual-context-store";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import {
 	bindVisualTracesForTurn,
 	isVisualTraceHistoryId,
@@ -657,7 +657,7 @@ export function useAgentSend({
 		const requestVaultPath = vaultPath;
 		setSubmittingFlag(true);
 		try {
-			if (!isTauri()) {
+			if (!hasHostTransport()) {
 				setLines((p) => [...p, errorChatLine(t("messages.desktopOnly"))]);
 				return false;
 			}
@@ -949,7 +949,7 @@ export function useAgentSend({
 		setLines(completedLines);
 		setToolAskUserRequest(null);
 		const sessionId = activeTabId;
-		if (!sessionId || !isTauri()) return true;
+		if (!sessionId || !hasHostTransport()) return true;
 		try {
 			await cancelAgentRun(sessionId);
 		} catch (error) {
@@ -1182,7 +1182,7 @@ export function useAgentSend({
 
 	const cancelCurrentRun = async () => {
 		const sessionId = activeTabIsRunning ? activeTabId : null;
-		if (!sessionId || !isTauri()) return;
+		if (!sessionId || !hasHostTransport()) return;
 		try {
 			await cancelAgentRun(sessionId);
 			// Drop promoted tool-ask form for this turn.

@@ -34,7 +34,7 @@ import {
 } from "@/lib/agent";
 import { errorText } from "@/lib/core/error";
 import { notifyError } from "@/lib/core/notify";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import type { AppSettings } from "@/lib/settings";
 import { remoteAgentOpenInstallTerminal } from "@/lib/vault/remote/remote-vault";
 
@@ -98,7 +98,7 @@ export function AgentPane({
 			command: string;
 			args: string;
 		}): Promise<boolean> => {
-			if (!isTauri()) return false;
+			if (!hasHostTransport()) return false;
 			setLoading(true);
 			try {
 				const args = draft.args.trim().split(/\s+/).filter(Boolean);
@@ -131,7 +131,7 @@ export function AgentPane({
 
 	const onOpenCli = useCallback(
 		(templateId: string) => {
-			if (!isTauri()) {
+			if (!hasHostTransport()) {
 				notifyError(t("agent.desktopOnly"));
 				return;
 			}
@@ -155,7 +155,7 @@ export function AgentPane({
 				onDefaultApplied={() => void refreshPdfAskRegistry()}
 			/>
 
-			{!isTauri() ? (
+			{!hasHostTransport() ? (
 				<p className="mb-3 text-muted-foreground text-xs">
 					{t("agent.desktopHint")}
 				</p>
@@ -172,7 +172,7 @@ export function AgentPane({
 					size="icon-xs"
 					aria-label={t("agent.probe")}
 					title={t("agent.probe")}
-					disabled={busy || !isTauri()}
+					disabled={busy || !hasHostTransport()}
 					onClick={() => void rescanAndProbe(true)}
 				>
 					{/* Loader2 while busy — avoid RefreshCw+spin (looks like two arrows, one stuck). */}
@@ -282,7 +282,7 @@ export function RemoteAgentPane({
 	const batchActive = loading || probingKeys.size > 0;
 
 	const onInstallAdapter = async (entry: CatalogEntry) => {
-		if (!isTauri()) return;
+		if (!hasHostTransport()) return;
 		try {
 			await remoteAgentOpenInstallTerminal(sessionId, entry.templateId);
 		} catch (e) {
@@ -306,7 +306,7 @@ export function RemoteAgentPane({
 				<AgentCommonRows settings={settings} patch={patch} idSuffix="-r" />
 			</SettingsGroup>
 
-			{!isTauri() ? (
+			{!hasHostTransport() ? (
 				<p className="mb-3 text-muted-foreground text-xs">
 					{t("agent.desktopHint")}
 				</p>
@@ -322,7 +322,7 @@ export function RemoteAgentPane({
 					size="icon-xs"
 					aria-label={t("agent.probe")}
 					title={t("agent.remote.probeTitle")}
-					disabled={busy || !isTauri()}
+					disabled={busy || !hasHostTransport()}
 					onClick={() => void rescanAndProbe(true)}
 				>
 					{busy ? (

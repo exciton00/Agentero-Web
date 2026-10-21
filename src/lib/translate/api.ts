@@ -1,5 +1,5 @@
 import { commands } from "@/lib/core/bindings";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 
 /** Host marker for "the built-in provider has no compiled-in key". */
 export const ERR_TRANSLATE_NO_BUILTIN_KEY = "translate.no_builtin_key";
@@ -21,7 +21,7 @@ export async function invokeTranslateText(args: {
 	/** Host request timeout (ms); clamped 1s–30s server-side. */
 	timeoutMs?: number;
 }): Promise<string> {
-	if (!isTauri()) {
+	if (!hasHostTransport()) {
 		throw new Error("Free translation requires the Tauri desktop app.");
 	}
 	const res = await commands.translateText({

@@ -2,7 +2,7 @@ import { readDir } from "@tauri-apps/plugin-fs";
 import { errorText } from "@/lib/core/error";
 import { logger } from "@/lib/core/logger";
 import { basenameOf, joinPath } from "@/lib/core/path";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import { arxivUrls } from "@/lib/paper/arxiv";
 import type { PaperMetadata } from "@/lib/paper/types";
 import { readVaultBytes, vaultPathExists } from "@/lib/vault";
@@ -34,7 +34,7 @@ export function isPdfViewerSource(
 }
 
 async function tryReadVaultBytes(absPath: string): Promise<Uint8Array | null> {
-	if (!isTauri() || !absPath?.trim()) return null;
+	if (!hasHostTransport() || !absPath?.trim()) return null;
 	try {
 		return await readVaultBytes(absPath);
 	} catch (e) {
@@ -134,7 +134,7 @@ export async function findCanonicalPaperPdfPath(
 	paperDir: string,
 ): Promise<string | null> {
 	const path = canonicalPaperPdfPath(paperDir);
-	if (!path || !isTauri()) return null;
+	if (!path || !hasHostTransport()) return null;
 	try {
 		return (await vaultPathExists(path)) ? path : null;
 	} catch (e) {
@@ -154,7 +154,7 @@ export async function findCanonicalPaperPdfPath(
 export async function findLocalPdfPath(
 	paperDir: string,
 ): Promise<string | null> {
-	if (!isTauri() || !paperDir?.trim()) return null;
+	if (!hasHostTransport() || !paperDir?.trim()) return null;
 	const root = paperDir.replace(/[/\\]+$/, "");
 	// Remote joined path: list via Host SFTP
 	const parsed = parseRemoteJoinedPath(root);

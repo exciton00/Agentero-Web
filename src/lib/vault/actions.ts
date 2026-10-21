@@ -15,7 +15,7 @@ import {
 	notifyWarning,
 } from "@/lib/core/notify";
 import { dirnameOf, displayPath } from "@/lib/core/path";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport, isTauri } from "@/lib/core/tauri";
 import { isPaperDirectory, isPapersRoot, isUnderPapers } from "@/lib/paper";
 import {
 	isLibraryVirtualPath,
@@ -143,7 +143,7 @@ export async function activateVault(path: string): Promise<void> {
 
 export async function openVault(): Promise<void> {
 	try {
-		if (!isTauri()) {
+		if (!hasHostTransport()) {
 			notifyError(i18n.t("app:errors.openVaultDesktopOnly"));
 			return;
 		}
@@ -272,7 +272,7 @@ export function refreshAll(): void {
  * (no/higher/same version) stay put.
  */
 export function seedVaultSkills(path: string): void {
-	if (!isTauri() || !path) return;
+	if (!hasHostTransport() || !path) return;
 	void (async () => {
 		try {
 			// A restored vault may have been moved/deleted since the path was
@@ -358,7 +358,7 @@ export function openSelectedInTerminal(): void {
 /** Delete vault paths into the recycle bin (`.agentero/.trash/`). */
 export async function trashPathsAndNotify(absPaths: string[]): Promise<void> {
 	const vaultPath = getVaultPath();
-	if (!vaultPath || !isTauri()) {
+	if (!vaultPath || !hasHostTransport()) {
 		notifyError(i18n.t("sidebar:fileTree.deleteDesktopOnly"));
 		return;
 	}
@@ -439,7 +439,7 @@ export async function handleTrashChanged(): Promise<void> {
 /** Empty recycle bin from the trash node context menu (confirm + purge). */
 export async function emptyTrash(): Promise<void> {
 	const vaultPath = getVaultPath();
-	if (!vaultPath || !isTauri()) return;
+	if (!vaultPath || !hasHostTransport()) return;
 	try {
 		const items = await listTrash(vaultPath);
 		if (items.length === 0) return;
@@ -548,7 +548,7 @@ export function cutSelectedPaths(rawPaths: string[]): void {
 		notifyError(i18n.t("sidebar:fileTree.needsVault"));
 		return;
 	}
-	if (!isTauri()) {
+	if (!hasHostTransport()) {
 		notifyError(i18n.t("sidebar:fileTree.cutDesktopOnly"));
 		return;
 	}
@@ -743,7 +743,7 @@ export async function pasteCutPaths(
 		notifyError(i18n.t("sidebar:fileTree.needsVault"));
 		return;
 	}
-	if (!isTauri()) {
+	if (!hasHostTransport()) {
 		notifyError(i18n.t("sidebar:fileTree.pasteDesktopOnly"));
 		return;
 	}
@@ -804,7 +804,7 @@ export async function dropMovePaths(
 		notifyError(i18n.t("sidebar:fileTree.needsVault"));
 		return;
 	}
-	if (!isTauri()) {
+	if (!hasHostTransport()) {
 		notifyError(i18n.t("sidebar:fileTree.moveDesktopOnly"));
 		return;
 	}
@@ -951,7 +951,7 @@ export async function confirmRenamePath(
 }
 
 export function startCreate(kind: TreeCreateKind, parentPath: string): void {
-	if (!getVaultPath() || !isTauri()) {
+	if (!getVaultPath() || !hasHostTransport()) {
 		notifyError(i18n.t("sidebar:fileTree.needsVault"));
 		return;
 	}
@@ -965,7 +965,7 @@ export function cancelCreate(): void {
 export async function confirmCreate(name: string): Promise<void> {
 	const { createDraft } = vaultStore.getState();
 	const vaultPath = getVaultPath();
-	if (!createDraft || !vaultPath || !isTauri()) {
+	if (!createDraft || !vaultPath || !hasHostTransport()) {
 		setCreateDraft(null);
 		return;
 	}
@@ -1069,7 +1069,11 @@ export async function migrateZoteroFromWelcome(): Promise<void> {
  */
 export function validateRestoredVault(): Promise<void> {
 	const restoredPath = getVaultPath();
-	if (!isTauri() || !restoredPath || isRemoteVaultHandle(restoredPath)) {
+	if (
+		!hasHostTransport() ||
+		!restoredPath ||
+		isRemoteVaultHandle(restoredPath)
+	) {
 		return Promise.resolve();
 	}
 	return ensureLocalFsScope(restoredPath)

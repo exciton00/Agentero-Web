@@ -45,7 +45,7 @@ import { formatBytes } from "@/lib/core/background-tasks";
 import { events } from "@/lib/core/bindings";
 import { errorMessage, notifyError, notifySuccess } from "@/lib/core/notify";
 import { openExternalUrl } from "@/lib/core/open-external";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import { toSafeDisposer } from "@/lib/core/tauri-events";
 import { cn } from "@/lib/core/utils";
 import {
@@ -159,7 +159,7 @@ const BACKEND_OPTIONS = [
 export function SyncPane({ vaultPath }: { vaultPath: string | null }) {
 	const { t } = useTranslation("settings");
 	const localVault =
-		isTauri() && vaultPath && !isRemoteVaultHandle(vaultPath)
+		hasHostTransport() && vaultPath && !isRemoteVaultHandle(vaultPath)
 			? vaultPath
 			: null;
 

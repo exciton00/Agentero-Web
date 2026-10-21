@@ -5,7 +5,7 @@
 
 import type { AgentSessionRecord } from "@/lib/agent/agent-session-store";
 import type { ChatLine } from "@/lib/agent/chat-state";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import { broadcastSafe } from "@/lib/core/tauri-events";
 
 export const WORKSPACE_ACTIVE_CHANGED_EVENT = "workspace:active-changed";
@@ -39,7 +39,7 @@ export function broadcastWorkspaceActive(
 export async function listenWorkspaceActive(
 	handler: (payload: WorkspaceActiveChangedPayload) => void,
 ): Promise<() => void> {
-	if (!isTauri()) return () => {};
+	if (!hasHostTransport()) return () => {};
 	const { listen } = await import("@tauri-apps/api/event");
 	const unlisten = await listen<WorkspaceActiveChangedPayload>(
 		WORKSPACE_ACTIVE_CHANGED_EVENT,
@@ -66,7 +66,7 @@ export function broadcastAgentSessionHandoff(
  * payload only (`applyAgentSessionHandoffOnce`).
  */
 export function scheduleAgentSessionHandoffFromMain(): void {
-	if (!isTauri()) return;
+	if (!hasHostTransport()) return;
 	void (async () => {
 		try {
 			const { getAgentSessionState } = await import(
@@ -103,7 +103,7 @@ export function scheduleAgentSessionHandoffFromMain(): void {
 export async function listenAgentSessionHandoff(
 	handler: (payload: AgentSessionHandoffPayload) => void,
 ): Promise<() => void> {
-	if (!isTauri()) return () => {};
+	if (!hasHostTransport()) return () => {};
 	const { listen } = await import("@tauri-apps/api/event");
 	const unlisten = await listen<AgentSessionHandoffPayload>(
 		AGENT_SESSION_HANDOFF_EVENT,

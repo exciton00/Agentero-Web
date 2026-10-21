@@ -1,4 +1,4 @@
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import {
 	deleteMarkFile,
 	listMarkRaw,
@@ -33,7 +33,7 @@ export function createMarkStore<T extends { id: string }>(
 
 	async function list(paperAbsPath: string): Promise<T[]> {
 		if (!paperAbsPath) return [];
-		if (!isTauri()) {
+		if (!hasHostTransport()) {
 			if (opts.noMemory) return [];
 			return Array.from(memoryBucket(paperAbsPath).values()).sort(opts.sort);
 		}
@@ -47,7 +47,7 @@ export function createMarkStore<T extends { id: string }>(
 	}
 
 	async function read(paperAbsPath: string, id: string): Promise<T | null> {
-		if (!isTauri()) {
+		if (!hasHostTransport()) {
 			return memoryBucket(paperAbsPath).get(id) ?? null;
 		}
 		const raw = await readMarkRaw(paperAbsPath, id);
@@ -56,7 +56,7 @@ export function createMarkStore<T extends { id: string }>(
 
 	async function write(paperAbsPath: string, item: T): Promise<void> {
 		const next = opts.prepareWrite ? opts.prepareWrite(item) : item;
-		if (!isTauri()) {
+		if (!hasHostTransport()) {
 			memoryBucket(paperAbsPath).set(next.id, next);
 			return;
 		}
@@ -66,7 +66,7 @@ export function createMarkStore<T extends { id: string }>(
 	async function remove(paperAbsPath: string, id: string): Promise<void> {
 		if (!paperAbsPath) return;
 		if (opts.requireIdOnDelete && !id) return;
-		if (!isTauri()) {
+		if (!hasHostTransport()) {
 			memoryBucket(paperAbsPath).delete(id);
 			return;
 		}

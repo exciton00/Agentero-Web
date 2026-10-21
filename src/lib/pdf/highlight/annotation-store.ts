@@ -5,7 +5,7 @@ import type {
 import { PdfAnnotationSubtype } from "@embedpdf/models";
 import type { TrackedAnnotation } from "@embedpdf/plugin-annotation";
 import type { AnnotationTransferItem } from "@embedpdf/plugin-annotation/react";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import {
 	type HighlightColor,
 	highlightColorFromHex,
@@ -75,7 +75,7 @@ export async function loadAnnotationItems(
 	paperAbsPath: string,
 ): Promise<AnnotationTransferItem[]> {
 	if (!paperAbsPath) return [];
-	if (!isTauri()) {
+	if (!hasHostTransport()) {
 		return dedupeAnnotationItems(memoryStore.get(paperAbsPath) ?? []);
 	}
 
@@ -116,7 +116,7 @@ export async function saveAnnotationItems(
 ): Promise<void> {
 	if (!paperAbsPath) return;
 	const next = dedupeAnnotationItems(items);
-	if (!isTauri()) {
+	if (!hasHostTransport()) {
 		memoryStore.set(paperAbsPath, next);
 		return;
 	}
@@ -131,7 +131,7 @@ export async function hasAnnotationsFile(
 	paperAbsPath: string,
 ): Promise<boolean> {
 	if (!paperAbsPath) return false;
-	if (!isTauri()) return memoryStore.has(paperAbsPath);
+	if (!hasHostTransport()) return memoryStore.has(paperAbsPath);
 	for (const path of [
 		annotationsPath(paperAbsPath),
 		legacyAnnotationsPath(paperAbsPath),

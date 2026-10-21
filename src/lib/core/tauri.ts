@@ -1,9 +1,33 @@
 /** True when running inside a Tauri webview (not plain browser). */
 export function isTauri(): boolean {
-	return (
-		typeof window !== "undefined" &&
-		("__TAURI_INTERNALS__" in window || "__TAURI__" in window)
-	);
+	if (typeof window === "undefined") return false;
+	// The headless web client installs a `__TAURI_INTERNALS__` compatibility
+	// object for code probing the Tauri globals; it is still not a Tauri shell.
+	if (isWebHost()) return false;
+	return "__TAURI_INTERNALS__" in window || "__TAURI__" in window;
+}
+
+/**
+ * True when this frontend bundle runs as the headless web client.
+ *
+ * `vite --mode web` (dev or build) is the only bundle that ships the HTTP/WS
+ * transport shims from `src/web-transport/`; the desktop build keeps its
+ * default mode and never sets this.
+ */
+export function isWebHost(): boolean {
+	return import.meta.env.MODE === "web";
+}
+
+/**
+ * True when a Host transport is available to this frontend.
+ *
+ * Both the Tauri desktop shell and the headless web host speak the same Host
+ * command/event contract — only the transport differs (IPC vs HTTP + WS).
+ * Guard Host calls with this; keep {@link isTauri} for genuinely native
+ * capabilities (updater, native windows, OS file dialogs, CLI sidecars).
+ */
+export function hasHostTransport(): boolean {
+	return isWebHost() || isTauri();
 }
 
 /**

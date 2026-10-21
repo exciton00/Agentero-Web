@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { type CatalogScanResponse, listAgents } from "@/lib/agent";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 
 /**
  * listAgents registry backing the agent/model pickers; refreshes when the
@@ -12,7 +12,7 @@ export function useAgentRegistry(catalog: CatalogScanResponse | null) {
 	> | null>(null);
 
 	const refresh = useCallback(async () => {
-		if (!isTauri()) {
+		if (!hasHostTransport()) {
 			setRegistry(null);
 			return;
 		}

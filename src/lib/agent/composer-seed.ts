@@ -3,7 +3,7 @@
  * Settings emits a Tauri event; main applies text into the open Agent composer.
  */
 
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import { broadcastSafe } from "@/lib/core/tauri-events";
 
 export const AGENT_OPEN_WITH_PROMPT_EVENT = "agent:open-with-prompt";
@@ -55,7 +55,7 @@ export function broadcastOpenAgentWithPrompt(text: string): void {
 export async function listenOpenAgentWithPrompt(
 	handler: (payload: AgentOpenWithPromptPayload) => void,
 ): Promise<() => void> {
-	if (!isTauri()) return () => {};
+	if (!hasHostTransport()) return () => {};
 	const { listen } = await import("@tauri-apps/api/event");
 	return listen<AgentOpenWithPromptPayload>(
 		AGENT_OPEN_WITH_PROMPT_EVENT,

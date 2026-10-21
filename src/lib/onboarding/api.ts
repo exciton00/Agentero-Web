@@ -3,7 +3,7 @@
  * Settings emits a Tauri event; the main window forces the wizard open.
  */
 
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import { broadcastSafe } from "@/lib/core/tauri-events";
 
 export const ONBOARDING_REQUEST_EVENT = "onboarding:request";
@@ -17,7 +17,7 @@ export function broadcastOnboardingRequest(): void {
 export async function listenOnboardingRequest(
 	handler: () => void,
 ): Promise<() => void> {
-	if (!isTauri()) return () => {};
+	if (!hasHostTransport()) return () => {};
 	const { listen } = await import("@tauri-apps/api/event");
 	return listen<unknown>(ONBOARDING_REQUEST_EVENT, () => {
 		handler();
@@ -35,7 +35,7 @@ export function broadcastTourRequest(): void {
 export async function listenTourRequest(
 	handler: () => void,
 ): Promise<() => void> {
-	if (!isTauri()) return () => {};
+	if (!hasHostTransport()) return () => {};
 	const { listen } = await import("@tauri-apps/api/event");
 	return listen<unknown>(TOUR_REQUEST_EVENT, () => {
 		handler();

@@ -10,7 +10,7 @@
  */
 import { readDir } from "@tauri-apps/plugin-fs";
 
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import {
 	joinVaultPath,
 	normalizePathKey,
@@ -37,7 +37,7 @@ const CORRUPT_MARK = Symbol("marks.corrupt");
 
 /** Read + JSON.parse every per-id `*.json` under `marks/` (skip aggregate + corrupt). */
 export async function listMarkRaw(paperAbsPath: string): Promise<unknown[]> {
-	if (!paperAbsPath || !isTauri()) return [];
+	if (!paperAbsPath || !hasHostTransport()) return [];
 	const dir = marksDir(paperAbsPath);
 	let names: string[] = [];
 	try {
@@ -70,7 +70,7 @@ export async function readMarkRaw(
 	paperAbsPath: string,
 	id: string,
 ): Promise<unknown | null> {
-	if (!paperAbsPath || !id || !isTauri()) return null;
+	if (!paperAbsPath || !id || !hasHostTransport()) return null;
 	try {
 		const raw = await readVaultFile(markPath(paperAbsPath, id));
 		return JSON.parse(raw) as unknown;
@@ -118,7 +118,7 @@ export async function deleteMarkFile(
 	paperAbsPath: string,
 	id: string,
 ): Promise<void> {
-	if (!isTauri() || !paperAbsPath || !id) return;
+	if (!hasHostTransport() || !paperAbsPath || !id) return;
 	markSelfWrite(markPath(paperAbsPath, id));
 	try {
 		await removeVaultPath(markPath(paperAbsPath, id));

@@ -60,7 +60,7 @@ import {
 import { runSelectionQuickChat } from "@/lib/agent/selection-quick-chat";
 import { pinActiveSelection } from "@/lib/agent/selection-store";
 import { closeTopOverlay } from "@/lib/core/overlay-stack";
-import { isMacOS, isTauri } from "@/lib/core/tauri";
+import { hasHostTransport, isMacOS, isTauri } from "@/lib/core/tauri";
 import { doctorSetDirtyPaths } from "@/lib/doctor/api";
 import { openMagicWand } from "@/lib/paper/import-actions";
 import { scheduleLibraryRefresh } from "@/lib/paper/library-store";
@@ -177,7 +177,7 @@ function WelcomeCenter() {
 	const { t } = useTranslation(["app"]);
 	const busy = useVaultStore((s) => s.busy);
 	const recentVaults = useVaultStore((s) => s.recentVaults);
-	if (!isTauri()) {
+	if (!hasHostTransport()) {
 		return (
 			<div className="agentero-scroll flex min-h-0 flex-1 select-none flex-col items-center justify-center gap-4 bg-muted/30 p-6 text-center">
 				<FolderOpen className="size-10 text-muted-foreground" />
@@ -241,7 +241,7 @@ export default function App() {
 	// Seed the chrome agent icon with the registry default before the Agent panel
 	// is ever opened. If the panel mounts first, it wins via agentChromeStore.
 	useEffect(() => {
-		if (!isTauri()) return;
+		if (!hasHostTransport()) return;
 		if (getAgentChromeState().agentId) return;
 		void listAgents().then((res) => {
 			if (!res.defaultId) return;
@@ -259,7 +259,7 @@ export default function App() {
 	// The Settings window is a separate WebView. Mirror unsaved Markdown paths
 	// into Host state so Doctor can reject a batch before touching any file.
 	useEffect(() => {
-		if (!isTauri()) return;
+		if (!hasHostTransport()) return;
 		let lastPayload = "";
 		const sync = () => {
 			const root = vaultStore.getState().vaultPath;
@@ -283,7 +283,7 @@ export default function App() {
 
 	// Settings Doctor → main: open Agent rail with a prefilled composer prompt.
 	useEffect(() => {
-		if (!isTauri()) return;
+		if (!hasHostTransport()) return;
 		let cancelled = false;
 		let unlisten: (() => void) | undefined;
 		void listenOpenAgentWithPrompt((payload) => {

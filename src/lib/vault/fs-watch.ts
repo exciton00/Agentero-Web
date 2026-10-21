@@ -1,6 +1,6 @@
 import { commands, type VaultFileChangedEvent } from "@/lib/core/bindings";
 import { callResult } from "@/lib/core/ipc";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import { isRemoteVaultHandle } from "@/lib/vault/remote/remote-vault";
 
 /**
@@ -11,7 +11,7 @@ export type VaultFileChangedPayload = VaultFileChangedEvent;
 
 /** Start (or restart) watching the given Vault directory for this window. */
 export async function startVaultWatch(vaultPath: string): Promise<void> {
-	if (!isTauri() || !vaultPath) return;
+	if (!hasHostTransport() || !vaultPath) return;
 	// Remote vaults (`remote:<sessionId>`) have no local notify path.
 	if (isRemoteVaultHandle(vaultPath)) return;
 	await callResult(() => commands.fsWatchStart(vaultPath));
@@ -19,6 +19,6 @@ export async function startVaultWatch(vaultPath: string): Promise<void> {
 
 /** Stop watching the Vault for this window. */
 export async function stopVaultWatch(): Promise<void> {
-	if (!isTauri()) return;
+	if (!hasHostTransport()) return;
 	await callResult(() => commands.fsWatchStop());
 }

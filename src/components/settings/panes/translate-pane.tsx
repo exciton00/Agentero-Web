@@ -36,7 +36,7 @@ import {
 } from "@/components/ui/tooltip";
 import { BUILTIN_PROVIDER_ID } from "@/lib/core/builtin";
 import { openExternalUrl } from "@/lib/core/open-external";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import type {
 	AppSettings,
 	CommercialTranslateProviderId,
@@ -204,7 +204,7 @@ export function TranslatePane({
 
 	/** Parallel free-MT probe when the default-service Select opens. */
 	const runFreeMtProbe = useCallback(() => {
-		if (!isTauri() || probingRef.current) return;
+		if (!hasHostTransport() || probingRef.current) return;
 		probingRef.current = true;
 		probeAbortRef.current?.abort();
 		const ac = new AbortController();
@@ -347,7 +347,7 @@ export function TranslatePane({
 
 	/** Probe configured commercial engines when the default-service Select opens. */
 	const runConfiguredCommercialProbes = useCallback(() => {
-		if (!isTauri()) return;
+		if (!hasHostTransport()) return;
 		for (const id of COMMERCIAL_MT_PROVIDER_IDS) {
 			if (isCommercialProviderConfigured(id, getProviderConfig(id))) {
 				runCommercialProbe(id);
@@ -832,7 +832,8 @@ export function TranslatePane({
 			{showAgent && (
 				<>
 					<SettingsGroup>
-						{agentModelCatalog.availableAgents.length === 0 && isTauri() ? (
+						{agentModelCatalog.availableAgents.length === 0 &&
+						hasHostTransport() ? (
 							<div className="flex flex-col gap-2 px-3.5 py-2.5">
 								<p className="text-muted-foreground text-xs leading-relaxed">
 									{t("translate.agentId.empty")}
@@ -849,7 +850,7 @@ export function TranslatePane({
 									</Button>
 								)}
 							</div>
-						) : !isTauri() ? (
+						) : !hasHostTransport() ? (
 							<div className="px-3.5 py-2.5 text-muted-foreground text-xs">
 								{t("agent.desktopOnly")}
 							</div>

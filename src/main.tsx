@@ -23,7 +23,7 @@ import { applyNativeWindowTheme } from "@/lib/shell/native-window-theme";
 import { initShellLayoutFromPrefs } from "@/lib/shell/ui-store";
 import { applyUiTheme } from "@/lib/ui/theme";
 import { checkForUpdate, installAvailableUpdate } from "@/lib/update";
-import { initVaultStore } from "@/lib/vault/store";
+import { getVaultPath, initVaultStore, setVaultPath } from "@/lib/vault/store";
 import { initWorkspaceStore } from "@/lib/workspace/store";
 import i18n, { applyLocale } from "./i18n";
 import "./index.css";
@@ -43,7 +43,29 @@ function bootStage(name: string) {
 	logger.info(`boot stage=${name} ms=${bootElapsed()}`);
 }
 
+/**
+ * Web host: open the server's default Vault on boot.
+ *
+ * `initVaultStore` only restores a local path inside the desktop shell; a web
+ * deployment has no OS directory picker, so the Vault reported by
+ * `GET /api/config` is applied here before the first render. Desktop builds
+ * pass `null` and keep their existing restore logic untouched.
+ */
+function applyWebBootVault(vaultRoot: string | null): void {
+	if (!vaultRoot || getVaultPath()) return;
+	setVaultPath(vaultRoot);
+}
+
 async function boot() {
+	// Headless web host (`vite --mode web`): install the HTTP/WS transport shim
+	// before anything can probe the Tauri globals or subscribe to Host events,
+	// and resolve the server's default Vault so the app opens it like a desktop
+	// relaunch. Both are no-ops outside the web build.
+	let webVaultRoot: string | null = null;
+	if (import.meta.env.MODE === "web") {
+		const web = await import("./web-transport");
+		webVaultRoot = await web.bootstrapWebVault();
+	}
 	void initLogger();
 	logger.info("op start frontend_boot");
 	bootStage("entry");
@@ -128,6 +150,7 @@ async function boot() {
 		);
 		bootStage("feature-window-module");
 		initVaultStore();
+		applyWebBootVault(webVaultRoot);
 		initWorkspaceStore();
 		ReactDOM.createRoot(root).render(
 			<React.StrictMode>
@@ -159,6 +182,7 @@ async function boot() {
 			]);
 		bootStage("doc-window-module");
 		initVaultStore();
+		applyWebBootVault(webVaultRoot);
 		initWorkspaceStore();
 		ReactDOM.createRoot(root).render(
 			<PdfEngineHost>
@@ -203,6 +227,7 @@ async function boot() {
 		]);
 	bootStage("app-module");
 	initVaultStore();
+	applyWebBootVault(webVaultRoot);
 	initWorkspaceStore();
 	if (!isMobileApp()) initShellLayoutFromPrefs();
 	ReactDOM.createRoot(root).render(

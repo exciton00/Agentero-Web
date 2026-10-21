@@ -41,7 +41,7 @@ import {
 } from "@/lib/agent/chat-state";
 import { removeVisualDraft } from "@/lib/agent/visual-context-store";
 import { notifyError } from "@/lib/core/notify";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import { toSafeDisposer } from "@/lib/core/tauri-events";
 import { listenAgentSessionHandoff } from "@/lib/shell/workspace-broadcast";
 
@@ -528,7 +528,7 @@ export function useAgentPanel({
 
 	const selectAgent = async (opt: AgentOption) => {
 		if (
-			!isTauri() ||
+			!hasHostTransport() ||
 			switchingRef.current ||
 			hasRunningSessions ||
 			submittingRef.current

@@ -1,5 +1,5 @@
 import type { EventCallback, UnlistenFn } from "@tauri-apps/api/event";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 
 export type TauriEventHandler<T> = (payload: T) => void;
 
@@ -30,18 +30,22 @@ export function toSafeDisposer(pending: Promise<() => void>): () => void {
 	};
 }
 
-/** Subscribe to a typed specta event binding. No-op outside the Tauri shell. */
+/**
+ * Subscribe to a typed specta event binding. No-op without a Host transport
+ * (plain browser); both the desktop IPC and the web-host WebSocket implement
+ * the same typed event bindings.
+ */
 export function listenEventSafe<T>(
 	event: TypedEventBinding<T>,
 	handler: TauriEventHandler<T>,
 ): () => void {
-	if (!isTauri()) return () => undefined;
+	if (!hasHostTransport()) return () => undefined;
 	return toSafeDisposer(event.listen((e) => handler(e.payload)));
 }
 
-/** Emit a global Tauri wire event. No-op outside the Tauri shell; failures are non-fatal. */
+/** Emit a global Host wire event. No-op without a Host transport; failures are non-fatal. */
 export function broadcastSafe(event: string, payload?: unknown): void {
-	if (!isTauri()) return;
+	if (!hasHostTransport()) return;
 	void (async () => {
 		try {
 			const { emit } = await import("@tauri-apps/api/event");

@@ -13,7 +13,7 @@ import {
 	type SkillImportResult,
 } from "@/lib/core/bindings";
 import { callApi, callApiResult } from "@/lib/core/ipc";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import { type AppSettings, DEFAULT_TRANSLATOR_BASE_URL } from "@/lib/settings";
 
 export type LookupAddResult = {
@@ -152,7 +152,7 @@ export async function addPapersByIdentifiers(opts: {
 	translatorBaseUrl?: string;
 	progressTaskId?: string;
 }): Promise<LookupBatchAddResult> {
-	if (!isTauri()) {
+	if (!hasHostTransport()) {
 		throw new Error(i18n.t("sidebar:lookup.desktopOnly"));
 	}
 
@@ -196,7 +196,7 @@ export async function installDiscoveredSkills(opts: {
 	discoveryId: string;
 	selectedNames: string[];
 }): Promise<SkillImportResult[]> {
-	if (!isTauri()) {
+	if (!hasHostTransport()) {
 		throw new Error(i18n.t("sidebar:lookup.desktopOnly"));
 	}
 	return callApi(
@@ -213,7 +213,7 @@ export async function installDiscoveredSkills(opts: {
 export async function discardSkillDiscovery(
 	discoveryId: string,
 ): Promise<void> {
-	if (!isTauri()) return;
+	if (!hasHostTransport()) return;
 	await callApi(() => commands.skillDiscard(discoveryId), {
 		fallback: i18n.t("sidebar:lookup.fetchFailed"),
 	});
@@ -265,7 +265,7 @@ export async function importLocalPdfs(opts: {
 	/** Background task receiving the host parse phase. */
 	progressTaskId?: string;
 }): Promise<LocalPdfImportResult | null> {
-	if (!isTauri()) {
+	if (!hasHostTransport()) {
 		throw new Error(i18n.t("sidebar:lookup.desktopOnly"));
 	}
 	let entries = (opts.entries ?? [])

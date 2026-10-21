@@ -29,7 +29,7 @@ import {
 	TooltipContent,
 	TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import type {
 	AgentPermissionMode,
 	AiResponseLanguage,
@@ -78,13 +78,13 @@ export function NetworkProxyRow({
 					placeholder={placeholder}
 					spellCheck={false}
 					autoComplete="off"
-					disabled={!proxyEnabled || !isTauri()}
+					disabled={!proxyEnabled || !hasHostTransport()}
 					className="h-8 w-48 text-xs"
 				/>
 				<Switch
 					id={htmlFor}
 					checked={proxyEnabled}
-					disabled={!isTauri()}
+					disabled={!hasHostTransport()}
 					onCheckedChange={(v) => onToggleProxy(v)}
 				/>
 			</div>
@@ -115,7 +115,7 @@ export function GitHubMirrorRow({
 			<div className="flex items-center gap-2">
 				<Select
 					value={value}
-					disabled={!enabled || !isTauri()}
+					disabled={!enabled || !hasHostTransport()}
 					onValueChange={(v) => onValueChange(v)}
 				>
 					<SelectTrigger id={htmlFor} size="sm" className="h-8 w-48 text-xs">
@@ -132,7 +132,7 @@ export function GitHubMirrorRow({
 				<Switch
 					aria-label={label}
 					checked={enabled}
-					disabled={!isTauri()}
+					disabled={!hasHostTransport()}
 					onCheckedChange={(v) => onToggle(v)}
 				/>
 			</div>
@@ -230,7 +230,7 @@ export function InstitutionProxyRow({
 							placeholder={prefixPlaceholder}
 							spellCheck={false}
 							autoComplete="off"
-							disabled={!isTauri()}
+							disabled={!hasHostTransport()}
 							className="font-mono text-xs"
 						/>
 						<InputGroupAddon align="inline-end">
@@ -238,7 +238,7 @@ export function InstitutionProxyRow({
 								<DropdownMenuTrigger asChild>
 									<InputGroupButton
 										size="icon-xs"
-										disabled={!isTauri()}
+										disabled={!hasHostTransport()}
 										title={presetsLabel}
 										aria-label={presetsLabel}
 									>
@@ -272,7 +272,7 @@ export function InstitutionProxyRow({
 						type="button"
 						variant="outline"
 						size="xs"
-						disabled={!isTauri() || testing || !prefix.trim()}
+						disabled={!hasHostTransport() || testing || !prefix.trim()}
 						onClick={onTest}
 					>
 						{testing ? testingLabel : testLabel}
@@ -295,7 +295,7 @@ export function InstitutionProxyRow({
 						spellCheck={false}
 						autoComplete="off"
 						type="password"
-						disabled={!isTauri()}
+						disabled={!hasHostTransport()}
 						className="h-8 w-64 max-w-[18rem] font-mono text-xs"
 					/>
 				</div>

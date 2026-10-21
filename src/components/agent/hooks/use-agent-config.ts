@@ -49,7 +49,7 @@ import {
 	mergeModelChoices,
 } from "@/lib/agent/chat-state";
 import type { AcpCommand } from "@/lib/agent/slash-commands";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import { lifecycle } from "@/lib/lifecycle";
 
 /**
@@ -278,7 +278,7 @@ export function useAgentConfig({
 	);
 
 	const refresh = useCallback(async () => {
-		if (!isTauri()) return;
+		if (!hasHostTransport()) return;
 		try {
 			// Scan first: scanCatalog now auto-registers catalog agents that are
 			// on PATH but not yet persisted, so listAgents() returns them without
@@ -419,7 +419,7 @@ export function useAgentConfig({
 
 	// When Chat opens (or agent/vault changes), warm ACP in the background for models/context.
 	useEffect(() => {
-		if (!isTauri() || !selectedAgentId || !agentListenersReady) return;
+		if (!hasHostTransport() || !selectedAgentId || !agentListenersReady) return;
 		// Supersede any in-flight warm immediately (its results are dropped)…
 		const gen = ++warmGenRef.current;
 		let cancelled = false;
@@ -518,7 +518,7 @@ export function useAgentConfig({
 		setModelId(next);
 		if (!selectedAgentId) return;
 		saveModelPref(selectedAgentId, next);
-		if (!isTauri() || !agentListenersReady) return;
+		if (!hasHostTransport() || !agentListenersReady) return;
 
 		const agentId = selectedAgentId;
 		const requestVaultPath = vaultPath;

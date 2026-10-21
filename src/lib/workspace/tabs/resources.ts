@@ -5,7 +5,7 @@ import { scheduleIdle } from "@/lib/core/idle";
 import { callApiResult } from "@/lib/core/ipc";
 import { toVaultRelative } from "@/lib/core/path";
 import { enqueueTaskSettled } from "@/lib/core/tasks";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import {
 	canAttemptPdfDownload,
 	detectPaperDirectory,
@@ -68,7 +68,7 @@ function reconcilePaperOnOpen(
 	paperDir: string,
 	vaultPath: string | null,
 ): void {
-	if (!isTauri() || !vaultPath) return;
+	if (!hasHostTransport() || !vaultPath) return;
 	const rel = toVaultRelative(vaultPath, paperDir)
 		.replace(/\\/g, "/")
 		.replace(/^\/+|\/+$/g, "");
@@ -103,7 +103,11 @@ async function resolvePaperPdfSource(
 		return { pdfUrl: remotePdf, pdfBytes: null, didDownload: false };
 	}
 
-	if (!isTauri() || !vaultPath || !canAttemptPdfDownload(meta, remotePdf)) {
+	if (
+		!hasHostTransport() ||
+		!vaultPath ||
+		!canAttemptPdfDownload(meta, remotePdf)
+	) {
 		return { pdfUrl: remotePdf, pdfBytes: null, didDownload: false };
 	}
 
@@ -327,7 +331,7 @@ export async function loadTabResources(
 			!open.paperBytes &&
 			!open.htmlUrl &&
 			(!open.bundle || !open.meta) &&
-			isTauri() &&
+			hasHostTransport() &&
 			vaultPath
 		) {
 			await new Promise((resolve) => setTimeout(resolve, 1200));

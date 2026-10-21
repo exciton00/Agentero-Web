@@ -9,6 +9,8 @@
 		"build": "tsc && vite build",
 		"clean": "node scripts/clean-build-artifacts.mjs",
 		"preview": "vite preview",
+		"dev:web": "vite --mode web",
+		"build:web": "vite build --mode web",
 		"test": "vitest run",
 		"typecheck": "tsc --noEmit",
 		"ios:release:check": "node scripts/ios-release-check.mjs",

@@ -3,7 +3,7 @@ import type { SettingsSection } from "@/components/settings/types";
 import { TrafficLightSpacer } from "@/components/shell/traffic-light-spacer";
 import { applyLocale } from "@/i18n";
 import { commands } from "@/lib/core/bindings";
-import { isMacOS, isTauri } from "@/lib/core/tauri";
+import { hasHostTransport, isMacOS } from "@/lib/core/tauri";
 import {
 	applyDocumentChrome,
 	ensureSettingsLoaded,
@@ -61,7 +61,7 @@ export function SettingsNativeRoot() {
 	// Appearance → Language switches the settings UI immediately (Fix #437).
 	useEffect(() => {
 		const resolved = applyLocale(settings.locale);
-		if (!isTauri()) return;
+		if (!hasHostTransport()) return;
 		void (async () => {
 			try {
 				await commands.setLocale(resolved);

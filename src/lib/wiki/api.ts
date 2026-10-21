@@ -7,7 +7,7 @@ import {
 } from "@/lib/core/bindings";
 import { callApiResult } from "@/lib/core/ipc";
 import { normalizeRelPath, toVaultRelative } from "@/lib/core/path";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 
 export { normalizeRelPath as normalizeVaultRel, toVaultRelative };
 
@@ -988,7 +988,7 @@ export async function getBacklinks(
 	if (!path) {
 		return { path: "", backlinks: [] };
 	}
-	if (!vaultPath || !isTauri()) {
+	if (!vaultPath || !hasHostTransport()) {
 		return { path: toVaultRelative(vaultPath, path), backlinks: [] };
 	}
 	const response = await callApiResult(
@@ -1004,7 +1004,7 @@ export async function resolveWikiReference(
 	linkText: string,
 	syntax: InternalLinkSyntax = "wikilink",
 ): Promise<ResolvedLink | null> {
-	if (!vaultPath || !isTauri()) return null;
+	if (!vaultPath || !hasHostTransport()) return null;
 	const response = await callApiResult(
 		() => commands.wikiResolve(vaultPath, sourcePath, linkText, syntax),
 		WIKI_CALL_OPTS,
@@ -1038,7 +1038,7 @@ export async function searchWikiLinks(
 		kind?: WikiSearchScopeKind | null;
 	},
 ): Promise<WikiSearchCandidate[]> {
-	if (!vaultPath || !isTauri()) return [];
+	if (!vaultPath || !hasHostTransport()) return [];
 	const results = await callApiResult(
 		() =>
 			commands.wikiSearch(

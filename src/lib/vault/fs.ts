@@ -1,6 +1,6 @@
 import { readFile, readTextFile } from "@tauri-apps/plugin-fs";
 import i18n from "@/i18n";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import {
 	parseRemoteJoinedPath,
 	remoteCacheFile,
@@ -26,7 +26,7 @@ export function isTextOpenable(path: string): boolean {
 }
 
 export async function readVaultFile(path: string): Promise<string> {
-	if (!isTauri()) {
+	if (!hasHostTransport()) {
 		throw new Error(i18n.t("app:vault.readDesktopOnly"));
 	}
 
@@ -48,7 +48,7 @@ export async function readVaultFile(path: string): Promise<string> {
  * ownership themselves (see `localFileToArrayBuffer`).
  */
 export async function readVaultBytes(path: string): Promise<Uint8Array> {
-	if (!isTauri()) {
+	if (!hasHostTransport()) {
 		throw new Error(i18n.t("app:vault.readDesktopOnly"));
 	}
 
@@ -69,7 +69,7 @@ export async function writeVaultFile(
 	path: string,
 	content: string,
 ): Promise<void> {
-	if (!isTauri()) {
+	if (!hasHostTransport()) {
 		throw new Error(i18n.t("app:vault.writeDesktopOnly"));
 	}
 
@@ -97,7 +97,7 @@ export async function writeVaultBytes(
 	path: string,
 	bytes: Uint8Array,
 ): Promise<void> {
-	if (!isTauri()) {
+	if (!hasHostTransport()) {
 		throw new Error(i18n.t("app:vault.writeDesktopOnly"));
 	}
 
@@ -145,7 +145,7 @@ export function splitVaultRel(
  * fail (or throw), blocking create on remote vaults (issue #152).
  */
 export async function vaultPathExists(path: string): Promise<boolean> {
-	if (!isTauri()) {
+	if (!hasHostTransport()) {
 		throw new Error(i18n.t("app:vault.readDesktopOnly"));
 	}
 
@@ -169,7 +169,7 @@ export async function vaultPathExists(path: string): Promise<boolean> {
 
 /** Create a directory (and parents) under the vault. */
 export async function createVaultDirectory(path: string): Promise<void> {
-	if (!isTauri()) {
+	if (!hasHostTransport()) {
 		throw new Error(i18n.t("app:vault.writeDesktopOnly"));
 	}
 
@@ -190,7 +190,7 @@ export async function createVaultDirectory(path: string): Promise<void> {
  * Remote vaults use SFTP remove (no recycle bin in MVP).
  */
 export async function removeVaultPath(path: string): Promise<void> {
-	if (!isTauri()) {
+	if (!hasHostTransport()) {
 		throw new Error(i18n.t("app:vault.writeDesktopOnly"));
 	}
 	const trimmed = path.trim();

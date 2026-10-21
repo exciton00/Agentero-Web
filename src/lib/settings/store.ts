@@ -6,7 +6,7 @@ import {
 	events,
 } from "@/lib/core/bindings";
 import { callApi } from "@/lib/core/ipc";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import {
 	isPaperTreeLabelMode,
 	isPaperTreeSortMode,
@@ -133,7 +133,7 @@ export async function ensureSettingsLoaded(): Promise<AppSettings> {
 	if (loadPromise) return loadPromise;
 	loadPromise = (async () => {
 		try {
-			if (isTauri()) {
+			if (hasHostTransport()) {
 				const res = await callApi(() => commands.settingsGet(), {
 					fallback: "settings_get failed",
 				});
@@ -173,7 +173,7 @@ export async function ensureSettingsLoaded(): Promise<AppSettings> {
 export function saveSettings(settings: AppSettings): void {
 	const next = normalizeSettings(settings);
 	setCache(next);
-	if (!isTauri()) return;
+	if (!hasHostTransport()) return;
 	void persistToHost(next).catch((e) => {
 		console.warn("[settings] save failed", e);
 	});
@@ -224,7 +224,7 @@ let syncStarted = false;
  * settings window (or another main window) persists changes.
  */
 export function initSettingsSync(): void {
-	if (syncStarted || !isTauri()) return;
+	if (syncStarted || !hasHostTransport()) return;
 	syncStarted = true;
 	void (async () => {
 		try {
@@ -243,7 +243,7 @@ export async function saveSettingsAsync(
 ): Promise<AppSettings> {
 	const next = normalizeSettings(settings);
 	setCache(next);
-	if (!isTauri()) return loadSettings();
+	if (!hasHostTransport()) return loadSettings();
 	return persistToHost(next);
 }
 

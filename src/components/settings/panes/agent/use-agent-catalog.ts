@@ -18,7 +18,7 @@ import {
 } from "@/lib/agent";
 import { errorText } from "@/lib/core/error";
 import { notifyError } from "@/lib/core/notify";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import {
 	remoteAgentProbe,
 	remoteAgentScan,
@@ -52,7 +52,7 @@ export function useAgentCatalog({
 	/** Scan only — does not toggle busy; callers own the loading flag. */
 	const scanOnce =
 		useCallback(async (): Promise<CatalogScanResponse | null> => {
-			if (!isTauri()) {
+			if (!hasHostTransport()) {
 				notifyError(t("agent.desktopOnly"));
 				return null;
 			}
@@ -85,7 +85,7 @@ export function useAgentCatalog({
 	 */
 	const refreshVersions =
 		useCallback(async (): Promise<CatalogScanResponse | null> => {
-			if (!isTauri() || sessionId) return null;
+			if (!hasHostTransport() || sessionId) return null;
 			try {
 				const scan = await checkCatalogUpdates();
 				setCatalog(scan);
@@ -102,7 +102,7 @@ export function useAgentCatalog({
 	 */
 	const probeInstalled = useCallback(
 		async (scan: CatalogScanResponse, force: boolean) => {
-			if (!isTauri()) return;
+			if (!hasHostTransport()) return;
 			const candidates = scan.entries.filter((e) =>
 				catalogNeedsProbe(e, force),
 			);
@@ -181,7 +181,7 @@ export function useAgentCatalog({
 	 */
 	const rescanAndProbe = useCallback(
 		async (force = false) => {
-			if (!isTauri()) {
+			if (!hasHostTransport()) {
 				notifyError(t("agent.desktopOnly"));
 				return;
 			}
@@ -227,7 +227,7 @@ export function useAgentCatalog({
 
 	const openLoginTerminal = useCallback(
 		async (templateId: string): Promise<boolean> => {
-			if (!isTauri()) {
+			if (!hasHostTransport()) {
 				notifyError(t("agent.desktopOnly"));
 				return false;
 			}

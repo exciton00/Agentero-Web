@@ -14,7 +14,7 @@ import { applyLocale } from "@/i18n";
 import { startActivityTracking } from "@/lib/activity";
 import { commands } from "@/lib/core/bindings";
 import { startTaskRuntime } from "@/lib/core/tasks";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import { initLifecycleBridge, lifecycle } from "@/lib/lifecycle";
 import { registerLifecycleHandlers } from "@/lib/lifecycle/register";
 import {
@@ -52,7 +52,7 @@ export function useAppBootstrap(): void {
 
 	useEffect(() => {
 		const resolved = applyLocale(locale);
-		if (!isTauri()) return;
+		if (!hasHostTransport()) return;
 		void (async () => {
 			try {
 				await commands.setLocale(resolved);
@@ -90,7 +90,7 @@ export function useAppBootstrap(): void {
 	// Register lifecycle handlers, then bridge Tauri wire events into the bus.
 	useEffect(() => {
 		const unregister = registerLifecycleHandlers();
-		if (!isTauri()) return unregister;
+		if (!hasHostTransport()) return unregister;
 		const dispose = initLifecycleBridge();
 		return () => {
 			dispose();
@@ -115,7 +115,7 @@ export function useAppBootstrap(): void {
 
 	// Start listening for renderer-executed JobCenter offers.
 	useEffect(() => {
-		if (!isTauri()) return;
+		if (!hasHostTransport()) return;
 		registerLayoutTaskExecutor();
 		registerImportTaskExecutor();
 		registerConnectorTaskExecutor();

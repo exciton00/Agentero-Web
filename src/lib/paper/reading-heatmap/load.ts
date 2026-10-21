@@ -1,6 +1,6 @@
 import { commands } from "@/lib/core/bindings";
 import { callApi } from "@/lib/core/ipc";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import {
 	aggregateReadingHeatmap,
 	emptyHeatmap,
@@ -30,7 +30,7 @@ async function fetchReadingActivityBatch(
 	vaultPath: string,
 	rels: string[],
 ): Promise<Record<string, ReadingActivityPoint[]>> {
-	if (!isTauri() || !rels.length) return {};
+	if (!hasHostTransport() || !rels.length) return {};
 	const { isRemoteVaultHandle } = await import(
 		"@/lib/vault/remote/remote-vault"
 	);

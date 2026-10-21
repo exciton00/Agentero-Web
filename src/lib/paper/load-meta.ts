@@ -4,7 +4,7 @@ import {
 } from "@/lib/core/bindings";
 import { callApi, callApiResult } from "@/lib/core/ipc";
 import { toVaultRelative } from "@/lib/core/path";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import { arxivUrls } from "@/lib/paper/arxiv";
 import type { PaperMetadata } from "@/lib/paper/types";
 import { paperFromWire } from "@/lib/paper/wire";
@@ -52,7 +52,7 @@ export async function loadPaperOpenBundle(
 	vaultRoot?: string | null,
 ): Promise<PaperOpenBundle | null> {
 	const path = paperCatalogPath(paperDir, vaultRoot);
-	if (!isTauri() || !vaultRoot || !path) return null;
+	if (!hasHostTransport() || !vaultRoot || !path) return null;
 	try {
 		const { isRemoteVaultHandle } = await import(
 			"@/lib/vault/remote/remote-vault"
@@ -91,7 +91,7 @@ export async function loadPaperMetadata(
 	vaultRoot?: string | null,
 ): Promise<PaperMetadata | null> {
 	const path = paperCatalogPath(paperDir, vaultRoot);
-	if (!isTauri() || !vaultRoot || !path) return null;
+	if (!hasHostTransport() || !vaultRoot || !path) return null;
 
 	// Primary: SQLite catalog (local vault path or remote work mirror)
 	try {

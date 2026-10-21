@@ -8,7 +8,7 @@
 import { createStore } from "zustand/vanilla";
 import { errorText } from "@/lib/core/error";
 import { notifyError } from "@/lib/core/notify";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import { collectPaperFoldersFromTree } from "@/lib/paper";
 import {
 	collectDirectoryRelPaths,
@@ -139,7 +139,7 @@ let initialized = false;
 export function initVaultStore(): void {
 	if (initialized) return;
 	initialized = true;
-	const vaultPath = isTauri()
+	const vaultPath = hasHostTransport()
 		? getSavedVaultPath({ allowRestore: true })
 		: null;
 	vaultStore.setState({

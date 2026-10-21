@@ -10,7 +10,7 @@ import { errorText } from "@/lib/core/error";
 import { callApi, callApiResult } from "@/lib/core/ipc";
 import { logger } from "@/lib/core/logger";
 import { notifySuccess } from "@/lib/core/notify";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import { lifecycle } from "@/lib/lifecycle";
 import {
 	clearLibraryVaultState,
@@ -71,7 +71,7 @@ export function registerLifecycleHandlers(): () => void {
 			void refreshTree(vaultId);
 			void refreshLibrary();
 			seedVaultSkills(vaultId);
-			if (isTauri() && !isRemoteVaultHandle(vaultId)) {
+			if (hasHostTransport() && !isRemoteVaultHandle(vaultId)) {
 				// Register this window as a holder of the vault: the Host runs its
 				// vault-global release sequence (cancel in-flight jobs / clear caps
 				// cache / evict catalog) only when the last window lets go. Fire &
@@ -83,7 +83,7 @@ export function registerLifecycleHandlers(): () => void {
 					logger.warn("vault hold failed", { error: errorText(e) });
 				});
 			}
-			if (isTauri()) {
+			if (hasHostTransport()) {
 				// T2 reconcile: backfill PAPER.md for catalog papers missing it. Fire
 				// & forget; jobs are idempotent and throttled (ParseBody cap = 1).
 				void callApiResult(
@@ -91,7 +91,7 @@ export function registerLifecycleHandlers(): () => void {
 					{ fallback: "vault reconcile failed" },
 				).catch(() => undefined);
 			}
-			if (isTauri() && !isRemoteVaultHandle(vaultId)) {
+			if (hasHostTransport() && !isRemoteVaultHandle(vaultId)) {
 				// Auto-ingest: adopt bare papers/ folders created while the app
 				// was closed; the FS watcher only covers the live session.
 				void callApiResult(
@@ -99,7 +99,7 @@ export function registerLifecycleHandlers(): () => void {
 					{ fallback: "paper ingest reconcile failed" },
 				).catch(() => undefined);
 			}
-			if (isTauri() && !isRemoteVaultHandle(vaultId)) {
+			if (hasHostTransport() && !isRemoteVaultHandle(vaultId)) {
 				// Warm today's arXiv ranking so the Plaza panel opens instantly. The
 				// Host returns its stored same-day run untouched and exits early when
 				// no embedding endpoint is configured, so this is usually free.
@@ -116,7 +116,7 @@ export function registerLifecycleHandlers(): () => void {
 				clearAnnotationsVaultState();
 				clearLayoutVaultState();
 				clearUiVaultState();
-				if (isTauri() && !isRemoteVaultHandle(vaultId)) {
+				if (hasHostTransport() && !isRemoteVaultHandle(vaultId)) {
 					void callApi(() => commands.vaultRelease(vaultId), {
 						fallback: "vault release failed",
 					}).catch(() => undefined);

@@ -21,7 +21,7 @@ import {
 import { errorText } from "@/lib/core/error";
 import { notifyError } from "@/lib/core/notify";
 import { runLocalActivity } from "@/lib/core/tasks";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import {
 	enqueuePaperLayoutAnalysis,
 	getLayoutDocumentResult,
@@ -433,7 +433,7 @@ export function usePdfLayoutRun({
 			}
 		};
 
-		if (paperAbsPath && isTauri()) {
+		if (paperAbsPath && hasHostTransport()) {
 			unlisten = listenVaultFileChangedGated((payload) => {
 				if (cancelled || !eventHitsSidecar(payload)) return;
 				void pullSidecar();

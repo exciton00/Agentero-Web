@@ -5,7 +5,7 @@
  */
 
 import { createStore } from "zustand/vanilla";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import type { PaperLibraryRow, PaperMetadata } from "@/lib/paper";
 import { listPapers, rescanPapers, setPaperTags } from "@/lib/paper/api";
 import type { LocalPdfImportEntry } from "@/lib/paper/lookup";
@@ -150,7 +150,7 @@ export function bumpTrashReloadSignal(): void {
 
 export async function refreshLibrary(): Promise<void> {
 	const vaultPath = getVaultPath();
-	if (!vaultPath || !isTauri()) {
+	if (!vaultPath || !hasHostTransport()) {
 		setLibraryPapers([]);
 		return;
 	}
@@ -187,7 +187,7 @@ let libraryRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 export async function runLibraryRefresh(): Promise<void> {
 	libraryRefreshTimer = null;
 	const vaultPath = getVaultPath();
-	if (!vaultPath || !isTauri()) {
+	if (!vaultPath || !hasHostTransport()) {
 		setLibraryPapers([]);
 		return;
 	}
