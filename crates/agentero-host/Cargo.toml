@@ -1,0 +1,61 @@
+[package]
+name = "agentero-host"
+version = "0.12.0"
+edition = "2021"
+description = "Tauri-free BYOA/ACP agent host for Agentero (desktop + headless web)"
+authors = ["you"]
+license = "MIT"
+publish = false
+
+[dependencies]
+# Domain foundations shared with the desktop Host and the headless CLI.
+agentero-core = { path = "../agentero-core" }
+tokio = { workspace = true, features = [
+  "rt",
+  "rt-multi-thread",
+  "macros",
+  "sync",
+  "time",
+  "process",
+  "io-util",
+  "fs",
+  "net",
+] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+dirs = { workspace = true }
+# Host abstraction / agent process plumbing.
+async-trait = "0.1.91"
+reqwest = { version = "0.12", default-features = false, features = [
+  "blocking",
+  "json",
+  "rustls-tls",
+] }
+which = "7"
+# ACP wire protocol + spawn/stdio transport (same version as the desktop Host).
+agent-client-protocol = { version = "1.3.0", features = ["unstable_elicitation"] }
+tokio-util = { version = "0.7", default-features = false }
+futures-util = "0.3.33"
+uuid = { version = "1", features = ["v4", "serde"] }
+semver = "1"
+urlencoding = "2"
+zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
+walkdir = "2.5.0"
+# DSH session history is stored as zstd-compressed JSON (same as desktop).
+zstd = { version = "0.13.3", default-features = false }
+specta = { version = "2.0.0-rc.25", features = ["derive"] }
+# `MockHost` owns a temp config dir in its public API.
+tempfile = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+base64 = "0.22"
+tokio = { workspace = true, features = [
+  "macros",
+  "rt-multi-thread",
+  "time",
+  "process",
+  "io-util",
+  "test-util",
+] }
