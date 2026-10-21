@@ -53,12 +53,30 @@ export type SyncBackendConfig = {
 	scope: SyncScope;
 };
 
+/** Durable summary of the last successful sync pass (web host extends the
+ * desktop wire shape with it; the desktop reports it live through events). */
+export type SyncLastOutcome = {
+	version: number;
+	uploaded: number;
+	downloaded: number;
+	deletedLocal: number;
+	removedRemote: number;
+	conflictCopies: string[];
+	finishedAt: string;
+};
+
 export type SyncStatus = {
 	configured: boolean;
 	config?: SyncBackendConfig;
 	running: boolean;
 	lastSyncAt?: string;
 	lastVersion: number;
+	/** Persisted last successful pass (only the web host returns it). */
+	lastOutcome?: SyncLastOutcome | null;
+	/** Persisted last failure message, cleared by the next success. */
+	lastError?: string | null;
+	/** Next scheduled automatic pass (only the web host returns it). */
+	autoSyncNextRunAt?: string | null;
 };
 
 export type SyncOutcome = {
@@ -130,12 +148,22 @@ export type SyncScopeSizes = {
 /** Fold the generated wire status into the local all-fields-present shape. */
 function statusFromWire(status: SyncStatus_Serialize): SyncStatus {
 	const config = status.config;
+	// The headless host adds persisted result/scheduler fields on top of the
+	// shared wire shape; keep them instead of dropping them in this mapping.
+	const extended = status as SyncStatus_Serialize & {
+		lastOutcome?: SyncLastOutcome | null;
+		lastError?: string | null;
+		autoSyncNextRunAt?: string | null;
+	};
 	return {
 		configured: status.configured,
 		config: config ? configFromWire(config) : undefined,
 		running: status.running,
 		lastSyncAt: status.lastSyncAt ?? undefined,
 		lastVersion: status.lastVersion,
+		lastOutcome: extended.lastOutcome ?? undefined,
+		lastError: extended.lastError ?? undefined,
+		autoSyncNextRunAt: extended.autoSyncNextRunAt ?? undefined,
 	};
 }
 
