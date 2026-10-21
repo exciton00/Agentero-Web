@@ -96,7 +96,8 @@ pub async fn ws_handler(
 }
 
 async fn client_loop(state: Arc<AppState>, socket: WebSocket, label: String) {
-    log::debug!("ws connected label={label}");
+    let connections = state.connection_open(&label);
+    log::debug!("ws connected label={label} connections={connections}");
     let mut rx = state.events.subscribe();
     let (mut sender, mut receiver) = socket.split();
 
@@ -117,9 +118,16 @@ async fn client_loop(state: Arc<AppState>, socket: WebSocket, label: String) {
             frame = rx.recv() => {
                 match frame {
                     Ok(frame) => {
-                        // Targeted frames are filtered client-side by label in
-                        // v1 (single user); the field still travels so the
-                        // client can ignore foreign tabs.
+                        // Directed events (`emit_to(window_label)`) only reach
+                        // the tab that owns the label; broadcast frames have
+                        // no target and go everywhere.
+                        if frame
+                            .target
+                            .as_deref()
+                            .is_some_and(|target| target != label)
+                        {
+                            continue;
+                        }
                         match serde_json::to_string(&frame) {
                             Ok(text) => {
                                 if sender.send(Message::Text(text.into())).await.is_err() {
@@ -152,7 +160,21 @@ async fn client_loop(state: Arc<AppState>, socket: WebSocket, label: String) {
             }
         }
     }
-    log::debug!("ws disconnected label={label}");
+    let remaining = state.connection_close(&label);
+    log::debug!("ws disconnected label={label} connections={remaining}");
+    if remaining == 0 {
+        // A transient drop must not kill file watching: only stop after the
+        // tab has stayed away for a minute (a reconnect re-registers the label).
+        let sweep_state = state.clone();
+        let sweep_label = label.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            if sweep_state.connection_count(&sweep_label) == 0 {
+                sweep_state.watcher.stop(&sweep_label);
+                log::debug!("ws close sweep stopped watcher label={sweep_label}");
+            }
+        });
+    }
 }
 
 /// Cross-tab emits from the browser (`workspace:*`, `agent:attach-context`, …).

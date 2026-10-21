@@ -14,9 +14,12 @@ mod handlers;
 mod rpc;
 mod state;
 mod static_files;
+mod tasks;
+mod watcher;
 
 use std::sync::Arc;
 
+use axum::extract::State;
 use axum::routing::{get, post};
 use axum::Router;
 
@@ -50,9 +53,19 @@ async fn main() {
     let api = Router::new()
         .route("/rpc/{command}", post(rpc::rpc_handler))
         .route("/events", get(events::ws_handler))
-        .route("/file", get(handlers::files::file_handler))
+        .route(
+            "/file",
+            get(handlers::files::file_handler)
+                .put(handlers::files::file_write_handler)
+                .delete(handlers::files::file_remove_handler),
+        )
+        .route("/file/meta", get(handlers::files::file_meta_handler))
+        .route("/dir", get(handlers::files::dir_list_handler))
+        .route("/mkdir", post(handlers::files::mkdir_handler))
+        .route("/rename", post(handlers::files::rename_handler))
         .route("/upload", post(handlers::files::upload_handler))
-        .route("/healthz", get(|| async { "ok" }));
+        .route("/healthz", get(|| async { "ok" }))
+        .route("/config", get(config_handler));
 
     let app = Router::new()
         .nest("/api", api)
@@ -75,6 +88,15 @@ async fn main() {
         eprintln!("agentero-web: server error: {error}");
         std::process::exit(1);
     }
+}
+
+/// Browser bootstrap facts: default Vault root, platform marker, version.
+async fn config_handler(State(state): State<Arc<AppState>>) -> axum::Json<serde_json::Value> {
+    axum::Json(serde_json::json!({
+        "platform": "web",
+        "version": env!("CARGO_PKG_VERSION"),
+        "vaultRoot": state.config.vault_root.to_string_lossy(),
+    }))
 }
 
 async fn shutdown_signal() {

@@ -8,9 +8,55 @@
 use serde_json::Value;
 
 use crate::error::HandlerResult;
+use crate::handlers::{markdown, paper, search, vault};
 use crate::rpc::RpcCtx;
 
-pub async fn dispatch(_ctx: &RpcCtx, _command: &str, _args: &Value) -> Option<HandlerResult> {
-    // M1: files / markdown / paper mutations register here.
-    None
+pub async fn dispatch(ctx: &RpcCtx, command: &str, args: &Value) -> Option<HandlerResult> {
+    let result = match command {
+        // ---- Vault file search ----
+        "vault_search" => search::vault_search(ctx, args).await,
+
+        // ---- Paper catalog mutations + detail bundles ----
+        "paper_open_bundle" => paper::open_bundle(ctx, args).await,
+        "paper_set_tags" => paper::set_tags(ctx, args).await,
+        "paper_set_is_read" => paper::set_is_read(ctx, args).await,
+        "paper_update_meta" => paper::update_meta(ctx, args).await,
+        "paper_move" => paper::move_paper(ctx, args).await,
+        "paper_repath" => paper::repath(ctx, args).await,
+        "paper_rescan" => paper::rescan(ctx, args).await,
+        "paper_set_page_counts" => paper::set_page_counts(ctx, args).await,
+        "paper_refs_list" => paper::refs_list(ctx, args).await,
+        "paper_refs_parse" => paper::refs_parse(ctx, args).await,
+        "paper_sync_publication" => paper::sync_publication(ctx, args).await,
+        "notes_template_seed" => paper::notes_template_seed(ctx, args).await,
+        "activity_record_events" => paper::activity_record_events(ctx, args).await,
+
+        // ---- Recycle bin + desktop-only path actions ----
+        "path_trash" => vault::path_trash(ctx, args).await,
+        "path_list_trash" => vault::path_list_trash(ctx, args).await,
+        "path_restore_item" => vault::path_restore_item(ctx, args).await,
+        "path_purge_item" => vault::path_purge_item(ctx, args).await,
+        "path_purge_trash" => vault::path_purge_trash(ctx, args).await,
+        "path_open_in_terminal" => vault::open_in_terminal(ctx, args).await,
+
+        // ---- Vault session holds (process-wide on the server: no-ops) ----
+        "vault_hold" => vault::hold(ctx, args).await,
+        "vault_release" => vault::release(ctx, args).await,
+
+        // ---- Markdown / wiki index reads + link-aware writes ----
+        "graph_get_backlinks" => markdown::graph_get_backlinks(ctx, args).await,
+        "graph_rebuild" => markdown::graph_rebuild(ctx, args).await,
+        "wiki_resolve" => markdown::wiki_resolve(ctx, args).await,
+        "wiki_embed_read" => markdown::wiki_embed_read(ctx, args).await,
+        "wiki_search" => markdown::wiki_search(ctx, args).await,
+        "wiki_move" => markdown::wiki_move(ctx, args).await,
+        "wiki_rename_heading" => markdown::wiki_rename_heading(ctx, args).await,
+        "wiki_external_rename_preview" => markdown::wiki_external_rename_preview(ctx, args).await,
+        "wiki_apply_external_rename_repair" => {
+            markdown::wiki_apply_external_rename_repair(ctx, args).await
+        }
+
+        _ => return None,
+    };
+    Some(result)
 }

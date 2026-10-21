@@ -1,13 +1,74 @@
-//! Runtime handler registry (jobs / tasks / watcher / sync).
+//! Runtime handler registry (watcher / jobs / sync).
 //!
-//! Owned by the runtime layer; `rpc.rs` asks it after the domain registry.
+//! Owned by the runtime layer; `rpc.rs` asks it after the domain registry and
+//! before the platform match table. Command names, argument shapes and return
+//! envelopes follow `src/lib/core/bindings.ts` exactly.
+//!
+//! `jobs` / `sync` live in their own files but are declared here (with an
+//! explicit `#[path]`) because `handlers/mod.rs` is owned by the platform
+//! layer; a future cleanup can hoist them to plain `pub mod` declarations.
 
+use serde::Deserialize;
 use serde_json::Value;
 
-use crate::error::HandlerResult;
+use crate::error::{typed_err, HandlerResult};
 use crate::rpc::RpcCtx;
 
-pub async fn dispatch(_ctx: &RpcCtx, _command: &str, _args: &Value) -> Option<HandlerResult> {
-    // jobs / sync / watcher commands register here.
-    None
+#[path = "jobs.rs"]
+pub mod jobs;
+#[path = "sync.rs"]
+pub mod sync;
+
+pub async fn dispatch(ctx: &RpcCtx, command: &str, args: &Value) -> Option<HandlerResult> {
+    match command {
+        // ---- Vault filesystem watcher (per-tab, reference counted) ----
+        "fs_watch_start" => Some(fs_watch_start(ctx, args).await),
+        "fs_watch_stop" => Some(fs_watch_stop(ctx).await),
+        // ---- Server-side task center ----
+        "job_list"
+        | "job_cancel"
+        | "job_report"
+        | "job_import_enqueue"
+        | "job_download_assets_enqueue" => jobs::dispatch(ctx, command, args).await,
+        // ---- Vault cloud sync (S3 / WebDAV / Git) ----
+        "sync_get_status" | "sync_configure" | "sync_disconnect" | "sync_now"
+        | "sync_scope_sizes" => sync::dispatch(ctx, command, args).await,
+        _ => None,
+    }
+}
+
+/// Tab label issuing this RPC: the `X-Agentero-Window` header set by the web
+/// transport shim, with the same `main` fallback the WS endpoint uses.
+fn window_label(ctx: &RpcCtx) -> String {
+    ctx.window.clone().unwrap_or_else(|| "main".to_string())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FsWatchStartArgs {
+    vault_path: String,
+}
+
+/// `fs_watch_start(vaultPath)` → `Result<null, String>` (no ApiResult wrapper).
+async fn fs_watch_start(ctx: &RpcCtx, args: &Value) -> HandlerResult {
+    let args: FsWatchStartArgs = match serde_json::from_value(args.clone()) {
+        Ok(args) => args,
+        Err(error) => return typed_err(format!("invalid_args: {error}")),
+    };
+    let label = window_label(ctx);
+    match ctx.state.watcher.start(&label, &args.vault_path) {
+        Ok(()) => {
+            log::debug!("fs_watch_start label={label} vault={}", args.vault_path);
+            Ok(Value::Null)
+        }
+        Err(error) => typed_err(error),
+    }
+}
+
+/// `fs_watch_stop()` → `Result<null, String>` (no-op when not watching).
+async fn fs_watch_stop(ctx: &RpcCtx) -> HandlerResult {
+    let label = window_label(ctx);
+    ctx.state.watcher.stop(&label);
+    log::debug!("fs_watch_stop label={label}");
+    Ok(Value::Null)
 }

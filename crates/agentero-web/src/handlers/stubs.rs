@@ -48,6 +48,9 @@ fn empty_layout_model_status() -> Value {
 
 pub async fn dispatch(_ctx: &RpcCtx, command: &str, _args: &Value) -> HandlerResult {
     match command {
+        // ---- Desktop menu locale: the browser owns its own i18n ----
+        "set_locale" => typed_ok(Value::Null),
+
         // ---- Open requests (deep link / CLI): nothing pending on a server ----
         "ui_request_take_pending" => ok(Option::<Value>::None),
 

@@ -40,3 +40,7 @@ mime_guess = "2"
 dirs = { workspace = true }
 futures-util = { version = "0.3", features = ["sink"] }
 notify-debouncer-full = "0.3"
+# Cooperative cancellation tokens for server-side jobs.
+tokio-util = { version = "0.7", default-features = false }
+# Sync scope-size walk (same walker the core sync engine uses).
+walkdir = "2"
