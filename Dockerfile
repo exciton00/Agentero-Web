@@ -35,16 +35,28 @@ COPY templates ./templates
 # Release helper scripts (PDFium staging; host-triple detection needs rustc).
 COPY scripts ./scripts
 
+# Pre-stage the runtime inputs so the cargo build never depends on flaky
+# GitHub downloads:
+#  - PDFium (liteparse's build script downloads it into ~/.cache/pdfium-rs);
+#  - tesseract/leptonica sources (tesseract-rs otherwise downloads them).
+COPY --from=frontend /usr/local/bin/node /usr/local/bin/node
+RUN node scripts/prepare-pdfium.mjs \
+    || (sleep 3 && node scripts/prepare-pdfium.mjs) \
+    || (mkdir -p src-tauri/pdfium && echo "WARN: pdfium staging failed")
+RUN mkdir -p /root/.tesseract-rs/third_party /tmp/tess \
+    && curl -fsSL --retry 3 -o /tmp/tess/leptonica.zip \
+        https://github.com/DanBloomberg/leptonica/archive/refs/tags/1.84.1.zip \
+    && curl -fsSL --retry 3 -o /tmp/tess/tesseract.zip \
+        https://github.com/tesseract-ocr/tesseract/archive/refs/tags/5.3.4.zip \
+    && unzip -q /tmp/tess/leptonica.zip -d /tmp/tess/lp \
+    && unzip -q /tmp/tess/tesseract.zip -d /tmp/tess/tc \
+    && mv /tmp/tess/lp/leptonica-1.84.1 /root/.tesseract-rs/third_party/leptonica \
+    && mv /tmp/tess/tc/tesseract-5.3.4 /root/.tesseract-rs/third_party/tesseract \
+    && rm -rf /tmp/tess
+
 # Debug symbols/PGO are not needed for the server; the release profile in the
 # workspace already strips + LTOs.
 RUN cargo build --release -p agentero-web
-# PDFium staging needs Node (the script pins the platform release).
-COPY --from=frontend /usr/local/bin/node /usr/local/bin/node
-# Download PDFium (liteparse dlopens it at runtime; `PDFIUM_LIB_PATH` points at
-# the staged directory in the runtime image). The directory must exist even if
-# the download fails so the runtime stage's COPY succeeds.
-RUN node scripts/prepare-pdfium.mjs && ls -la src-tauri/pdfium \
-    || (echo "WARN: pdfium staging failed; PDF text parsing will be unavailable" && mkdir -p src-tauri/pdfium)
 
 # --- Stage 3: runtime -------------------------------------------------------
 FROM debian:bookworm-slim AS runtime

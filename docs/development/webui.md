@@ -115,7 +115,8 @@ agentero-core（已有，tauri-free）
 - **前端**：16 个传输垫片；`isTauri()` 分诊 158 处 → `hasHostTransport()`；服务端 Vault 在 web 启动时权威生效（不再被旧 localStorage 遮蔽）。
 - **Agent**：`crates/agentero-host`（20.6K LOC，0 tauri）+ web 侧 38 条 RPC 接入完成。**真实 Agent 浏览器实测通过**：把服务器上的 `dsh --profile acp`（真实 ACP CLI）注册为 agent → 面板显示模型/模式列表 → 中文提问「用一句话总结当前打开的论文」→ 真实模型流式返回中文总结（含 Chain of Thought 折叠、论文上下文注入）。fake ACP 亦验证了 `agent:status/stream/tool/usage/completed` 定向到发起标签。
 - **导入**：`paper_import_local_pdf`（上传→识别→入库，含识别失败降级）、`paper_resolve_identifier`（arXiv/DOI）、`paper_import`（BibTeX）、`lookup_import_batch`、`paper_export`、ParseBody/ParseRefs 服务端任务（PAPER.md + agentero-cite.json 落盘）。
-- **部署**：三阶段 Docker 镜像构建成功（170MB，含 Node 22 + PDFium），`docker compose up` 实测：容器 `/vault` 数据、浏览器 library/PDF/笔记正常；健康检查用内置 Node 探活。
+- **部署**：三阶段 Docker 镜像构建成功（119MB content，含 Node 22 + PDFium + tesseract/leptonica 预置），`docker compose up` 实测：容器 `/vault` 数据、浏览器 library/PDF/笔记正常；健康检查用内置 Node 探活；**容器内 MinerU 联通并完成 9 页/182 boxes 解析（6.2s）**。
+- **设置入口**：web 构建恢复标题栏 Settings 齿轮（菜单 → Settings 打开独立设置标签页），并隐藏 Plaza/远程 Vault/Zotero 迁移等桌面专属入口；`builtin_provider_status` 在镜像中恒为不可用（BYOK-only）。
 
 ### 本轮验证（真实自建 MinerU）
 

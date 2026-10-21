@@ -48,6 +48,19 @@ fn empty_layout_model_status() -> Value {
 
 pub async fn dispatch(_ctx: &RpcCtx, command: &str, _args: &Value) -> HandlerResult {
     match command {
+        // ---- BYOK-only build: no compiled-in provider credentials ----
+        "builtin_provider_status" => ok(json!({
+            "available": false,
+            "baseUrl": "",
+            "translateModel": "",
+            "embeddingModel": "",
+            "ocrModel": "",
+        })),
+        // System font enumeration is a desktop capability; the browser uses
+        // the macOS/Windows font stack it already ships with.
+        "list_system_fonts" => ok(Vec::<String>::new()),
+        "network_system_proxy" => ok(Option::<String>::None),
+
         // ---- Desktop menu locale: the browser owns its own i18n ----
         "set_locale" => typed_ok(Value::Null),
 
