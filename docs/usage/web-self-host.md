@@ -108,11 +108,11 @@ AGENTERO_WEB_DIST=$PWD/dist \
 
 ## 按标签浏览文献
 
-服务端自动维护 `<vault>/.agentero/tag-index.json`（隐藏缓存，可随时删除重建）。侧边栏「论文库」下的「按标签展开」列出 vault 全部标签，点选一个或多个按 OR 过滤 Library；不选标签时 Library 只显示无标签文献（便于批量整理）。
+服务端自动维护 `<vault>/.agentero/tag-index.json`（隐藏缓存，可随时删除重建）。Library 表格上方固定一行标签筛选：左侧是已选标签 chips 与「清除标签筛选」，最右侧「标签筛选」下拉可搜索、多选（色点+计数）；多选按 **AND** 过滤，未选标签时显示全部论文，`#` 开头的 Host 保留标签（如 `#submitted:`）不进入筛选列表。与目录作用域叠加：选中 `papers/` 或子目录时同一行显示「当前目录: …」，列表递归过滤后再按标签 AND 过滤。
 
 ## BibTeX / BibLaTeX 网络挂载
 
-设置 → 实验功能 → 「BibTeX / BibLaTeX 文献网络挂载」：总开关打开后，按所选类型通过 `http(s)://<host>/bibtex` 或 `/biblatex` 实时提供当前 vault 的文献列表；挂载范围可用标签（OR）与目录（`papers` 或其子目录）组合过滤。序列化在服务端本地完成，不会把元数据发给第三方 translation-server。
+设置 → 实验功能 → 「BibTeX / BibLaTeX 文献网络挂载」：总开关打开后，通过 `http(s)://<host>/agentero_online.bib` 实时提供当前 vault 的文献列表（内容格式由挂载类型 bibtex/biblatex 决定）；挂载范围可用标签（OR）与目录（`papers` 或其子目录）组合过滤。序列化在服务端本地完成，不会把元数据发给第三方 translation-server。
 
 ## 云同步自动运行
 

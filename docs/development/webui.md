@@ -138,8 +138,21 @@ agentero-core（已有，tauri-free）
 | 5 | MinerU 保存后绿灯不亮 | `probeLayoutProvider` / `runProbe` 的 `isTauri()` 早退改为 `hasHostTransport()`，且 self-hosted（无 key）也探测；实测绿灯 `可用` |
 | 6 | 右键「在文件管理器中显示」 | web 下文件树/Library 菜单隐藏 Finder 项（终端项一并隐藏），快捷键面板同步隐藏 |
 | 7 | Library 单击直接打开 | 单击=选中（Paper Info 跟随）、双击/Enter=打开、↑↓ 移动；右键新增「添加标签」「上传/覆盖 PDF」（上传后 `paper_rescan` 刷新；rescan 现会清 caps 缓存，`has_pdf` 即时更新） |
-| 8 | 侧边栏按目录显示不直观 | 新增隐藏缓存 `<vault>/.agentero/tag-index.json`（懒重建+写路径刷新）与 RPC `tags_index_read`；`papers/` 下虚拟节点「按标签展开」列出全部 tag（色点+计数，多选）；Library 按选中 tag OR 过滤，未选 tag 时仅显示无 tag 文献（用户指定语义），顶部 chips 可清除 |
-| 9 | 需要 bibtex/biblatex 网络挂载 | 设置→实验功能新增挂载开关/类型/范围（tag OR + 目录前缀，AND 组合）；开启后 `GET /bibtex` 或 `GET /biblatex` 实时输出（本地序列化，**不经云端 translation-server**），`GET /api/bibtex/status` 供 UI 显示 |
+| 8 | 按标签筛选论文 | 新增隐藏缓存 `<vault>/.agentero/tag-index.json`（懒重建+写路径刷新）与 RPC `tags_index_read`；Library 顶部固定一行筛选条（左侧选中 chips + 清除，右侧可搜索多选下拉，色点+计数）；多选 AND、未选=全部、`#` 保留标签不进列表；选中 `papers/` 或子目录时同一行显示当前目录，自动叠加目录递归过滤 |
+| 9 | 需要 bibtex/biblatex 网络挂载 | 设置→实验功能新增挂载开关/类型/范围（tag OR + 目录前缀，AND 组合）；开启后 `GET /agentero_online.bib` 实时输出（内容按挂载类型 bibtex/biblatex；本地序列化，**不经云端 translation-server**），`GET /api/bibtex/status` 供 UI 显示 |
+
+### 第三轮修复（2026-10-22）
+
+| # | 问题 | 修复 |
+|---|---|---|
+| 1 | 文献右键功能不足 / 状态不可见 | 新增「覆盖进行版面解析」「删除 PDF 文件」「删除版面解析文件」（与「删除」同组、红色警告色）；行尾新增 `PDF / 版面解析状态` 图标列：有 PDF 红色 PDF 图标、已解析蓝色自绘「md」方框、缺失灰色；数据来自新 RPC `paper_assets_status`；删除走新 RPC `paper_delete_assets(kind=pdf|layout)`（删后清 caps、刷 tag index） |
+| 2 | Library 标签筛选交互不合理 | 删除左栏「按标签展开」虚拟节点；筛选并入 Library 单行：左侧 chips（可单删/清除），最右「标签筛选」下拉（搜索/多选/计数）；语义改为 **AND**；**未选 tag 不筛选（显示全部）**；与目录 scope 联动，行内显示「当前目录: papers/…」并递归列出+tag 过滤 |
+| 3 | 侧边栏隐藏→显示后无法拖拽宽度 | `ResizableHandle` 常驻挂载（折叠态 disabled+width0，展开复位），新增 `expandAndResize()` 展开后 resize + 两帧断言；实测左右栏隐藏→显示后拖拽正常 |
+| 5 | Library 多选缺失 | Ctrl/Cmd 单选切换、Shift 范围、Ctrl+A/Esc；多选右键批量菜单：批量添加标签 / 批量覆盖版面解析 / 批量删除 PDF / 批量删除版面文件 / 批量删除（二次确认带数量） |
+| 4 | 左树单击文献直接打开 | 单击仅选中（高亮），双击/右键打开，目录单击仍展开 |
+| 6 | `#` 开头保留 tag 出现在筛选 | `is_internal_tag_name` 视 `#…` 为内部 tag；`TAG_INDEX_VERSION` 1→2 强制重建缓存；前端再过滤一次 |
+| 7 | 设置「返回工作台」新开一个工作台 | 改为 `window.close()` 关闭设置标签；仅当无法关闭（手动打开的标签）才回退导航到 `/` |
+| 8 | 挂载路径变化 | BibTeX/BibLaTeX 统一挂载到 `GET /agentero_online.bib`（内容按挂载类型）；设置提示与 `/api/bibtex/status.path` 同步 |
 
 ### 尚未完成 / 下一轮
 

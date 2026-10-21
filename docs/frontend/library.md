@@ -13,6 +13,7 @@
 - **全库**：点 `papers/` 论文库节点（根文件夹）或关光文档后默认页。
 - **文件夹作用域**：单击 `papers/` 下非 paper 叶目录（如 `papers/nlp`）→ 同一 Library panel 上按 `paper.path` **前缀过滤**（不新开 tab、不重新 RPC）。
 - **非 papers 目录**（`notes/`、`.agents/`、`plans/` 等）：不进入文件夹作用域，Library 显示全库（#160）。
+- **标签筛选条**：表格上方固定一行——左侧是已选标签 chips（点 X 取消）与「清除标签筛选」，最右侧是「标签筛选」下拉（可搜索、多选，带色点与计数）；多选为 **AND**，未选标签时不筛选、显示范围内全部论文；`#submitted:` / `#easyscholar:` 等 `#` 保留标签不进入筛选列表。选中文件夹作用域时同一行显示「当前目录: `papers/…`」，先按目录递归过滤再按标签 AND 过滤；chips 超宽时横向滚动，行高保持一行。
 - 外部 CLI / 同步工具改动 `.agentero/catalog.sqlite` 或 `papers/` 结构时，前端会后台去抖重新 `paper_list`，同步 Library 表格与文件树论文标题。
 - NOTES 仅选中**具体论文**时出现；Paper Info 在选中论文时显示，或在 Library 中**悬停行**时预览该论文（不打开即可查看），切换到非论文文档时自动隐藏。
 
