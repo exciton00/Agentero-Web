@@ -14,8 +14,6 @@ import {
 	sortFileTreeNodes,
 } from "@/lib/paper";
 import { LIBRARY_VIRTUAL_PATH } from "@/lib/paper/api";
-import type { TagsIndex } from "@/lib/paper/tags-index";
-import { TAGS_VIRTUAL_PATH } from "@/lib/paper/tags-index";
 import { PLAZA_VIRTUAL_PATH, visiblePlazaSources } from "@/lib/plaza";
 import type { FileNode } from "@/lib/vault";
 import { toVaultRelative } from "@/lib/wiki";
@@ -196,7 +194,6 @@ export function useTreeRows({
 	plazaEnabled,
 	plazaHiddenSources,
 	zoteroCollectionReferences,
-	tagsIndex,
 }: {
 	displayNodes: FileNode[];
 	expanded: ReadonlySet<string>;
@@ -205,8 +202,6 @@ export function useTreeRows({
 	plazaEnabled: boolean;
 	plazaHiddenSources: readonly string[];
 	zoteroCollectionReferences: ReadonlyMap<string, ZoteroCollectionReference[]>;
-	/** Whole-vault tag index (rows for the "expand by tag" node). */
-	tagsIndex: TagsIndex | null;
 }): TreeRows {
 	const selectableOrder = useMemo(() => {
 		const out: string[] = [];
@@ -261,30 +256,6 @@ export function useTreeRows({
 					node: n,
 					paperLeaf: paper,
 				});
-				// Virtual "expand by tag" node: sits under `papers/` (the Library
-				// folder row) and lists every vault tag as a filter toggle.
-				if (n.kind === "directory" && isPapersRoot(n.path)) {
-					out.push({ key: "__tags__", kind: "tags", depth: depth + 1 });
-					if (expanded.has(TAGS_VIRTUAL_PATH)) {
-						const tags = tagsIndex?.tags ?? [];
-						if (tags.length === 0) {
-							out.push({
-								key: "__tag_empty__",
-								kind: "tagEmpty",
-								depth: depth + 2,
-							});
-						} else {
-							for (const tag of tags) {
-								out.push({
-									key: `__tag__${tag.name}`,
-									kind: "tag",
-									depth: depth + 2,
-									tag,
-								});
-							}
-						}
-					}
-				}
 				const attachmentsDir = paper ? paperAttachmentsNode(n) : null;
 				const showDraft =
 					n.kind === "directory" &&
@@ -323,7 +294,6 @@ export function useTreeRows({
 		plazaEnabled,
 		plazaHiddenSources,
 		zoteroCollectionReferences,
-		tagsIndex,
 	]);
 
 	return { selectableOrder, flatRows };

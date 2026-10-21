@@ -7,10 +7,11 @@
  * Reading heat: title text background as a left→right spine (doc start→end).
  */
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { RefreshCw, X } from "lucide-react";
+import { RefreshCw } from "lucide-react";
 import type { ReactNode } from "react";
 import {
 	type KeyboardEvent as ReactKeyboardEvent,
+	type MouseEvent as ReactMouseEvent,
 	useCallback,
 	useEffect,
 	useMemo,
@@ -19,6 +20,7 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import { AddPaperTagsDialog } from "@/components/library/add-paper-tags-dialog";
+import { ConfirmBatchDeleteDialog } from "@/components/library/confirm-batch-delete-dialog";
 import { useCellCopy } from "@/components/library/hooks/use-cell-copy";
 import { useLibraryHeatmap } from "@/components/library/hooks/use-library-heatmap";
 import { resolveColumnWidths } from "@/components/library/library-column-widths";
@@ -36,11 +38,18 @@ import {
 	toggleColumnVisibility,
 } from "@/components/library/library-row-utils";
 import { LibraryTableHeader } from "@/components/library/library-table-header";
-import { PaperTagChip } from "@/components/library/paper-tag-chip";
+import { LibraryTagFilter } from "@/components/library/library-tag-filter";
+import {
+	deletePaperAssets,
+	forceReparsePaperLayout,
+	type PaperAssetKind,
+	type PaperAssetsDisplay,
+	usePaperAssetsStatus,
+} from "@/components/library/paper-assets";
 import { Button } from "@/components/ui/button";
 import { useUiStore } from "@/hooks/use-app-stores";
 import { useDebouncedCallback } from "@/hooks/use-debounce";
-import { notifyError, notifySuccess } from "@/lib/core/notify";
+import { errorMessage, notifyError, notifySuccess } from "@/lib/core/notify";
 import { cn } from "@/lib/core/utils";
 import type { PaperLibraryRow, PaperMetadata } from "@/lib/paper";
 import { filterPapersByScope, rescanPapers } from "@/lib/paper/api";
@@ -55,8 +64,10 @@ import { editablePaperTags, type PaperTag } from "@/lib/paper/tags";
 import {
 	deriveTagsIndexFromPapers,
 	refreshTagsIndex,
+	type TagsIndexTag,
 	useTagsIndex,
 } from "@/lib/paper/tags-index";
+import { clearLayoutVaultState } from "@/lib/pdf/layout/store";
 import {
 	DEFAULT_LIBRARY_COLUMNS,
 	type LibraryColumnPref,
@@ -70,6 +81,7 @@ import {
 	toggleTagFilter,
 } from "@/lib/shell/ui-store";
 import { joinVaultPath } from "@/lib/vault";
+import { trashPathsAndNotify } from "@/lib/vault/actions";
 import { isRemoteVaultHandle } from "@/lib/vault/remote/remote-vault";
 import { refreshTree } from "@/lib/vault/store";
 
@@ -136,10 +148,20 @@ export function PapersLibrary({
 	 *  and the tags-column popover drive the same OR filter. */
 	const tagFilter = useUiStore((state) => state.tagFilter);
 	const selectedPaperPath = useUiStore((state) => state.selectedPaperPath);
-	/** Row whose "add tags" dialog is open (context menu action). */
-	const [tagEditorPaper, setTagEditorPaper] = useState<PaperMetadata | null>(
-		null,
+	/** Rows whose "add tags" dialog is open (single row or batch selection). */
+	const [tagEditorPapers, setTagEditorPapers] = useState<
+		PaperMetadata[] | null
+	>(null);
+	/** Multi-row selection (vault-relative keys) + shift-click anchor. */
+	const [multiSelected, setMultiSelected] = useState<Set<string>>(
+		() => new Set(),
 	);
+	const selectionAnchorRef = useRef<string | null>(null);
+	const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
+	const [batchBusy, setBatchBusy] = useState(false);
+	/** PDF / layout-analysis badges from the host (`paper_assets_status`). */
+	const { assetsByPath, refresh: refreshAssets } =
+		usePaperAssetsStatus(vaultPath);
 	/** Hidden PDF picker + its target paper (context-menu upload/overwrite). */
 	const pdfInputRef = useRef<HTMLInputElement | null>(null);
 	const pdfTargetRef = useRef<PaperMetadata | null>(null);
@@ -194,15 +216,25 @@ export function PapersLibrary({
 		[sortKey],
 	);
 
-	const selectPaper = useCallback((paper: PaperMetadata) => {
-		const rel = (paper.path ?? "")
-			.replace(/\\/g, "/")
-			.replace(/^\/+|\/+$/g, "");
-		setSelectedPaperPath(rel || paper.id);
-		setHoveredPaperPath(rel || null);
-	}, []);
+	const relKey = useCallback(
+		(paper: PaperMetadata) =>
+			(paper.path ?? "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "") ||
+			paper.id,
+		[],
+	);
 
-	const { onCellCopy, onRowClick, openPaperFromRow } = useCellCopy({
+	const selectPaper = useCallback(
+		(paper: PaperMetadata) => {
+			const rel = relKey(paper);
+			setSelectedPaperPath(rel);
+			setMultiSelected(new Set([rel]));
+			selectionAnchorRef.current = rel;
+			setHoveredPaperPath(rel || null);
+		},
+		[relKey],
+	);
+
+	const { onCellCopy, openPaperFromRow } = useCellCopy({
 		t,
 		onOpenPaper,
 		onSelectPaper: selectPaper,
@@ -224,12 +256,14 @@ export function PapersLibrary({
 	}, [columns]);
 	const [viewportRem, setViewportRem] = useState(56.25);
 	const [resizing, setResizing] = useState<number[] | null>(null);
+	/** Width of the fixed trailing asset-badge cell (rem); see the colgroup. */
+	const ASSET_COLUMN_REM = 3.5;
 	const columnWidths = useMemo(
 		() =>
 			resizing ??
 			resolveColumnWidths(
 				visibleColumns,
-				viewportRem,
+				Math.max(16, viewportRem - ASSET_COLUMN_REM),
 				(col) => COLUMN_META[col.key].widthWeight,
 			),
 		[resizing, visibleColumns, viewportRem],
@@ -327,6 +361,7 @@ export function PapersLibrary({
 				await refreshLibrary();
 				void refreshTree(vaultPath, { quiet: true });
 				void refreshTagsIndex(vaultPath);
+				refreshAssets();
 				notifySuccess(t("papersLibrary.uploadPdfDone"));
 			} catch (error) {
 				notifyError(t("papersLibrary.uploadPdfFailed"), {
@@ -334,7 +369,7 @@ export function PapersLibrary({
 				});
 			}
 		},
-		[t, vaultPath],
+		[t, vaultPath, refreshAssets],
 	);
 
 	const normalizedQuery = (inputValue ?? "").trim().toLocaleLowerCase();
@@ -353,12 +388,16 @@ export function PapersLibrary({
 		const byName = new Map<string, PaperTag>();
 		for (const p of scopedPapers) {
 			for (const tag of editablePaperTags(p.tags)) {
+				// Reserved host tags (`#submitted:` / `#easyscholar:`) are not
+				// user-selectable filters; the index also strips its own.
+				if (tag.name.startsWith("#")) continue;
 				if (!byName.has(tag.name)) byName.set(tag.name, tag);
 			}
 		}
 		// Keep catalog colors authoritative, but surface index-only tags too
 		// (a tag that exists vault-wide but not in the current folder scope).
 		for (const tag of tagIndex.tags) {
+			if (tag.name.startsWith("#")) continue;
 			if (!byName.has(tag.name)) {
 				byName.set(tag.name, {
 					name: tag.name,
@@ -370,6 +409,28 @@ export function PapersLibrary({
 			a.name.localeCompare(b.name, undefined, { sensitivity: "base" }),
 		);
 	}, [scopedPapers, tagIndex.tags]);
+
+	/**
+	 * Options for the single-row tag filter menu: every vault tag (the index
+	 * is vault-wide) with its paper count; catalog rows fill tags the cached
+	 * index has not seen yet. `#`-reserved tags are never offered.
+	 */
+	const tagFilterOptions = useMemo(() => {
+		const indexCounts = new Map(
+			tagIndex.tags.map((tag) => [tag.name, tag.count]),
+		);
+		const scopedCounts = new Map<string, number>();
+		for (const p of scopedPapers) {
+			for (const tag of editablePaperTags(p.tags)) {
+				scopedCounts.set(tag.name, (scopedCounts.get(tag.name) ?? 0) + 1);
+			}
+		}
+		return availableTags.map<TagsIndexTag>((tag) => ({
+			name: tag.name,
+			color: tag.color ?? null,
+			count: indexCounts.get(tag.name) ?? scopedCounts.get(tag.name) ?? 0,
+		}));
+	}, [availableTags, tagIndex.tags, scopedPapers]);
 
 	/** Drop filter selections that no longer exist in scope. */
 	useEffect(() => {
@@ -394,14 +455,14 @@ export function PapersLibrary({
 			);
 		}
 		if (tagFilterSet.size > 0) {
-			// OR across the selected tags.
-			filtered = filtered.filter((row) =>
-				row.tags.some((tag) => tagFilterSet.has(tag.name)),
-			);
-		} else {
-			// No tag selected: show untagged papers only (explicit product
-			// requirement — tagged papers surface through the tag filter).
-			filtered = filtered.filter((row) => row.tags.length === 0);
+			// AND across the selected tags: a paper must carry every one of
+			// them. No tag selected = no tag filtering (the whole scope shows).
+			filtered = filtered.filter((row) => {
+				for (const name of tagFilterSet) {
+					if (!row.tags.some((tag) => tag.name === name)) return false;
+				}
+				return true;
+			});
 		}
 		const copy = [...filtered];
 		copy.sort((a, b) => comparePaperRows(a, b, sortKey, sortDir));
@@ -415,6 +476,230 @@ export function PapersLibrary({
 		() => `${sortKey}:${sortDir}:${tagFilter.join(",")}`,
 		[sortKey, sortDir, tagFilter],
 	);
+
+	/** Keep asset badges fresh after uploads / deletes / catalog refreshes. */
+	// biome-ignore lint/correctness/useExhaustiveDependencies: catalog row changes are the refresh trigger
+	useEffect(() => {
+		refreshAssets();
+	}, [refreshAssets, papers]);
+
+	/** Papers selected via Cmd/Ctrl/Shift clicks (order = table order). */
+	const selectedPapers = useMemo(
+		() =>
+			rows
+				.filter((row) => multiSelected.has(relKey(row.paper)))
+				.map((row) => row.paper),
+		[rows, multiSelected, relKey],
+	);
+
+	/** Single click selects; Cmd/Ctrl toggles; Shift selects a range; dbl opens. */
+	const handleRowClick = useCallback(
+		(e: ReactMouseEvent<HTMLTableRowElement>, paper: PaperMetadata) => {
+			const rel = relKey(paper);
+			if (e.detail > 1) {
+				// Double-click opens the paper and keeps the current selection.
+				openPaperFromRow(paper);
+				return;
+			}
+			if (e.shiftKey && selectionAnchorRef.current) {
+				const anchorIndex = rows.findIndex(
+					(row) => relKey(row.paper) === selectionAnchorRef.current,
+				);
+				const targetIndex = rows.findIndex((row) => relKey(row.paper) === rel);
+				if (anchorIndex >= 0 && targetIndex >= 0) {
+					const start = Math.min(anchorIndex, targetIndex);
+					const end = Math.max(anchorIndex, targetIndex);
+					const next = new Set<string>();
+					for (let index = start; index <= end; index += 1) {
+						next.add(relKey(rows[index].paper));
+					}
+					setMultiSelected(next);
+					setSelectedPaperPath(rel);
+					setHoveredPaperPath(rel || null);
+					return;
+				}
+			}
+			if (e.metaKey || e.ctrlKey) {
+				setMultiSelected((prev) => {
+					const next = new Set(prev);
+					if (next.has(rel)) next.delete(rel);
+					else next.add(rel);
+					const keys = [...next];
+					setSelectedPaperPath(keys[keys.length - 1] ?? null);
+					return next;
+				});
+				selectionAnchorRef.current = rel;
+				setHoveredPaperPath(rel || null);
+				return;
+			}
+			setMultiSelected(new Set([rel]));
+			selectionAnchorRef.current = rel;
+			setSelectedPaperPath(rel);
+			setHoveredPaperPath(rel || null);
+		},
+		[rows, relKey, openPaperFromRow],
+	);
+
+	/** Right-click: a row outside the selection becomes the only selection. */
+	const handleRowContextMenu = useCallback(
+		(paper: PaperMetadata) => {
+			const rel = relKey(paper);
+			if (multiSelected.has(rel)) return;
+			setMultiSelected(new Set([rel]));
+			selectionAnchorRef.current = rel;
+			setSelectedPaperPath(rel);
+		},
+		[multiSelected, relKey],
+	);
+
+	/** Merge RPC asset flags with the catalog `has_pdf` fallback. */
+	const assetsFor = useCallback(
+		(paper: PaperLibraryRow): PaperAssetsDisplay => {
+			const fromRpc = assetsByPath.get(relKey(paper));
+			return {
+				hasPdf: fromRpc?.hasPdf ?? paper.has_pdf === true,
+				hasLayout: fromRpc
+					? fromRpc.hasLayout || fromRpc.hasLayoutIndex
+					: false,
+			};
+		},
+		[assetsByPath, relKey],
+	);
+
+	/** Force a fresh layout analysis for one or more papers (batch friendly). */
+	const handleReparsePapers = useCallback(
+		async (papersToRun: PaperMetadata[]) => {
+			if (!vaultPath || papersToRun.length === 0) return;
+			let queued = 0;
+			let failed = 0;
+			for (const paper of papersToRun) {
+				if (!paper.path) {
+					failed += 1;
+					continue;
+				}
+				try {
+					await forceReparsePaperLayout(joinVaultPath(vaultPath, paper.path));
+					queued += 1;
+				} catch (error) {
+					failed += 1;
+					notifyError(t("papersLibrary.reparseLayoutFailed"), {
+						description: errorMessage(error),
+					});
+				}
+			}
+			if (queued > 0) {
+				notifySuccess(
+					t("papersLibrary.reparseLayoutQueued", { count: queued }),
+				);
+			}
+			if (queued > 0 || failed > 0) refreshAssets();
+		},
+		[t, vaultPath, refreshAssets],
+	);
+
+	/** Delete PDF / layout files for one or more papers, then refresh views. */
+	const handleDeleteAssets = useCallback(
+		async (papersToDelete: PaperMetadata[], kind: PaperAssetKind) => {
+			if (!vaultPath || papersToDelete.length === 0) return;
+			let removed = 0;
+			let failed = 0;
+			for (const paper of papersToDelete) {
+				if (!paper.path) {
+					failed += 1;
+					continue;
+				}
+				try {
+					const removedPaths = await deletePaperAssets({
+						vaultPath,
+						paperPath: paper.path,
+						kind,
+					});
+					removed += removedPaths.length;
+				} catch (error) {
+					failed += 1;
+					notifyError(t("papersLibrary.deleteAssetsFailed"), {
+						description: errorMessage(error),
+					});
+				}
+			}
+			if (kind === "layout") clearLayoutVaultState();
+			await refreshLibrary();
+			void refreshTree(vaultPath, { quiet: true });
+			refreshAssets();
+			if (removed > 0) {
+				notifySuccess(
+					kind === "pdf"
+						? t("papersLibrary.deletePdfDone", { count: removed })
+						: t("papersLibrary.deleteLayoutDone", { count: removed }),
+				);
+			}
+			if (failed > 0) {
+				notifyError(t("papersLibrary.deleteAssetsPartial", { failed }));
+			}
+		},
+		[t, vaultPath, refreshAssets],
+	);
+
+	const handleReparseSingle = useCallback(
+		(paper: PaperMetadata) => {
+			void handleReparsePapers([paper]);
+		},
+		[handleReparsePapers],
+	);
+	const handleDeletePdfSingle = useCallback(
+		(paper: PaperMetadata) => {
+			void handleDeleteAssets([paper], "pdf");
+		},
+		[handleDeleteAssets],
+	);
+	const handleDeleteLayoutSingle = useCallback(
+		(paper: PaperMetadata) => {
+			void handleDeleteAssets([paper], "layout");
+		},
+		[handleDeleteAssets],
+	);
+	const handleAddTagsSingle = useCallback((paper: PaperMetadata) => {
+		setTagEditorPapers([paper]);
+	}, []);
+	const handleBatchAddTags = useCallback(() => {
+		setTagEditorPapers(selectedPapers);
+	}, [selectedPapers]);
+	const batchActions = useMemo(
+		() => ({
+			onAddTags: handleBatchAddTags,
+			onReparseLayout: () => void handleReparsePapers(selectedPapers),
+			onDeletePdf: () => void handleDeleteAssets(selectedPapers, "pdf"),
+			onDeleteLayout: () => void handleDeleteAssets(selectedPapers, "layout"),
+			onDelete: () => setBatchDeleteOpen(true),
+		}),
+		[
+			handleBatchAddTags,
+			handleReparsePapers,
+			handleDeleteAssets,
+			selectedPapers,
+		],
+	);
+
+	/** Batch delete (recycle bin) — always behind the count confirmation dialog. */
+	const confirmBatchDelete = useCallback(async () => {
+		if (!vaultPath || selectedPapers.length === 0) return;
+		const absPaths = selectedPapers
+			.map((paper) =>
+				paper.path ? joinVaultPath(vaultPath, paper.path) : null,
+			)
+			.filter((path): path is string => Boolean(path));
+		if (absPaths.length === 0) return;
+		setBatchBusy(true);
+		try {
+			await trashPathsAndNotify(absPaths);
+			setMultiSelected(new Set());
+			setSelectedPaperPath(null);
+			selectionAnchorRef.current = null;
+		} finally {
+			setBatchBusy(false);
+			setBatchDeleteOpen(false);
+		}
+	}, [vaultPath, selectedPapers]);
 
 	const scrollRef = useRef<HTMLDivElement | null>(null);
 	const detachScrollRef = useRef<(() => void) | null>(null);
@@ -485,16 +770,30 @@ export function PapersLibrary({
 			? totalSize - virtualRows[virtualRows.length - 1].end
 			: 0;
 
-	/** Enter opens the selected row; ArrowUp/Down move the selection. */
+	/** Enter opens the selection; arrows move it; Cmd/Ctrl+A selects all; Esc clears. */
 	const onTableKeyDown = useCallback(
 		(event: ReactKeyboardEvent<HTMLDivElement>) => {
+			const mod = event.metaKey || event.ctrlKey;
+			if (mod && event.key.toLowerCase() === "a") {
+				event.preventDefault();
+				const all = rows.map((row) => relKey(row.paper));
+				setMultiSelected(new Set(all));
+				const first = all[0] ?? null;
+				selectionAnchorRef.current = first;
+				setSelectedPaperPath(first);
+				return;
+			}
+			if (event.key === "Escape") {
+				if (multiSelected.size === 0 && !selectedPaperPath) return;
+				event.preventDefault();
+				setMultiSelected(new Set());
+				setSelectedPaperPath(null);
+				selectionAnchorRef.current = null;
+				return;
+			}
 			if (event.key === "Enter") {
 				const selected = rows.find(
-					(row) =>
-						(selectedPaperPath ?? "") ===
-						(row.paper.path ?? "")
-							.replace(/\\/g, "/")
-							.replace(/^\/+|\/+$/g, ""),
+					(row) => selectedPaperPath === relKey(row.paper),
 				);
 				if (selected) {
 					event.preventDefault();
@@ -506,9 +805,7 @@ export function PapersLibrary({
 			if (rows.length === 0) return;
 			event.preventDefault();
 			const current = rows.findIndex(
-				(row) =>
-					(selectedPaperPath ?? "") ===
-					(row.paper.path ?? "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, ""),
+				(row) => selectedPaperPath === relKey(row.paper),
 			);
 			const delta = event.key === "ArrowDown" ? 1 : -1;
 			const nextIndex =
@@ -520,19 +817,33 @@ export function PapersLibrary({
 			const next = rows[nextIndex];
 			if (next) selectPaper(next.paper);
 		},
-		[rows, selectedPaperPath, openPaperFromRow, selectPaper],
+		[
+			rows,
+			relKey,
+			multiSelected,
+			selectedPaperPath,
+			openPaperFromRow,
+			selectPaper,
+		],
 	);
 
-	/** Clear a selection that the current tag/scope filter hides. */
+	/** Drop selected rows that the current tag/scope filter hides. */
 	useEffect(() => {
-		if (!selectedPaperPath) return;
-		const visible = rows.some(
-			(row) =>
-				(row.paper.path ?? "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "") ===
-				selectedPaperPath,
-		);
-		if (!visible) setSelectedPaperPath(null);
-	}, [rows, selectedPaperPath]);
+		const visible = new Set(rows.map((row) => relKey(row.paper)));
+		setMultiSelected((prev) => {
+			const next = new Set([...prev].filter((key) => visible.has(key)));
+			return next.size === prev.size ? prev : next;
+		});
+		if (selectedPaperPath && !visible.has(selectedPaperPath)) {
+			setSelectedPaperPath(null);
+		}
+		if (
+			selectionAnchorRef.current &&
+			!visible.has(selectionAnchorRef.current)
+		) {
+			selectionAnchorRef.current = null;
+		}
+	}, [rows, relKey, selectedPaperPath]);
 
 	const heatmaps = useLibraryHeatmap({
 		vaultPath,
@@ -575,47 +886,14 @@ export function PapersLibrary({
 						empty ? "h-auto" : "min-h-0 flex-1",
 					)}
 				>
-					<div className="sticky left-0 z-10 flex w-fit min-w-full flex-wrap items-center gap-1.5 border-border/40 border-b bg-background/85 px-3 py-1.5 backdrop-blur">
-						{tagFilterActive ? (
-							<>
-								<span className="text-muted-foreground text-xs">
-									{t("papersLibrary.tagFilterLabel")}
-								</span>
-								{tagFilter.map((name) => {
-									const tag = availableTags.find(
-										(candidate) => candidate.name === name,
-									) ?? { name };
-									return (
-										<PaperTagChip
-											key={name}
-											tag={tag}
-											title={t("papersLibrary.clearTagFilter")}
-											trailing={<X className="size-2.5" aria-hidden />}
-											onClick={() => toggleTagFilter(name)}
-										/>
-									);
-								})}
-								<Button
-									type="button"
-									variant="ghost"
-									size="xs"
-									className="h-6 px-1.5 text-xs"
-									onClick={clearTagFilter}
-								>
-									{t("papersLibrary.clearTagFilter")}
-								</Button>
-							</>
-						) : (
-							<span className="text-muted-foreground text-xs">
-								{t("papersLibrary.untaggedOnlyHint")}
-							</span>
-						)}
-					</div>
+					<LibraryTagFilter tags={tagFilterOptions} scopePath={scopePath} />
 					{/* Fixed weights keep the table stable while content and rows change. */}
 					<table
 						className="table-fixed border-collapse text-left text-sm"
 						style={{
-							width: `${columnWidths.reduce((sum, width) => sum + width, 0)}rem`,
+							width: `${
+								columnWidths.reduce((sum, width) => sum + width, 0) + 3.5
+							}rem`,
 						}}
 					>
 						<colgroup>
@@ -627,6 +905,8 @@ export function PapersLibrary({
 									}}
 								/>
 							))}
+							{/* Fixed-width trailing cell for the PDF / layout badges. */}
+							<col key="__assets__" style={{ width: "3.5rem" }} />
 						</colgroup>
 						<LibraryTableHeader
 							t={t}
@@ -660,7 +940,7 @@ export function PapersLibrary({
 							{paddingTop > 0 ? (
 								<tr aria-hidden>
 									<td
-										colSpan={visibleColumns.length}
+										colSpan={visibleColumns.length + 1}
 										style={{ height: paddingTop }}
 									/>
 								</tr>
@@ -683,15 +963,20 @@ export function PapersLibrary({
 										}
 										canEditMeta={canEditMeta}
 										selected={
-											(selectedPaperPath ?? "") ===
-											(p.path ?? "")
-												.replace(/\\/g, "/")
-												.replace(/^\/+|\/+$/g, "")
+											multiSelected.has(relKey(p)) ||
+											selectedPaperPath === relKey(p)
 										}
+										selectionCount={multiSelected.size}
+										assets={assetsFor(p)}
 										onOpenPaper={openPaperFromRow}
-										onAddTags={setTagEditorPaper}
+										onAddTags={handleAddTagsSingle}
 										onRequestPdfUpload={requestPdfUpload}
-										onRowClick={onRowClick}
+										onRowContextMenu={handleRowContextMenu}
+										onReparseLayout={handleReparseSingle}
+										onDeletePdf={handleDeletePdfSingle}
+										onDeleteLayout={handleDeleteLayoutSingle}
+										batchActions={batchActions}
+										onRowClick={handleRowClick}
 										onRefreshMetadata={handleRefreshPaperMetadata}
 										onHoverPaper={setHoveredPaperPath}
 										measureRef={rowVirtualizer.measureElement}
@@ -701,7 +986,7 @@ export function PapersLibrary({
 							{paddingBottom > 0 ? (
 								<tr aria-hidden>
 									<td
-										colSpan={visibleColumns.length}
+										colSpan={visibleColumns.length + 1}
 										style={{ height: paddingBottom }}
 									/>
 								</tr>
@@ -767,12 +1052,19 @@ export function PapersLibrary({
 				}}
 			/>
 			<AddPaperTagsDialog
-				open={tagEditorPaper !== null}
-				paper={tagEditorPaper}
+				open={tagEditorPapers !== null}
+				papers={tagEditorPapers ?? undefined}
 				suggestions={availableTags}
 				onOpenChange={(open) => {
-					if (!open) setTagEditorPaper(null);
+					if (!open) setTagEditorPapers(null);
 				}}
+			/>
+			<ConfirmBatchDeleteDialog
+				open={batchDeleteOpen}
+				count={selectedPapers.length}
+				busy={batchBusy}
+				onOpenChange={setBatchDeleteOpen}
+				onConfirm={() => void confirmBatchDelete()}
 			/>
 		</LibraryPdfDropSurface>
 	);

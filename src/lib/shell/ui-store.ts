@@ -73,8 +73,8 @@ type UiStore = {
 	 */
 	selectedPaperPath: string | null;
 	/**
-	 * Tag names selected from the "expand by tag" tree node (or the Library
-	 * tags-column popover). Empty = Library shows untagged papers only.
+	 * Tag names selected from the Library tag filter (single row above the
+	 * table) or the tags-column popover. Empty = no tag filtering.
 	 */
 	tagFilter: string[];
 	skillImportDraft: SkillDiscovery[] | null;
@@ -228,7 +228,7 @@ export function setSelectedPaperPath(path: string | null): void {
 	uiStore.setState({ selectedPaperPath: path });
 }
 
-/** Add/remove one tag from the Library filter (OR across selected tags). */
+/** Add/remove one tag from the Library filter (AND across selected tags). */
 export function toggleTagFilter(name: string): void {
 	uiStore.setState((s) => ({
 		tagFilter: s.tagFilter.includes(name)

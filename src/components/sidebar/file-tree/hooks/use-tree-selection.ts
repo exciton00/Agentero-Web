@@ -3,6 +3,7 @@
  * selection-scoped actions (batch delete, cut, paste).
  */
 import { useCallback, useEffect, useState } from "react";
+import { isPaperDirectory } from "@/lib/paper";
 import { LIBRARY_VIRTUAL_PATH, TRASH_VIRTUAL_PATH } from "@/lib/paper/api";
 import {
 	isPlazaVirtualPath,
@@ -24,6 +25,8 @@ export type TreeSelection = {
 	clearSelection: () => void;
 	prepareContextSelection: (path: string) => void;
 	handleSelectRow: (path: string, mods: RowClickMods) => void;
+	/** Open a row (double-click / context-menu equivalent of the old single click). */
+	handleOpenRow: (path: string) => void;
 	orderedSelected: () => string[];
 	/** Action target: the whole selection when the row is part of it. */
 	pathsForAction: (path: string) => string[];
@@ -181,19 +184,58 @@ export function useTreeSelection({
 				setAnchor(path);
 				return;
 			}
-			// Plain click: drop any multi-selection and open the row.
+			// Plain click drops any multi-selection. Files and paper folders only
+			// select (Finder-style): opening is double-click / context-menu, so a
+			// single click never yanks the reader / editor away. Plain folders
+			// keep their expand + scoped-view behavior, virtual rows navigate.
 			setSelected(new Set());
 			setAnchor(path);
+			const node = byPath.get(path);
+			const isPaper =
+				node?.kind === "directory" &&
+				isPaperDirectory(node.path, node.children);
+			if (
+				!isVirtualTreePath(path) &&
+				node &&
+				(node.kind !== "directory" || isPaper)
+			) {
+				// Files and paper folders highlight as a single-row selection;
+				// opening them is double-click / context-menu.
+				setSelected(new Set([path]));
+				return;
+			}
 			openRow(path);
 		},
 		[
 			anchor,
+			byPath,
 			clearSelection,
 			createDraft,
 			renameDraft,
 			openRow,
 			selectableOrder,
 		],
+	);
+
+	const handleOpenRow = useCallback(
+		(path: string) => {
+			if (createDraft || renameDraft) return;
+			// Plain folders expand on single click; only files / paper folders /
+			// virtual rows have something to open.
+			const node = byPath.get(path);
+			if (
+				node &&
+				node.kind === "directory" &&
+				!isPaperDirectory(node.path, node.children) &&
+				!isVirtualTreePath(path)
+			) {
+				return;
+			}
+			setSelected(new Set());
+			setAnchor(path);
+			openRow(path);
+		},
+		[byPath, createDraft, openRow, renameDraft],
 	);
 
 	const orderedSelected = useCallback(() => {
@@ -266,6 +308,7 @@ export function useTreeSelection({
 		clearSelection,
 		prepareContextSelection,
 		handleSelectRow,
+		handleOpenRow,
 		orderedSelected,
 		pathsForAction,
 		runBatchDelete,

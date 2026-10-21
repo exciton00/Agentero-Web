@@ -203,8 +203,39 @@
 		"tagSuggestions": "Existing tags",
 		"uploadPdfDone": "PDF uploaded",
 		"uploadPdfFailed": "Failed to upload PDF",
-		"tagFilterLabel": "Tags:",
-		"untaggedOnlyHint": "No tag selected — showing untagged papers"
+		"allPapers": "All papers",
+		"tagFilter": "Tag filter",
+		"tagFilterSearch": "Search tags",
+		"tagFilterNoMatch": "No matching tags",
+		"removeTagFilter": "Remove tag filter: {{tag}}",
+		"currentFolder": "Current folder: {{path}}",
+		"assetsColumn": "PDF / layout status",
+		"assetsPdfPresent": "PDF uploaded",
+		"assetsPdfMissing": "No PDF",
+		"assetsLayoutPresent": "Layout analysis ready",
+		"assetsLayoutMissing": "No layout analysis",
+		"rowReparseLayout": "Re-run layout analysis (overwrite)",
+		"rowDeletePdf": "Delete PDF file",
+		"rowDeleteLayout": "Delete layout-analysis files",
+		"batchMenuLabel": "{{count}} papers selected",
+		"batchAddTag": "Add tags to selected",
+		"batchReparseLayout": "Re-run layout analysis",
+		"batchDeletePdf": "Delete PDF files",
+		"batchDeleteLayout": "Delete layout-analysis files",
+		"batchDelete": "Delete {{count}} papers",
+		"batchDeleteConfirmTitle": "Delete {{count}} papers?",
+		"batchDeleteConfirmBody": "The selected papers will be moved to the recycle bin and their tabs closed. This cannot be undone from the Library.",
+		"batchDeleteConfirmAction": "Delete",
+		"batchTagsSaved": "Tags added to {{count}} papers",
+		"batchTagsPartial": "{{failed}} papers failed",
+		"batchAddTagTitle": "Add tags to {{count}} papers",
+		"batchAddTagHint": "The tags below are merged into every selected paper.",
+		"reparseLayoutQueued": "Layout analysis queued for {{count}} papers",
+		"reparseLayoutFailed": "Failed to queue layout analysis",
+		"deleteAssetsFailed": "Failed to delete files",
+		"deletePdfDone": "PDF deleted ({{count}} file(s))",
+		"deleteLayoutDone": "Layout files deleted ({{count}} file(s))",
+		"deleteAssetsPartial": "{{failed}} papers failed"
 	},
 	"plaza": {
 		"plaza": "Plaza",
@@ -462,7 +493,5 @@
 			"remoteUnsupported": "Editing metadata is not supported for remote vaults yet.",
 			"saveFailed": "Failed to save metadata."
 		}
-	},
-	"tagsExpanded": "Expand by tag",
-	"tagsEmpty": "No tags yet"
+	}
 }

@@ -203,8 +203,39 @@
 		"tagSuggestions": "已有标签",
 		"uploadPdfDone": "PDF 已上传",
 		"uploadPdfFailed": "上传 PDF 失败",
-		"tagFilterLabel": "标签：",
-		"untaggedOnlyHint": "未选择标签：仅显示无标签文献"
+		"allPapers": "全部论文",
+		"tagFilter": "标签筛选",
+		"tagFilterSearch": "搜索标签",
+		"tagFilterNoMatch": "没有匹配的标签",
+		"removeTagFilter": "取消标签筛选：{{tag}}",
+		"currentFolder": "当前目录: {{path}}",
+		"assetsColumn": "PDF / 版面解析状态",
+		"assetsPdfPresent": "已有 PDF",
+		"assetsPdfMissing": "缺少 PDF",
+		"assetsLayoutPresent": "版面解析完成",
+		"assetsLayoutMissing": "未做版面解析",
+		"rowReparseLayout": "覆盖进行版面解析",
+		"rowDeletePdf": "删除 PDF 文件",
+		"rowDeleteLayout": "删除版面解析文件",
+		"batchMenuLabel": "已选 {{count}} 篇",
+		"batchAddTag": "批量添加标签",
+		"batchReparseLayout": "批量覆盖进行版面解析",
+		"batchDeletePdf": "批量删除 PDF 文件",
+		"batchDeleteLayout": "批量删除版面解析文件",
+		"batchDelete": "批量删除（{{count}} 篇）",
+		"batchDeleteConfirmTitle": "确认删除 {{count}} 篇文献？",
+		"batchDeleteConfirmBody": "所选文献文件夹将被移入回收站并关闭对应标签页；此操作无法在论文库中撤销。",
+		"batchDeleteConfirmAction": "删除",
+		"batchTagsSaved": "已为 {{count}} 篇文献添加标签",
+		"batchTagsPartial": "{{failed}} 篇失败",
+		"batchAddTagTitle": "为 {{count}} 篇文献添加标签",
+		"batchAddTagHint": "下方标签会合并到每一篇所选文献。",
+		"reparseLayoutQueued": "已为 {{count}} 篇文献排队版面解析",
+		"reparseLayoutFailed": "版面解析排队失败",
+		"deleteAssetsFailed": "删除文件失败",
+		"deletePdfDone": "已删除 PDF（{{count}} 个文件）",
+		"deleteLayoutDone": "已删除版面解析文件（{{count}} 个文件）",
+		"deleteAssetsPartial": "{{failed}} 篇失败"
 	},
 	"plaza": {
 		"plaza": "广场",
@@ -461,7 +492,5 @@
 			"remoteUnsupported": "远程 Vault 暂不支持编辑元数据。",
 			"saveFailed": "元数据保存失败。"
 		}
-	},
-	"tagsExpanded": "按标签展开",
-	"tagsEmpty": "暂无标签"
+	}
 }

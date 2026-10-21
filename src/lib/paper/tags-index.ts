@@ -1,6 +1,5 @@
 /**
- * Vault-wide tag index for the "expand by tag" file-tree node and the Library
- * tag filter.
+ * Vault-wide tag index for the Library tag filter.
  *
  * The server (and, once ported, the desktop Host) exposes
  * `tags_index_read({ vaultPath })` → `{ generatedAt, tags, papers, untagged }`
@@ -9,7 +8,7 @@
  *
  * Until the RPC exists (older hosts / desktop builds without the command), the
  * module resolves to `null` and callers fall back to deriving tags from the
- * already-loaded library rows — the tree/filter keep working with catalog data.
+ * already-loaded library rows — the filter keeps working with catalog data.
  */
 
 import { invoke } from "@tauri-apps/api/core";
@@ -17,11 +16,6 @@ import { useEffect, useSyncExternalStore } from "react";
 import { hasHostTransport } from "@/lib/core/tauri";
 import type { PaperLibraryRow } from "@/lib/paper";
 import { editablePaperTags, type PaperTag } from "@/lib/paper/tags";
-
-/** Virtual tree path of the "expand by tag" node (never touches disk). */
-export const TAGS_VIRTUAL_PATH = "agentero:tags";
-/** Virtual tree path prefix of one tag row (`agentero:tag/<name>`). */
-export const TAG_VIRTUAL_PREFIX = "agentero:tag/";
 
 export type TagsIndexTag = {
 	name: string;
@@ -44,20 +38,6 @@ export type TagsIndex = {
 	/** Vault-relative paths of papers without any user tag. */
 	untagged: string[];
 };
-
-export function isTagsVirtualPath(path: string): boolean {
-	return path === TAGS_VIRTUAL_PATH || path.startsWith(TAG_VIRTUAL_PREFIX);
-}
-
-export function tagVirtualPath(name: string): string {
-	return `${TAG_VIRTUAL_PREFIX}${name}`;
-}
-
-export function tagNameFromVirtualPath(path: string): string | null {
-	return path.startsWith(TAG_VIRTUAL_PREFIX)
-		? path.slice(TAG_VIRTUAL_PREFIX.length)
-		: null;
-}
 
 function normalizePath(path: string): string {
 	return path.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");

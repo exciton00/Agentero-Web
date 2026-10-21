@@ -22,7 +22,7 @@ import {
 	DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { errorMessage, notifyError, notifySuccess } from "@/lib/core/notify";
+import { notifyError, notifySuccess } from "@/lib/core/notify";
 import { paperTagsChange } from "@/lib/paper/library-actions";
 import { editablePaperTags, type PaperTag } from "@/lib/paper/tags";
 import { refreshTagsIndex } from "@/lib/paper/tags-index";
@@ -31,11 +31,15 @@ import { getVaultPath } from "@/lib/vault/store";
 
 export function AddPaperTagsDialog({
 	paper,
+	papers,
 	open,
 	suggestions,
 	onOpenChange,
 }: {
-	paper: PaperMetadata | null;
+	/** Single target (row context menu). */
+	paper?: PaperMetadata | null;
+	/** Batch targets: the dialog tags are merged into every paper. */
+	papers?: PaperMetadata[];
 	open: boolean;
 	suggestions: PaperTag[];
 	onOpenChange: (open: boolean) => void;
@@ -45,12 +49,26 @@ export function AddPaperTagsDialog({
 	const [tags, setTags] = useState<PaperTag[]>([]);
 	const [busy, setBusy] = useState(false);
 
-	// Re-seed the draft whenever the dialog opens for a (possibly other) paper.
+	/** Deduped targets: batch list wins, single row kept for compatibility. */
+	const targets = useMemo(() => {
+		const list = papers && papers.length > 0 ? papers : paper ? [paper] : [];
+		const byKey = new Map<string, PaperMetadata>();
+		for (const target of list) {
+			const key = target.path?.trim() || target.id;
+			if (key) byKey.set(key, target);
+		}
+		return [...byKey.values()];
+	}, [paper, papers]);
+	const batch = targets.length > 1;
+
+	// Re-seed the draft whenever the dialog opens for (possibly other) papers.
 	useEffect(() => {
-		if (!open || !paper) return;
-		setTags(editablePaperTags(paper.tags ?? []) as PaperTag[]);
+		if (!open || targets.length === 0) return;
+		setTags(
+			batch ? [] : (editablePaperTags(targets[0].tags ?? []) as PaperTag[]),
+		);
 		setDraft("");
-	}, [open, paper]);
+	}, [open, targets, batch]);
 
 	const selected = useMemo(() => new Set(tags.map((tag) => tag.name)), [tags]);
 	const unusedSuggestions = useMemo(
@@ -70,21 +88,44 @@ export function AddPaperTagsDialog({
 	};
 
 	const save = async () => {
-		if (!paper || busy) return;
+		if (targets.length === 0 || busy) return;
 		const pending = draft.trim();
 		const next =
 			pending && !selected.has(pending) ? [...tags, { name: pending }] : tags;
 		setBusy(true);
 		try {
-			const updated = await paperTagsChange(paper, next);
-			if (!updated) return;
-			notifySuccess(t("papersLibrary.addTagSaved"));
-			void refreshTagsIndex(getVaultPath());
-			onOpenChange(false);
-		} catch (error) {
-			notifyError(t("paperInfo.tagsSaveFailed"), {
-				description: errorMessage(error),
-			});
+			let saved = 0;
+			let failed = 0;
+			for (const target of targets) {
+				const current = editablePaperTags(target.tags ?? []) as PaperTag[];
+				const existing = new Set(current.map((tag) => tag.name));
+				// Batch: keep each paper's own tags and merge the dialog tags in.
+				// Single: the dialog is the full tag set (supports removal).
+				const merged = batch
+					? [...current, ...next.filter((tag) => !existing.has(tag.name))]
+					: next;
+				try {
+					const updated = await paperTagsChange(target, merged);
+					if (updated) saved += 1;
+					else failed += 1;
+				} catch {
+					failed += 1;
+				}
+			}
+			if (saved > 0) {
+				notifySuccess(
+					batch
+						? t("papersLibrary.batchTagsSaved", { count: saved })
+						: t("papersLibrary.addTagSaved"),
+				);
+				void refreshTagsIndex(getVaultPath());
+				onOpenChange(false);
+			}
+			if (failed > 0) {
+				notifyError(t("paperInfo.tagsSaveFailed"), {
+					description: t("papersLibrary.batchTagsPartial", { failed }),
+				});
+			}
 		} finally {
 			setBusy(false);
 		}
@@ -94,8 +135,19 @@ export function AddPaperTagsDialog({
 		<Dialog open={open} onOpenChange={onOpenChange}>
 			<DialogContent className="max-w-md">
 				<DialogHeader>
-					<DialogTitle>{t("papersLibrary.addTagTitle")}</DialogTitle>
+					<DialogTitle>
+						{batch
+							? t("papersLibrary.batchAddTagTitle", {
+									count: targets.length,
+								})
+							: t("papersLibrary.addTagTitle")}
+					</DialogTitle>
 				</DialogHeader>
+				{batch ? (
+					<p className="text-muted-foreground text-xs">
+						{t("papersLibrary.batchAddTagHint", { count: targets.length })}
+					</p>
+				) : null}
 				<div className="space-y-3">
 					<div className="flex flex-wrap gap-1.5">
 						{tags.length === 0 ? (

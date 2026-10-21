@@ -389,6 +389,14 @@ export const LibraryTableHeader = memo(function LibraryTableHeader({
 								</th>
 							);
 						})}
+						{/* Trailing fixed cell: PDF / layout-analysis asset badges. */}
+						<th
+							scope="col"
+							className="w-14 p-0 font-medium"
+							aria-label={t("papersLibrary.assetsColumn")}
+						>
+							<span className="sr-only">{t("papersLibrary.assetsColumn")}</span>
+						</th>
 					</tr>
 				</thead>
 			</ContextMenuTrigger>

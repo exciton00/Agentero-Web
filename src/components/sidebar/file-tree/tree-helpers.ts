@@ -6,7 +6,6 @@ import {
 	paperVisibleChildren,
 } from "@/lib/paper";
 import { LIBRARY_VIRTUAL_PATH, TRASH_VIRTUAL_PATH } from "@/lib/paper/api";
-import { isTagsVirtualPath } from "@/lib/paper/tags-index";
 import { isPlazaVirtualPath, PLAZA_VIRTUAL_PATH } from "@/lib/plaza";
 import type { FileNode } from "@/lib/vault";
 import { normalizePathKey } from "@/lib/vault/path";
@@ -43,7 +42,6 @@ export function isVirtualTreePath(path: string): boolean {
 		path === LIBRARY_VIRTUAL_PATH ||
 		path === TRASH_VIRTUAL_PATH ||
 		isPlazaVirtualPath(path) ||
-		isTagsVirtualPath(path) ||
 		isZoteroCollectionReferencePath(path)
 	);
 }
