@@ -132,19 +132,23 @@ export async function bootstrapWebVault(): Promise<string | null> {
 	}
 	// Remote handles are desktop-only (SSH sessions) — never restore them here.
 	if (storedRoot.startsWith("remote:")) storedRoot = "";
-	const shouldSeed = !storedRoot && Boolean(serverRoot);
-	if (shouldSeed) {
+	// In a web deployment the server's Vault is authoritative: a stale path from
+	// a previous deployment (or another tab) must not shadow it. Seed both the
+	// per-window session path and the last/recent lists so the rest of the app
+	// (welcome screen, session restore) agrees with the server.
+	if (serverRoot) {
 		try {
+			sessionStorage.setItem(VAULT_PATH_STORAGE_KEY, serverRoot);
 			localStorage.setItem(VAULT_PATH_STORAGE_KEY, serverRoot);
 			localStorage.setItem(
 				RECENT_VAULTS_STORAGE_KEY,
 				JSON.stringify([serverRoot]),
 			);
 		} catch {
-			// Quota / private mode: still open the server Vault this load.
+			// Quota / private mode: the in-memory boot path still opens it.
 		}
 	}
-	bootVaultRoot = storedRoot || serverRoot || null;
+	bootVaultRoot = serverRoot || storedRoot || null;
 	return bootVaultRoot;
 }
 

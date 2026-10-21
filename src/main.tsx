@@ -52,7 +52,7 @@ function bootStage(name: string) {
  * pass `null` and keep their existing restore logic untouched.
  */
 function applyWebBootVault(vaultRoot: string | null): void {
-	if (!vaultRoot || getVaultPath()) return;
+	if (!vaultRoot || getVaultPath() === vaultRoot) return;
 	setVaultPath(vaultRoot);
 }
 
