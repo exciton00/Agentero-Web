@@ -1,45 +1,26 @@
 /**
  * Row interactions for the library table.
  *
- * - Single-click a row opens the paper after a short delay.
- * - Double-click a cell copies that field; the second click cancels the pending
- *   open so a copy never also opens the paper.
- * - Direct open (context menu) cancels any pending open.
+ * - Single-click selects the row (Paper Info follows the selection).
+ * - Double-click opens the paper (`detail > 1` arrives on the second click).
+ * - Double-click a cell still copies that field (called from the cell renderer).
+ * - Direct open (context menu / Enter) opens immediately.
  */
 import type { MouseEvent as ReactMouseEvent } from "react";
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback } from "react";
 import type { CellT } from "@/components/library/library-row-utils";
 import { copyTextToClipboard } from "@/lib/core/clipboard";
 import type { PaperMetadata } from "@/lib/paper";
 
-/**
- * Delay before committing a single-click open.
- * Must outlast a typical double-click interval so a double-click copy can
- * cancel the open before it fires.
- */
-const ROW_OPEN_CLICK_DELAY_MS = 320;
-
 export function useCellCopy({
 	t,
 	onOpenPaper,
+	onSelectPaper,
 }: {
 	t: CellT;
 	onOpenPaper: (paper: PaperMetadata) => void;
+	onSelectPaper?: (paper: PaperMetadata) => void;
 }) {
-	/** Pending row-open timer — cleared by a double-click or direct open. */
-	const pendingOpenTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-		null,
-	);
-
-	const cancelPendingOpen = useCallback(() => {
-		if (pendingOpenTimerRef.current != null) {
-			clearTimeout(pendingOpenTimerRef.current);
-			pendingOpenTimerRef.current = null;
-		}
-	}, []);
-
-	useEffect(() => () => cancelPendingOpen(), [cancelPendingOpen]);
-
 	/** Double-click a cell → copy that field; skip empty values. */
 	const copyField = useCallback(
 		async (text: string | null | undefined, label: string) => {
@@ -66,31 +47,26 @@ export function useCellCopy({
 	);
 
 	/**
-	 * Single-click a row → schedule open. Double-click (detail > 1) cancels the
-	 * pending open so copying a cell does not also open the paper.
+	 * Row click: the first click selects, the second (double-click) opens the
+	 * paper. Cell double-click copy handlers run in parallel.
 	 */
 	const onRowClick = useCallback(
 		(e: ReactMouseEvent, paper: PaperMetadata) => {
 			if (e.detail > 1) {
-				cancelPendingOpen();
+				onOpenPaper(paper);
 				return;
 			}
-			cancelPendingOpen();
-			pendingOpenTimerRef.current = setTimeout(() => {
-				pendingOpenTimerRef.current = null;
-				onOpenPaper(paper);
-			}, ROW_OPEN_CLICK_DELAY_MS);
+			onSelectPaper?.(paper);
 		},
-		[cancelPendingOpen, onOpenPaper],
+		[onOpenPaper, onSelectPaper],
 	);
 
-	/** Direct open from the context menu — cancel any pending click-open first. */
+	/** Direct open from the context menu / keyboard — no click heuristics. */
 	const openPaperFromRow = useCallback(
 		(paper: PaperMetadata) => {
-			cancelPendingOpen();
 			onOpenPaper(paper);
 		},
-		[cancelPendingOpen, onOpenPaper],
+		[onOpenPaper],
 	);
 
 	return { onCellCopy, onRowClick, openPaperFromRow };

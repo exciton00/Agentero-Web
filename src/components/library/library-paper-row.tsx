@@ -15,7 +15,9 @@ import {
 	MessageSquarePlus,
 	Pencil,
 	RefreshCw,
+	Tag,
 	Trash2,
+	Upload,
 } from "lucide-react";
 import type { MouseEvent } from "react";
 import { Fragment, memo } from "react";
@@ -35,6 +37,7 @@ import {
 import { presentAgentComposer } from "@/lib/agent/composer-focus";
 import { broadcastAgentAttachContext } from "@/lib/agent/context-attach";
 import { notifyError } from "@/lib/core/notify";
+import { isWebHost } from "@/lib/core/tauri";
 import type { PaperMetadata } from "@/lib/paper";
 import { downloadLibraryPaper } from "@/lib/paper/library-actions";
 import { setEditMetaDraft } from "@/lib/paper/library-store";
@@ -53,7 +56,13 @@ type LibraryPaperRowProps = {
 	ctx: Pick<CellCtx, "t" | "onCellCopy">;
 	paperAbsPath: string | null;
 	canEditMeta: boolean;
+	/** Selected row highlight (single-click selects, Paper Info follows). */
+	selected: boolean;
 	onOpenPaper: (paper: PaperMetadata) => void;
+	/** Open the "add tags" editor for this row. */
+	onAddTags?: (paper: PaperMetadata) => void;
+	/** Pick a local PDF and upload it over the paper's canonical PDF file. */
+	onRequestPdfUpload?: (paper: PaperMetadata) => void;
 	onRowClick: (
 		e: MouseEvent<HTMLTableRowElement>,
 		paper: PaperMetadata,
@@ -73,7 +82,10 @@ export const LibraryPaperRow = memo(function LibraryPaperRow({
 	ctx,
 	paperAbsPath,
 	canEditMeta,
+	selected,
 	onOpenPaper,
+	onAddTags,
+	onRequestPdfUpload,
 	onRowClick,
 	onRefreshMetadata,
 	onHoverPaper,
@@ -92,7 +104,12 @@ export const LibraryPaperRow = memo(function LibraryPaperRow({
 				<tr
 					data-index={index}
 					ref={measureRef}
-					className="border-border/40 border-b transition-colors duration-100 hover:bg-accent/70 active:bg-accent"
+					className={
+						selected
+							? "border-border/40 border-b bg-accent/80 transition-colors duration-100 hover:bg-accent active:bg-accent"
+							: "border-border/40 border-b transition-colors duration-100 hover:bg-accent/70 active:bg-accent"
+					}
+					aria-selected={selected}
 					onClick={(e) => onRowClick(e, p)}
 					onMouseEnter={() => onHoverPaper?.(p.path ?? null)}
 				>
@@ -120,6 +137,18 @@ export const LibraryPaperRow = memo(function LibraryPaperRow({
 						{ctx.t("papersLibrary.rowEditMeta")}
 					</ContextMenuItem>
 				) : null}
+				{canEditMeta && onAddTags ? (
+					<ContextMenuItem onSelect={() => onAddTags(p)}>
+						<Tag className="size-3.5" />
+						{ctx.t("papersLibrary.rowAddTag")}
+					</ContextMenuItem>
+				) : null}
+				{canEditMeta && onRequestPdfUpload && paperAbsPath ? (
+					<ContextMenuItem onSelect={() => onRequestPdfUpload(p)}>
+						<Upload className="size-3.5" />
+						{ctx.t("papersLibrary.rowUploadPdf")}
+					</ContextMenuItem>
+				) : null}
 				{canEditMeta &&
 				onRefreshMetadata &&
 				(p.doi?.trim() || p.arxiv_id?.trim() || p.title?.trim()) ? (
@@ -140,7 +169,7 @@ export const LibraryPaperRow = memo(function LibraryPaperRow({
 							<MessageSquarePlus className="size-3.5" />
 							{ctx.t("fileTree.addToChat")}
 						</ContextMenuItem>
-						{canEditMeta ? (
+						{canEditMeta && !isWebHost() ? (
 							<ContextMenuItem
 								onSelect={() => {
 									void revealInFileManager(paperAbsPath).catch(() =>
