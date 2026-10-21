@@ -1,0 +1,2247 @@
+//! Application UI settings — XDG config file `settings.json`.
+//!
+//! Frontend `AppSettings` (camelCase JSON) is the source of shape; Host owns
+//! the durable file under [`crate::paths::settings_path`].
+//!
+//! Coupling contract: settings provides read/write/persist/broadcast only and
+//! never calls into domain features. Domains that must react to changes
+//! (connector port, agent proxy, import parser, jobs layout cap) register
+//! [`AppSettingsStore::subscribe`] listeners at app assembly; domain defaults
+//! needed at deserialize time (e.g. [`DEFAULT_CONNECTOR_PORT`]) live here and
+//! are re-exported by the owning domain.
+
+use crate::decision::{SystemOneCredentials, DEFAULT_SYSTEM_ONE_MODEL};
+use crate::error::AppError;
+use crate::features::system::builtin;
+use crate::paths::{self, settings_path};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+pub const DEFAULT_TRANSLATOR_BASE_URL: &str = "https://translation-server.agentero.app";
+pub const DEFAULT_NETWORK_PROXY_URL: &str = "http://127.0.0.1:7890";
+/// Default System One endpoint (TypeSafe jEV). Clef/OpenAI presets override it.
+pub const DEFAULT_DECISION_BASE_URL: &str = "https://api.typesafe.ai/v1/systemone";
+/// Built-in URL-prefix GitHub mirrors. The user picks from this list instead of
+/// typing a custom URL. All entries must support `{base}/{canonical_github_url}`.
+pub const GITHUB_MIRROR_PRESETS: &[&str] = &[
+    "https://gh.llkk.cc",
+    "https://mirror.ghproxy.com",
+    "https://ghproxy.net",
+    "https://github.moeyy.xyz",
+];
+/// Default Zotero Connector port (must match the official extension default).
+/// Owned here because the persisted `connectorPort` default must exist at
+/// deserialize time; `features::connector` re-exports it.
+pub const DEFAULT_CONNECTOR_PORT: u16 = 23119;
+/// Default loopback port for the optional MCP HTTP server.
+pub const DEFAULT_MCP_PORT: u16 = 8765;
+
+/// Built-in provider id, re-exported so the Host never re-types the literal.
+pub use crate::features::translate::BUILTIN_PROVIDER_ID;
+
+/// `EmbeddingSettings::source` vocabulary. Empty means "unset" and is resolved
+/// from the stored BYOK fields by [`normalize`], so a legacy `settings.json`
+/// with a populated endpoint keeps working without a `source` key.
+const EMBEDDING_SOURCE_BUILTIN: &str = "builtin";
+const EMBEDDING_SOURCE_CUSTOM: &str = "custom";
+
+/// Whether `provider` names the built-in provider (credentials come from the
+/// build, never from `providerConfigs`).
+fn is_builtin_provider(provider: &str) -> bool {
+    provider.trim().eq_ignore_ascii_case(BUILTIN_PROVIDER_ID)
+}
+
+/// True when `key` is a UI mask of only `*` (length mirrors the real secret).
+/// Real secrets stay in the Host process / settings file; `settings_set` treats
+/// an all-asterisk value as “keep previous key”.
+pub fn is_translate_api_key_mask(key: &str) -> bool {
+    let t = key.trim();
+    !t.is_empty() && t.chars().all(|c| c == '*')
+}
+
+/// Replace a non-empty secret with the same number of `*` characters.
+pub fn mask_translate_api_key(key: &str) -> String {
+    let n = key.trim().chars().count();
+    if n == 0 {
+        String::new()
+    } else {
+        "*".repeat(n)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AppSettings {
+    #[serde(default = "default_translator_base_url")]
+    pub translator_base_url: String,
+    /// EasyScholar key for journal ranking and impact-factor lookups.
+    #[serde(default)]
+    pub easy_scholar_key: String,
+    #[serde(default)]
+    pub network_proxy_enabled: bool,
+    #[serde(default = "default_network_proxy_url")]
+    pub network_proxy_url: String,
+    /// URL-prefix GitHub mirror for Skill import fallback when GitHub is unreachable.
+    #[serde(default)]
+    pub github_mirror_enabled: bool,
+    /// e.g. `https://gh.llkk.cc` — requests become `{base}/https://codeload.github.com/...`.
+    #[serde(default)]
+    pub github_mirror_base_url: String,
+    /// EZProxy/WebVPN prefix for paywalled PDF fallback, e.g.
+    /// `https://webvpn.example.edu/login?url=`. Empty disables the layer.
+    #[serde(default)]
+    pub institution_proxy_prefix: String,
+    /// Session cookie sent along with institution proxy requests (pasted from
+    /// the browser). Empty = no cookie.
+    #[serde(default)]
+    pub institution_proxy_cookie: String,
+    /// Gateway flavour: `ezproxy` (query passthrough) or `wengine`
+    /// (path-rewriting WebVPN, e.g. ZJU). Default `ezproxy`.
+    #[serde(default)]
+    pub institution_proxy_type: String,
+    #[serde(default = "default_paper_tree_label_mode")]
+    pub paper_tree_label_mode: String,
+    #[serde(default = "default_paper_tree_sort_mode")]
+    pub paper_tree_sort_mode: String,
+    /// NOTES.md shell generated on paper import:
+    /// `standard` | `title-only` | `blank` | `custom` (vault template).
+    #[serde(default = "default_paper_note_mode")]
+    pub paper_note_mode: String,
+    /// Open a paper's NOTES.md in the reading split when a paper is opened.
+    /// Default on; off opens only the PDF/HTML body.
+    #[serde(default = "default_true")]
+    pub auto_open_paper_notes: bool,
+    /// Auto-ingest: adopt bare folders created under `papers/` that hold at
+    /// least one settled PDF into the library in place (catalog row + NOTES
+    /// shell + background metadata recognition). Default on.
+    #[serde(default = "default_true")]
+    pub auto_ingest: bool,
+    /// When opening a new paper, close the active tab instead of adding a new one.
+    /// Default off; useful for users who prefer a single-paper-at-a-time workflow.
+    #[serde(default)]
+    pub replace_current_tab_on_open_paper: bool,
+    #[serde(default = "default_auto_update_internal_links")]
+    pub auto_update_internal_links: String,
+    /// PDF continuous-scroll direction: `vertical` | `horizontal`.
+    #[serde(default = "default_pdf_scroll_strategy")]
+    pub pdf_scroll_strategy: String,
+    /// PDF page layout: `none` (single page) | `odd` | `even` (two-page spread).
+    #[serde(default = "default_pdf_spread_mode")]
+    pub pdf_spread_mode: String,
+    #[serde(default = "default_library_columns")]
+    pub library_columns: Vec<LibraryColumnPref>,
+    #[serde(default)]
+    pub connector_enabled: bool,
+    #[serde(default = "default_connector_port")]
+    pub connector_port: u16,
+    /// Loopback Streamable HTTP MCP server. Default off.
+    #[serde(default)]
+    pub mcp_enabled: bool,
+    #[serde(default = "default_mcp_port")]
+    pub mcp_port: u16,
+    /// Opt-in: expose paper full text (`paper_text_get`) through the MCP
+    /// server. Default off — external clients only see metadata and NOTES.
+    #[serde(default)]
+    pub mcp_expose_paper_text: bool,
+    /// OpenAI Secure MCP Tunnel id (`tunnel_` + 32 hex) for the built-in
+    /// `tunnel-client` supervisor. Empty = never configured.
+    #[serde(default)]
+    pub mcp_tunnel_id: String,
+    /// Runtime (Restricted) control-plane API key. Masked on read like the
+    /// other commercial keys; the WebView never sees the plaintext.
+    #[serde(default)]
+    pub mcp_tunnel_api_key: String,
+    #[serde(default = "default_batch_import_concurrency")]
+    pub batch_import_concurrency: u32,
+    #[serde(default = "default_theme")]
+    pub theme: String,
+    #[serde(default = "default_ui_theme")]
+    pub ui_theme: String,
+    #[serde(default = "default_locale")]
+    pub locale: String,
+    #[serde(default = "default_editor_font_size")]
+    pub editor_font_size: u32,
+    /// UI chrome font. Empty = app default. Built-ins: system/serif/mono, else family name.
+    #[serde(default)]
+    pub interface_font_family: String,
+    /// Markdown body font. Empty = inherit interface/default. Same vocabulary as interface.
+    #[serde(default)]
+    pub text_font_family: String,
+    /// Monospace font for code / font-mono. Empty = app default mono stack.
+    #[serde(default)]
+    pub mono_font_family: String,
+    /// Deprecated single editor font preset; migrated into `text_font_family` once.
+    #[serde(default, skip_serializing)]
+    pub editor_font_family: String,
+    /// Markdown editor body line-height (unitless), typical range 1.4–2.0.
+    #[serde(default = "default_editor_line_height")]
+    pub editor_line_height: f64,
+    #[serde(default = "default_ui_scale")]
+    pub ui_scale: f64,
+    #[serde(default = "default_true")]
+    pub show_editor_toolbar: bool,
+    /// Body size of wikilink embeds, px before UI scale. Range 12–20, default 13.
+    #[serde(default = "default_wiki_embed_font_size")]
+    pub wiki_embed_font_size: u32,
+    /// Markdown column max width in CSS px. 0 = full pane. Presets only.
+    #[serde(default = "default_markdown_max_width")]
+    pub markdown_max_width: u32,
+    #[serde(default = "default_permission_mode")]
+    pub agent_permission_mode: String,
+    #[serde(default)]
+    pub auto_paper_reader: bool,
+    #[serde(default = "default_ai_response_language")]
+    pub ai_response_language: String,
+    #[serde(default)]
+    pub agent_personal_prompt: String,
+    #[serde(default)]
+    pub pdf_ask: PdfAskSettings,
+    /// Decision-layer provider (System One: jEV / Cloudflare Clef / compatible).
+    /// The legacy `jev` key is still read for backward compatibility.
+    #[serde(default, alias = "jev")]
+    pub decision: DecisionSettings,
+    #[serde(default)]
+    pub embedding: EmbeddingSettings,
+    #[serde(default)]
+    pub translate: TranslateSettings,
+    #[serde(default)]
+    pub layout: LayoutSettings,
+    /// PostHog product analytics opt-out (applies from the next launch).
+    #[serde(default = "default_true")]
+    pub telemetry_enabled: bool,
+    /// Plaza discovery sources in the sidebar. Default on.
+    #[serde(default = "default_true")]
+    pub plaza_enabled: bool,
+    /// Plaza source ids hidden from the sidebar / Plaza home (right-click toggle).
+    #[serde(default)]
+    pub plaza_hidden_sources: Vec<String>,
+    /// First-run setup wizard completed. Default false → auto-show on fresh installs.
+    #[serde(default)]
+    pub onboarding_done: bool,
+    /// Post-vault feature tour completed or skipped. Default false → auto-start once.
+    #[serde(default)]
+    pub feature_tour_done: bool,
+    /// Config reminders the user dismissed with "don't remind me again"
+    /// (`layout-local-model` | `network-proxy`). Unknown ids are dropped on save.
+    #[serde(default)]
+    pub dismissed_reminders: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PdfAskSettings {
+    #[serde(default)]
+    pub agent_id: String,
+    #[serde(default)]
+    pub model_id: String,
+}
+
+/// Decision-layer provider settings.
+///
+/// The layer speaks the System One contract (`state + questions -> answers`),
+/// implemented by TypeSafe jEV, Cloudflare Clef, and compatible endpoints.
+/// `provider` selects a vendor preset; `base_url` / `model` can be overridden,
+/// so the OpenAI Decisions API slots in here once its public contract ships.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DecisionSettings {
+    /// `jev` | `clef` | `openai` | `custom` (empty = `jev`).
+    #[serde(default)]
+    pub provider: String,
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default)]
+    pub base_url: String,
+    /// Model id injected into every request (e.g. `jev-latest`, `clef`).
+    #[serde(default)]
+    pub model: String,
+    /// Whether the experimental smart-highlight toolbar action is enabled.
+    #[serde(default)]
+    pub smart_highlight: bool,
+}
+
+impl Default for DecisionSettings {
+    fn default() -> Self {
+        Self {
+            provider: default_decision_provider(),
+            api_key: String::new(),
+            base_url: default_decision_base_url(),
+            model: default_decision_model(),
+            smart_highlight: false,
+        }
+    }
+}
+
+/// Embedding endpoint: the built-in provider, or a custom OpenAI-compatible
+/// one (BYOK). Custom with all-empty fields = feature disabled.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct EmbeddingSettings {
+    /// `builtin` | `custom`; empty = unset and inferred from the fields below.
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub base_url: String,
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default)]
+    pub model: String,
+}
+
+/// One column in the papers Library table: array order = display order.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryColumnPref {
+    pub key: String,
+    pub visible: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width_rem: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TranslateSettings {
+    #[serde(default = "default_translate_provider")]
+    pub provider: String,
+    #[serde(default = "default_translate_target")]
+    pub target_lang: String,
+    #[serde(default = "default_translate_source")]
+    pub source_lang: String,
+    #[serde(default)]
+    pub provider_configs: HashMap<String, TranslateProviderConfig>,
+    #[serde(default)]
+    pub auto_translate_selection: bool,
+    /// Deprecated: kept for migration. Use `display_mode` + `dual_pane_source`.
+    #[serde(default)]
+    pub dual_pane_translate: bool,
+    #[serde(default = "default_translate_display_mode")]
+    pub display_mode: String,
+    #[serde(default = "default_translate_dual_pane_source")]
+    pub dual_pane_source: String,
+    #[serde(default)]
+    pub agent_id: String,
+    #[serde(default)]
+    pub model_id: String,
+    /// Legacy single template. Empty when `custom_system` is set. A short line
+    /// is an extra preference; a longer value replaces the academic style
+    /// block only. Engine rules always stay. Max 8000 chars.
+    #[serde(default)]
+    pub custom_prompt: String,
+    /// Custom system style / preference. Wins over `custom_prompt`.
+    /// Placeholders: `{{targetLang}}`, `{{sourceLang}}`, `{{text}}`.
+    #[serde(default)]
+    pub custom_system: String,
+    /// Custom user template. Applied only when it contains `{{text}}`.
+    #[serde(default)]
+    pub custom_user: String,
+}
+
+impl Default for TranslateSettings {
+    fn default() -> Self {
+        Self {
+            provider: default_translate_provider(),
+            target_lang: default_translate_target(),
+            source_lang: default_translate_source(),
+            provider_configs: HashMap::new(),
+            auto_translate_selection: false,
+            dual_pane_translate: false,
+            display_mode: default_translate_display_mode(),
+            dual_pane_source: default_translate_dual_pane_source(),
+            agent_id: String::new(),
+            model_id: String::new(),
+            custom_prompt: String::new(),
+            custom_system: String::new(),
+            custom_user: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TranslateProviderConfig {
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default)]
+    pub base_url: String,
+    #[serde(default)]
+    pub region: String,
+    #[serde(default)]
+    pub model: String,
+}
+
+/// PDF layout-analysis backend selection.
+/// - `local`: on-device PP-DocLayoutV3 (ONNX in the renderer).
+/// - `paddle`: remote PP-StructureV3 async job API (`POST {base}/api/v2/ocr/jobs`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LayoutSettings {
+    #[serde(default = "default_layout_backend")]
+    pub backend: String,
+    /// PAPER.md body-parse engine: `local` | `paddle` | `mineru` |
+    /// `openaiCompatible` | `agentero` (built-in).
+    #[serde(default = "default_parser_backend")]
+    pub parser_backend: String,
+    #[serde(default)]
+    pub provider_configs: HashMap<String, LayoutProviderConfig>,
+}
+
+impl Default for LayoutSettings {
+    fn default() -> Self {
+        Self {
+            backend: default_layout_backend(),
+            parser_backend: default_parser_backend(),
+            provider_configs: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LayoutProviderConfig {
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default)]
+    pub base_url: String,
+    #[serde(default)]
+    pub model: String,
+    /// OCR prompt override; empty → the engine derives one from the model id.
+    #[serde(default)]
+    pub prompt: String,
+    /// MinerU document language (OCR language pack); normalize() enforces the
+    /// MinerU vocabulary and falls back to `ch`.
+    #[serde(default)]
+    pub language: String,
+    /// MinerU force-OCR: run OCR on every page regardless of the PDF text layer.
+    #[serde(default)]
+    pub is_ocr: bool,
+    /// Treat `base_url` as a self-hosted MinerU server (version-detected)
+    /// instead of the official cloud API (which also covers relays).
+    #[serde(default)]
+    pub self_hosted: bool,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            translator_base_url: DEFAULT_TRANSLATOR_BASE_URL.to_string(),
+            easy_scholar_key: String::new(),
+            network_proxy_enabled: false,
+            network_proxy_url: default_network_proxy_url(),
+            github_mirror_enabled: false,
+            github_mirror_base_url: GITHUB_MIRROR_PRESETS[0].to_string(),
+            institution_proxy_prefix: String::new(),
+            institution_proxy_cookie: String::new(),
+            institution_proxy_type: "ezproxy".to_string(),
+            paper_tree_label_mode: default_paper_tree_label_mode(),
+            paper_tree_sort_mode: default_paper_tree_sort_mode(),
+            paper_note_mode: default_paper_note_mode(),
+            auto_open_paper_notes: default_true(),
+            auto_ingest: default_true(),
+            replace_current_tab_on_open_paper: false,
+            auto_update_internal_links: default_auto_update_internal_links(),
+            pdf_scroll_strategy: default_pdf_scroll_strategy(),
+            pdf_spread_mode: default_pdf_spread_mode(),
+            library_columns: default_library_columns(),
+            connector_enabled: false,
+            connector_port: default_connector_port(),
+            mcp_enabled: false,
+            mcp_expose_paper_text: false,
+            mcp_port: default_mcp_port(),
+            mcp_tunnel_id: String::new(),
+            mcp_tunnel_api_key: String::new(),
+            batch_import_concurrency: default_batch_import_concurrency(),
+            theme: default_theme(),
+            ui_theme: default_ui_theme(),
+            locale: default_locale(),
+            editor_font_size: default_editor_font_size(),
+            interface_font_family: String::new(),
+            text_font_family: String::new(),
+            mono_font_family: String::new(),
+            editor_font_family: String::new(),
+            editor_line_height: default_editor_line_height(),
+            ui_scale: default_ui_scale(),
+            show_editor_toolbar: true,
+            wiki_embed_font_size: default_wiki_embed_font_size(),
+            markdown_max_width: default_markdown_max_width(),
+            agent_permission_mode: default_permission_mode(),
+            auto_paper_reader: false,
+            ai_response_language: default_ai_response_language(),
+            agent_personal_prompt: String::new(),
+            pdf_ask: PdfAskSettings::default(),
+            decision: DecisionSettings::default(),
+            embedding: EmbeddingSettings::default(),
+            translate: TranslateSettings::default(),
+            layout: LayoutSettings::default(),
+            telemetry_enabled: default_true(),
+            plaza_enabled: default_true(),
+            plaza_hidden_sources: Vec::new(),
+            onboarding_done: false,
+            feature_tour_done: false,
+            dismissed_reminders: Vec::new(),
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+fn default_translator_base_url() -> String {
+    DEFAULT_TRANSLATOR_BASE_URL.to_string()
+}
+fn default_network_proxy_url() -> String {
+    DEFAULT_NETWORK_PROXY_URL.to_string()
+}
+fn default_decision_provider() -> String {
+    "jev".to_string()
+}
+fn default_decision_base_url() -> String {
+    DEFAULT_DECISION_BASE_URL.to_string()
+}
+fn default_decision_model() -> String {
+    DEFAULT_SYSTEM_ONE_MODEL.to_string()
+}
+fn default_paper_tree_label_mode() -> String {
+    "title-author".into()
+}
+fn default_paper_tree_sort_mode() -> String {
+    "folder".into()
+}
+fn default_paper_note_mode() -> String {
+    "standard".into()
+}
+fn default_auto_update_internal_links() -> String {
+    "ask".into()
+}
+fn default_pdf_scroll_strategy() -> String {
+    "vertical".into()
+}
+fn default_pdf_spread_mode() -> String {
+    "none".into()
+}
+/// Canonical papers-Library column keys, in default order.
+const LIBRARY_COLUMN_KEYS: &[&str] = &[
+    "title",
+    "authors",
+    "date",
+    "publication",
+    "tags",
+    "id",
+    "citations",
+    "addedAt",
+];
+fn default_library_columns() -> Vec<LibraryColumnPref> {
+    LIBRARY_COLUMN_KEYS
+        .iter()
+        .map(|&key| LibraryColumnPref {
+            key: key.to_string(),
+            visible: key != "addedAt",
+            width_rem: None,
+        })
+        .collect()
+}
+fn default_theme() -> String {
+    "system".into()
+}
+/// tweakcn preset name; the theme list lives in the frontend bundle, so the
+/// Host only guarantees a non-empty value.
+fn default_ui_theme() -> String {
+    "default".into()
+}
+fn default_locale() -> String {
+    "system".into()
+}
+fn default_editor_font_size() -> u32 {
+    14
+}
+fn default_editor_line_height() -> f64 {
+    1.6
+}
+fn default_wiki_embed_font_size() -> u32 {
+    13
+}
+fn default_markdown_max_width() -> u32 {
+    0
+}
+fn normalize_markdown_max_width(value: u32) -> u32 {
+    const ALLOWED: &[u32] = &[0, 640, 720, 800, 960, 1120];
+    if ALLOWED.contains(&value) {
+        value
+    } else {
+        default_markdown_max_width()
+    }
+}
+
+fn normalize_font_family_value(raw: &str) -> String {
+    let v = raw.trim();
+    if v.is_empty() || v == "default" {
+        return String::new();
+    }
+    v.chars().take(120).collect()
+}
+fn default_ui_scale() -> f64 {
+    1.0
+}
+fn default_permission_mode() -> String {
+    "restricted".into()
+}
+fn default_ai_response_language() -> String {
+    "auto".into()
+}
+fn default_translate_provider() -> String {
+    if builtin::available() {
+        BUILTIN_PROVIDER_ID.to_string()
+    } else {
+        "tencenttransmart".into()
+    }
+}
+fn default_connector_port() -> u16 {
+    DEFAULT_CONNECTOR_PORT
+}
+fn default_mcp_port() -> u16 {
+    DEFAULT_MCP_PORT
+}
+fn default_batch_import_concurrency() -> u32 {
+    5
+}
+fn default_translate_target() -> String {
+    "ui".into()
+}
+fn default_translate_source() -> String {
+    "auto".into()
+}
+fn default_translate_display_mode() -> String {
+    "overlay".into()
+}
+fn default_translate_dual_pane_source() -> String {
+    "pdf".into()
+}
+/// Layout analysis stays on the bundled offline PP-DocLayoutV3 model: it is
+/// free, local, and a cloud backend would bill every PDF for no gain. The
+/// built-in provider is a *parser* (body-text) backend only.
+fn default_layout_backend() -> String {
+    "local".into()
+}
+fn default_parser_backend() -> String {
+    if builtin::available() {
+        BUILTIN_PROVIDER_ID.to_string()
+    } else {
+        "local".into()
+    }
+}
+
+/// Domain reaction fired after settings are persisted. Receives the same
+/// redacted snapshot that `settings_set` returns and broadcasts.
+pub type SettingsListener = Arc<dyn Fn(&AppSettings) + Send + Sync>;
+
+/// In-memory + file-backed settings store.
+pub struct AppSettingsStore {
+    inner: Mutex<AppSettings>,
+    path: PathBuf,
+    /// Domain reactions registered by the app assembly; fired after every
+    /// successful [`set`](Self::set). Registering from the assembly (instead
+    /// of calling domains from here) keeps settings schema-agnostic.
+    listeners: Mutex<Vec<SettingsListener>>,
+}
+
+#[derive(Debug, Clone, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsGetResult {
+    pub settings: AppSettings,
+    /// Absolute path to the settings file.
+    pub path: String,
+    /// Whether the file already existed before this read (false → first run / defaults).
+    pub existed: bool,
+}
+
+impl AppSettingsStore {
+    pub fn load() -> Self {
+        let path = settings_path();
+        paths::migrate_legacy_file("settings.json", &path);
+        let (settings, _existed) = read_file(&path);
+        Self {
+            inner: Mutex::new(settings),
+            path,
+            listeners: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// In-memory store over `settings` for tests. The path is a scratch name
+    /// under the temp dir and is only written if the test calls [`set`](Self::set).
+    #[cfg(test)]
+    pub fn for_tests(settings: AppSettings) -> Self {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default();
+        Self {
+            inner: Mutex::new(settings),
+            path: std::env::temp_dir().join(format!("agentero-settings-for-tests-{nanos}.json")),
+            listeners: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Register a domain reaction fired after every successful `set`.
+    /// Called by the app assembly on behalf of domains (connector port,
+    /// agent proxy, import parser, jobs layout cap), so settings keeps no
+    /// edges into domain features.
+    pub fn subscribe(&self, listener: impl Fn(&AppSettings) + Send + Sync + 'static) {
+        if let Ok(mut guard) = self.listeners.lock() {
+            guard.push(Arc::new(listener));
+        }
+    }
+
+    fn notify(&self, settings: &AppSettings) {
+        let Ok(listeners) = self.listeners.lock().map(|guard| guard.clone()) else {
+            return;
+        };
+        for listener in listeners.iter() {
+            listener(settings);
+        }
+    }
+
+    pub fn path(&self) -> &PathBuf {
+        &self.path
+    }
+
+    pub fn get(&self) -> Result<SettingsGetResult, AppError> {
+        let settings = self
+            .inner
+            .lock()
+            .map_err(|_| AppError::message("settings lock poisoned"))?
+            .clone();
+        let existed = self.path.is_file();
+        Ok(SettingsGetResult {
+            settings: redact_secrets(settings),
+            path: self.path.to_string_lossy().into_owned(),
+            existed,
+        })
+    }
+
+    pub fn set(&self, mut settings: AppSettings) -> Result<AppSettings, AppError> {
+        {
+            let previous = self
+                .inner
+                .lock()
+                .map_err(|_| AppError::message("settings lock poisoned"))?;
+            merge_secrets(&mut settings, &previous);
+        }
+        normalize(&mut settings);
+        persist(&self.path, &settings)?;
+        // Never echo raw API keys back to the WebView / settings:changed.
+        let redacted = {
+            let mut guard = self
+                .inner
+                .lock()
+                .map_err(|_| AppError::message("settings lock poisoned"))?;
+            *guard = settings.clone();
+            redact_secrets(settings)
+        };
+        // Fire domain reactions with the store lock released: listeners read
+        // back into the store (e.g. import::refresh_parser_config).
+        self.notify(&redacted);
+        Ok(redacted)
+    }
+
+    /// Resolve a commercial MT API key by provider id (case-insensitive).
+    /// Used by `translate_text` so the WebView never needs the plaintext key.
+    pub fn translate_api_key(&self, provider: &str) -> Option<String> {
+        let key = commercial_provider_settings_key(provider)?;
+        let guard = self.inner.lock().ok()?;
+        let cfg = guard.translate.provider_configs.get(key)?;
+        let api_key = cfg.api_key.trim();
+        if api_key.is_empty() || is_translate_api_key_mask(api_key) {
+            None
+        } else {
+            Some(api_key.to_string())
+        }
+    }
+
+    /// Custom translate templates (legacy prompt, system, user). Injected by
+    /// `translate_text` for the OpenAI-compatible path. The Agent path reads
+    /// the same fields on the frontend.
+    pub fn translate_custom_templates(&self) -> (String, String, String) {
+        self.inner
+            .lock()
+            .ok()
+            .map(|guard| {
+                (
+                    guard.translate.custom_prompt.trim().to_string(),
+                    guard.translate.custom_system.trim().to_string(),
+                    guard.translate.custom_user.trim().to_string(),
+                )
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn layout_backend(&self) -> String {
+        self.inner
+            .lock()
+            .ok()
+            .map(|guard| guard.layout.backend.clone())
+            .filter(|backend| !backend.trim().is_empty())
+            .unwrap_or_else(default_layout_backend)
+    }
+
+    /// Magic-wand / import parallelism, seeded into the JobCenter `Import` cap.
+    pub fn batch_import_concurrency(&self) -> usize {
+        self.inner
+            .lock()
+            .ok()
+            .map(|guard| guard.batch_import_concurrency.max(1) as usize)
+            .unwrap_or_else(|| default_batch_import_concurrency() as usize)
+    }
+
+    /// PAPER.md body-parse engine backend (`local` when unset).
+    pub fn parser_backend(&self) -> String {
+        self.inner
+            .lock()
+            .ok()
+            .map(|guard| guard.layout.parser_backend.clone())
+            .filter(|backend| !backend.trim().is_empty())
+            .unwrap_or_else(default_parser_backend)
+    }
+
+    /// Resolve a layout-provider API key by provider id (e.g. `paddle`).
+    /// Used by the layout_remote commands so the WebView never needs the key.
+    ///
+    /// The built-in provider resolves here rather than in each caller: it has no
+    /// `providerConfigs` card (its key must never be persistable), so without
+    /// this the parser engine would see no credentials at all.
+    pub fn layout_api_key(&self, provider: &str) -> Option<String> {
+        if is_builtin_provider(provider) {
+            return builtin::api_key().map(str::to_string);
+        }
+        let key = layout_provider_settings_key(provider)?;
+        let guard = self.inner.lock().ok()?;
+        let cfg = guard.layout.provider_configs.get(key)?;
+        let api_key = cfg.api_key.trim();
+        if api_key.is_empty() || is_translate_api_key_mask(api_key) {
+            None
+        } else {
+            Some(api_key.to_string())
+        }
+    }
+
+    /// Resolve a layout-provider base URL by provider id (empty → None).
+    pub fn layout_base_url(&self, provider: &str) -> Option<String> {
+        if is_builtin_provider(provider) {
+            return Some(builtin::status().base_url);
+        }
+        let key = layout_provider_settings_key(provider)?;
+        let guard = self.inner.lock().ok()?;
+        let cfg = guard.layout.provider_configs.get(key)?;
+        let base_url = cfg.base_url.trim();
+        if base_url.is_empty() {
+            None
+        } else {
+            Some(base_url.to_string())
+        }
+    }
+
+    /// Resolve a layout-provider model id by provider id (empty → None).
+    pub fn layout_model(&self, provider: &str) -> Option<String> {
+        if is_builtin_provider(provider) {
+            return Some(builtin::status().ocr_model);
+        }
+        let key = layout_provider_settings_key(provider)?;
+        let guard = self.inner.lock().ok()?;
+        let cfg = guard.layout.provider_configs.get(key)?;
+        let model = cfg.model.trim();
+        if model.is_empty() {
+            None
+        } else {
+            Some(model.to_string())
+        }
+    }
+
+    /// Resolve a layout-provider OCR prompt override (empty → None).
+    pub fn layout_prompt(&self, provider: &str) -> Option<String> {
+        let key = layout_provider_settings_key(provider)?;
+        let guard = self.inner.lock().ok()?;
+        let cfg = guard.layout.provider_configs.get(key)?;
+        let prompt = cfg.prompt.trim();
+        if prompt.is_empty() {
+            None
+        } else {
+            Some(prompt.to_string())
+        }
+    }
+
+    /// Resolve a layout-provider document language (empty → None; the MinerU
+    /// engine falls back to `ch`).
+    pub fn layout_language(&self, provider: &str) -> Option<String> {
+        let key = layout_provider_settings_key(provider)?;
+        let guard = self.inner.lock().ok()?;
+        let cfg = guard.layout.provider_configs.get(key)?;
+        let language = cfg.language.trim();
+        if language.is_empty() {
+            None
+        } else {
+            Some(language.to_string())
+        }
+    }
+
+    /// Resolve a layout-provider force-OCR flag (default false).
+    pub fn layout_is_ocr(&self, provider: &str) -> bool {
+        layout_provider_settings_key(provider)
+            .and_then(|key| {
+                self.inner.lock().ok().map(|guard| {
+                    guard
+                        .layout
+                        .provider_configs
+                        .get(key)
+                        .is_some_and(|cfg| cfg.is_ocr)
+                })
+            })
+            .unwrap_or(false)
+    }
+
+    /// Resolve the MinerU self-hosted switch (default false). Only the MinerU
+    /// engine reads it; other providers return false.
+    pub fn layout_self_hosted(&self, provider: &str) -> bool {
+        layout_provider_settings_key(provider)
+            .and_then(|key| {
+                self.inner.lock().ok().map(|guard| {
+                    guard
+                        .layout
+                        .provider_configs
+                        .get(key)
+                        .is_some_and(|cfg| cfg.self_hosted)
+                })
+            })
+            .unwrap_or(false)
+    }
+
+    /// Whether [`Self::embedding_config`] resolves to the built-in gateway.
+    /// Callers that accept endpoint overrides must ignore them in this case:
+    /// the key is shared rather than the user's own, so honouring an override
+    /// would let any webview redirect it to an arbitrary host.
+    pub fn embedding_is_builtin(&self) -> bool {
+        self.inner
+            .lock()
+            .is_ok_and(|guard| embedding_uses_builtin(&guard.embedding))
+    }
+
+    /// Resolve the embedding endpoint (base URL, API key, model): the built-in
+    /// gateway unless the source is custom. None when a custom endpoint is
+    /// incomplete, which is what disables arXiv recommendations.
+    pub fn embedding_config(&self) -> Option<(String, Option<String>, String)> {
+        let guard = self.inner.lock().ok()?;
+        if embedding_uses_builtin(&guard.embedding) {
+            let status = builtin::status();
+            return Some((
+                status.base_url,
+                builtin::api_key().map(str::to_string),
+                status.embedding_model,
+            ));
+        }
+        let base_url = guard.embedding.base_url.trim();
+        let model = guard.embedding.model.trim();
+        if base_url.is_empty() || model.is_empty() {
+            return None;
+        }
+        let api_key = guard.embedding.api_key.trim();
+        let key = if api_key.is_empty() || is_translate_api_key_mask(api_key) {
+            None
+        } else {
+            Some(api_key.to_string())
+        };
+        Some((base_url.to_string(), key, model.to_string()))
+    }
+
+    /// Decision-layer System One credentials. Returns None when the API key is
+    /// unset or is a UI mask (`*`-only), so probes never send masks.
+    pub fn decision_config(&self) -> Option<SystemOneCredentials> {
+        let guard = self.inner.lock().ok()?;
+        let api_key = guard.decision.api_key.trim();
+        if api_key.is_empty() || is_translate_api_key_mask(api_key) {
+            return None;
+        }
+        Some(SystemOneCredentials {
+            api_key: api_key.to_string(),
+            base_url: guard.decision.base_url.trim().to_string(),
+            model: guard.decision.model.trim().to_string(),
+        })
+    }
+
+    /// Raw `(tunnel_id, api_key)` for the built-in ChatGPT tunnel supervisor.
+    /// Returns None unless both are set; a UI mask counts as unset so a
+    /// `settings_get` → `settings_set` round-trip never leaks or wipes the key.
+    pub fn mcp_tunnel_config(&self) -> Option<(String, String)> {
+        let guard = self.inner.lock().ok()?;
+        let id = guard.mcp_tunnel_id.trim().to_string();
+        let key = guard.mcp_tunnel_api_key.trim();
+        if id.is_empty() || key.is_empty() || is_translate_api_key_mask(key) {
+            return None;
+        }
+        Some((id, key.to_string()))
+    }
+
+    /// Resolve the configured institution proxy (prefix, cookie). None when
+    /// the prefix is unset.
+    pub fn institution_proxy(
+        &self,
+    ) -> Option<(
+        crate::features::paper::import::download::InstitutionProxyKind,
+        String,
+        String,
+    )> {
+        let guard = self.inner.lock().ok()?;
+        let prefix = guard.institution_proxy_prefix.trim();
+        if prefix.is_empty() {
+            return None;
+        }
+        let kind = crate::features::paper::import::download::InstitutionProxyKind::from_setting(
+            &guard.institution_proxy_type,
+        );
+        Some((
+            kind,
+            prefix.to_string(),
+            guard.institution_proxy_cookie.trim().to_string(),
+        ))
+    }
+
+    /// Resolve the configured EasyScholar key. Returns None when unset or when
+    /// the stored value is a UI mask (`*`-only), so probes never send masks.
+    pub fn easy_scholar_key(&self) -> Option<String> {
+        let guard = self.inner.lock().ok()?;
+        let key = guard.easy_scholar_key.trim();
+        if key.is_empty() || is_translate_api_key_mask(key) {
+            None
+        } else {
+            Some(key.to_string())
+        }
+    }
+}
+
+fn read_file(path: &PathBuf) -> (AppSettings, bool) {
+    if !path.is_file() {
+        return (AppSettings::default(), false);
+    }
+    match fs::read_to_string(path) {
+        Ok(raw) => match serde_json::from_str::<AppSettings>(&raw) {
+            Ok(mut s) => {
+                normalize(&mut s);
+                (s, true)
+            }
+            Err(e) => {
+                log::warn!(
+                    target: "agentero::settings",
+                    "invalid settings.json ({}): {e}; using defaults",
+                    path.display()
+                );
+                (AppSettings::default(), true)
+            }
+        },
+        Err(e) => {
+            log::warn!(
+                target: "agentero::settings",
+                "failed to read settings.json: {e}"
+            );
+            (AppSettings::default(), false)
+        }
+    }
+}
+
+fn persist(path: &Path, settings: &AppSettings) -> Result<(), AppError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    // Owner-only (0o600 on Unix) when secrets (BYOK keys) may live in this JSON.
+    crate::fs::json_store_with(path, settings, &crate::fs::AtomicOpts::OWNER_ONLY)
+}
+
+/// Map Host translate provider id (any case) → settings `providerConfigs` key.
+pub fn commercial_provider_settings_key(provider: &str) -> Option<&'static str> {
+    match provider.trim().to_ascii_lowercase().as_str() {
+        "deepl" => Some("deepl"),
+        "azure" => Some("azure"),
+        "googlecloud" => Some("googleCloud"),
+        "openaicompatible" => Some("openaiCompatible"),
+        _ => None,
+    }
+}
+
+/// Map layout provider id (any case) → settings `layout.providerConfigs` key.
+pub fn layout_provider_settings_key(provider: &str) -> Option<&'static str> {
+    match provider.trim().to_ascii_lowercase().as_str() {
+        "paddle" => Some("paddle"),
+        "mineru" => Some("mineru"),
+        "openaicompatible" => Some("openaiCompatible"),
+        // No stored card: the getters above resolve it from the build, but the
+        // parser registry still needs a stable credentials-map key.
+        BUILTIN_PROVIDER_ID => Some(BUILTIN_PROVIDER_ID),
+        _ => None,
+    }
+}
+
+/// Replace non-empty secrets with same-length `*` masks.
+fn redact_secrets(mut settings: AppSettings) -> AppSettings {
+    for cfg in settings.translate.provider_configs.values_mut() {
+        if !cfg.api_key.trim().is_empty() {
+            cfg.api_key = mask_translate_api_key(&cfg.api_key);
+        }
+    }
+    for cfg in settings.layout.provider_configs.values_mut() {
+        if !cfg.api_key.trim().is_empty() {
+            cfg.api_key = mask_translate_api_key(&cfg.api_key);
+        }
+    }
+    if !settings.embedding.api_key.trim().is_empty() {
+        settings.embedding.api_key = mask_translate_api_key(&settings.embedding.api_key);
+    }
+    if !settings.mcp_tunnel_api_key.trim().is_empty() {
+        settings.mcp_tunnel_api_key = mask_translate_api_key(&settings.mcp_tunnel_api_key);
+    }
+    if !settings.easy_scholar_key.trim().is_empty() {
+        settings.easy_scholar_key = mask_translate_api_key(&settings.easy_scholar_key);
+    }
+    if !settings.decision.api_key.trim().is_empty() {
+        settings.decision.api_key = mask_translate_api_key(&settings.decision.api_key);
+    }
+    settings
+}
+
+/// Apply incoming configs while preserving secrets when the UI sends the mask.
+fn merge_secrets(incoming: &mut AppSettings, previous: &AppSettings) {
+    for (id, cfg) in incoming.translate.provider_configs.iter_mut() {
+        if is_translate_api_key_mask(&cfg.api_key) {
+            if let Some(prev) = previous.translate.provider_configs.get(id) {
+                cfg.api_key = prev.api_key.clone();
+            } else {
+                // Mask with no prior secret → treat as unset.
+                cfg.api_key.clear();
+            }
+        }
+    }
+    for (id, cfg) in incoming.layout.provider_configs.iter_mut() {
+        if is_translate_api_key_mask(&cfg.api_key) {
+            if let Some(prev) = previous.layout.provider_configs.get(id) {
+                cfg.api_key = prev.api_key.clone();
+            } else {
+                cfg.api_key.clear();
+            }
+        }
+    }
+    if is_translate_api_key_mask(&incoming.embedding.api_key) {
+        incoming.embedding.api_key = previous.embedding.api_key.clone();
+    }
+    if is_translate_api_key_mask(&incoming.mcp_tunnel_api_key) {
+        incoming.mcp_tunnel_api_key = previous.mcp_tunnel_api_key.clone();
+    }
+    if is_translate_api_key_mask(&incoming.easy_scholar_key) {
+        incoming.easy_scholar_key = previous.easy_scholar_key.clone();
+    }
+    if is_translate_api_key_mask(&incoming.decision.api_key) {
+        incoming.decision.api_key = previous.decision.api_key.clone();
+    }
+}
+
+/// Cap a translate template and drop placeholders other than
+/// `{{targetLang}}` / `{{sourceLang}}` / `{{text}}`. Does not trim.
+fn cap_translate_template(raw: &str) -> String {
+    crate::features::translate::strip_unknown_translate_placeholders(raw)
+        .chars()
+        .take(8000)
+        .collect()
+}
+
+fn normalize(s: &mut AppSettings) {
+    if s.connector_port == 0 {
+        s.connector_port = default_connector_port();
+    }
+    if s.mcp_port == 0 {
+        s.mcp_port = default_mcp_port();
+    }
+    s.mcp_tunnel_id = s
+        .mcp_tunnel_id
+        .split_whitespace()
+        .collect::<String>()
+        .to_ascii_lowercase();
+    s.mcp_tunnel_api_key = s.mcp_tunnel_api_key.trim().to_string();
+    s.easy_scholar_key = s.easy_scholar_key.trim().to_string();
+    s.decision.api_key = s.decision.api_key.trim().to_string();
+    let provider = s.decision.provider.trim().to_ascii_lowercase();
+    s.decision.provider = if provider.is_empty() {
+        default_decision_provider()
+    } else {
+        provider
+    };
+    let decision_url = s.decision.base_url.trim().trim_end_matches('/');
+    // Only the default jEV preset backfills the endpoint; Clef/OpenAI/custom
+    // keep whatever the user typed (empty = not configured yet).
+    s.decision.base_url = if decision_url.is_empty() && s.decision.provider == "jev" {
+        default_decision_base_url()
+    } else {
+        decision_url.to_string()
+    };
+    s.decision.model = s.decision.model.trim().to_string();
+    if s.decision.model.is_empty() && s.decision.provider == "jev" {
+        s.decision.model = default_decision_model();
+    }
+    if s.batch_import_concurrency < 1 || s.batch_import_concurrency > 10 {
+        s.batch_import_concurrency = default_batch_import_concurrency();
+    }
+    let url = s.translator_base_url.trim().trim_end_matches('/');
+    s.translator_base_url = if url.is_empty() {
+        DEFAULT_TRANSLATOR_BASE_URL.to_string()
+    } else {
+        url.to_string()
+    };
+    s.network_proxy_url = s.network_proxy_url.trim().to_string();
+    if s.network_proxy_url.is_empty() {
+        s.network_proxy_url = default_network_proxy_url();
+    }
+    let mirror = s.github_mirror_base_url.trim().trim_end_matches('/');
+    s.github_mirror_base_url = if GITHUB_MIRROR_PRESETS.contains(&mirror) {
+        mirror.to_string()
+    } else {
+        GITHUB_MIRROR_PRESETS[0].to_string()
+    };
+    s.institution_proxy_prefix = s
+        .institution_proxy_prefix
+        .trim()
+        .trim_end_matches('/')
+        .to_string();
+    s.institution_proxy_cookie = s.institution_proxy_cookie.trim().to_string();
+    s.institution_proxy_type = if s.institution_proxy_type.eq_ignore_ascii_case("wengine") {
+        "wengine".to_string()
+    } else {
+        "ezproxy".to_string()
+    };
+    // Keep the core download fallback in sync on both load and set paths.
+    let kind = crate::features::paper::import::download::InstitutionProxyKind::from_setting(
+        &s.institution_proxy_type,
+    );
+    crate::features::paper::import::download::set_institution_proxy(
+        kind,
+        &s.institution_proxy_prefix,
+        &s.institution_proxy_cookie,
+    );
+
+    const LABEL_MODES: &[&str] = &["title-author", "title", "author-year-title", "folder"];
+    if !LABEL_MODES.contains(&s.paper_tree_label_mode.as_str()) {
+        s.paper_tree_label_mode = default_paper_tree_label_mode();
+    }
+    const SORT_MODES: &[&str] = &[
+        "folder",
+        "title",
+        "author",
+        "year-desc",
+        "year-asc",
+        "added-desc",
+    ];
+    if !SORT_MODES.contains(&s.paper_tree_sort_mode.as_str()) {
+        s.paper_tree_sort_mode = default_paper_tree_sort_mode();
+    }
+    const NOTE_MODES: &[&str] = &["standard", "title-only", "blank", "custom"];
+    if !NOTE_MODES.contains(&s.paper_note_mode.as_str()) {
+        s.paper_note_mode = default_paper_note_mode();
+    }
+    const AUTO_UPDATE_INTERNAL_LINKS: &[&str] = &["ask", "always"];
+    if !AUTO_UPDATE_INTERNAL_LINKS.contains(&s.auto_update_internal_links.as_str()) {
+        s.auto_update_internal_links = default_auto_update_internal_links();
+    }
+    const PDF_SCROLL_STRATEGIES: &[&str] = &["vertical", "horizontal"];
+    if !PDF_SCROLL_STRATEGIES.contains(&s.pdf_scroll_strategy.as_str()) {
+        s.pdf_scroll_strategy = default_pdf_scroll_strategy();
+    }
+    const PDF_SPREAD_MODES: &[&str] = &["none", "odd", "even"];
+    if !PDF_SPREAD_MODES.contains(&s.pdf_spread_mode.as_str()) {
+        s.pdf_spread_mode = default_pdf_spread_mode();
+    }
+
+    // Library columns: drop unknown/duplicate keys, append missing ones
+    // with their default visibility, and keep `title` visible.
+    let mut seen: Vec<String> = Vec::new();
+    let mut cols: Vec<LibraryColumnPref> = Vec::new();
+    for col in s.library_columns.drain(..) {
+        // `year` became a full publication date; keep the saved position.
+        let key = if col.key == "year" {
+            "date".to_string()
+        } else {
+            col.key
+        };
+        if !LIBRARY_COLUMN_KEYS.contains(&key.as_str()) {
+            continue;
+        }
+        if seen.iter().any(|k| k == &key) {
+            continue;
+        }
+        seen.push(key.clone());
+        cols.push(LibraryColumnPref {
+            key,
+            visible: col.visible,
+            width_rem: col
+                .width_rem
+                .filter(|w| w.is_finite() && *w > 0.0)
+                .map(|w| w.clamp(5.0, 120.0)),
+        });
+    }
+    for fallback in default_library_columns() {
+        if !seen.iter().any(|key| key == &fallback.key) {
+            cols.push(fallback);
+        }
+    }
+    for col in cols.iter_mut() {
+        if col.key == "title" {
+            col.visible = true;
+        }
+    }
+    s.library_columns = cols;
+
+    const THEMES: &[&str] = &["system", "light", "dark"];
+    if !THEMES.contains(&s.theme.as_str()) {
+        s.theme = default_theme();
+    }
+    s.ui_theme = s.ui_theme.trim().to_string();
+    if s.ui_theme.is_empty() {
+        s.ui_theme = default_ui_theme();
+    }
+    const LOCALES: &[&str] = &["system", "en", "zh-CN"];
+    if !LOCALES.contains(&s.locale.as_str()) {
+        s.locale = default_locale();
+    }
+    if s.editor_font_size < 10 || s.editor_font_size > 32 {
+        s.editor_font_size = default_editor_font_size();
+    }
+    if !(12..=20).contains(&s.wiki_embed_font_size) {
+        s.wiki_embed_font_size = default_wiki_embed_font_size();
+    }
+    s.markdown_max_width = normalize_markdown_max_width(s.markdown_max_width);
+    s.interface_font_family = normalize_font_family_value(&s.interface_font_family);
+    s.text_font_family = normalize_font_family_value(&s.text_font_family);
+    s.mono_font_family = normalize_font_family_value(&s.mono_font_family);
+    // Migrate deprecated editorFontFamily preset into textFontFamily once.
+    let legacy = normalize_font_family_value(&s.editor_font_family);
+    if s.text_font_family.is_empty() && !legacy.is_empty() {
+        s.text_font_family = legacy;
+    }
+    s.editor_font_family.clear();
+    if !s.editor_line_height.is_finite() || s.editor_line_height < 1.4 || s.editor_line_height > 2.0
+    {
+        s.editor_line_height = default_editor_line_height();
+    } else {
+        // Snap to 0.1 steps to match the frontend slider.
+        s.editor_line_height = (s.editor_line_height * 10.0).round() / 10.0;
+    }
+    const UI_SCALE_PRESETS: &[f64] = &[0.8, 0.9, 1.0, 1.25, 1.5];
+    if !s.ui_scale.is_finite() {
+        s.ui_scale = default_ui_scale();
+    } else {
+        let mut closest = UI_SCALE_PRESETS[0];
+        let mut best = f64::INFINITY;
+        for &preset in UI_SCALE_PRESETS {
+            let d = (preset - s.ui_scale).abs();
+            if d < best {
+                best = d;
+                closest = preset;
+            }
+        }
+        s.ui_scale = closest;
+    }
+    const PERMS: &[&str] = &["restricted", "ask", "auto"];
+    if !PERMS.contains(&s.agent_permission_mode.as_str()) {
+        s.agent_permission_mode = default_permission_mode();
+    }
+    const AI_LANGS: &[&str] = &["auto", "en", "zh-CN"];
+    if !AI_LANGS.contains(&s.ai_response_language.as_str()) {
+        s.ai_response_language = default_ai_response_language();
+    }
+
+    s.pdf_ask.agent_id = s.pdf_ask.agent_id.trim().to_string();
+    s.pdf_ask.model_id = s.pdf_ask.model_id.trim().to_string();
+
+    // Keep trailing slashes on base_url (same reason as translate/layout configs):
+    // normalize runs on every save and echoes back into the settings UI.
+    s.embedding.base_url = s.embedding.base_url.trim().to_string();
+    s.embedding.api_key = s.embedding.api_key.trim().to_string();
+    s.embedding.model = s.embedding.model.trim().to_string();
+    s.embedding.source = resolve_embedding_source(&s.embedding);
+
+    normalize_translate_provider_configs(&mut s.translate.provider_configs);
+    s.translate.agent_id = s.translate.agent_id.trim().to_string();
+    s.translate.model_id = s.translate.model_id.trim().to_string();
+    const TR_TARGETS: &[&str] = &["ui", "en", "zh-CN"];
+    if !TR_TARGETS.contains(&s.translate.target_lang.as_str()) {
+        s.translate.target_lang = default_translate_target();
+    }
+    if s.translate.source_lang != "auto" {
+        s.translate.source_lang = default_translate_source();
+    }
+    // Cap hand-edited oversized prompts and drop unknown `{{…}}` tokens. The
+    // value is echoed to a billed API on every request. No trim: leading
+    // whitespace may be intentional (the settings UI trims on blur).
+    s.translate.custom_prompt = cap_translate_template(&s.translate.custom_prompt);
+    s.translate.custom_system = cap_translate_template(&s.translate.custom_system);
+    s.translate.custom_user = cap_translate_template(&s.translate.custom_user);
+
+    const LAYOUT_BACKENDS: &[&str] = &["local", "paddle", "mineru"];
+    if !LAYOUT_BACKENDS.contains(&s.layout.backend.as_str()) {
+        s.layout.backend = default_layout_backend();
+    }
+    // The whitelist is what makes a selection stick: normalize runs on every
+    // save, so an unlisted parser backend is silently reset and persisted.
+    const PARSER_BACKENDS: &[&str] = &[
+        "local",
+        "paddle",
+        "mineru",
+        "openaiCompatible",
+        BUILTIN_PROVIDER_ID,
+    ];
+    if !PARSER_BACKENDS.contains(&s.layout.parser_backend.as_str()) {
+        // Not default_parser_backend(): on a keyed build that is the billed
+        // gateway, and an invalid stored value means an existing user, not a
+        // fresh install.
+        s.layout.parser_backend = "local".to_string();
+    }
+    normalize_layout_provider_configs(&mut s.layout.provider_configs);
+    s.dismissed_reminders =
+        normalize_dismissed_reminders(std::mem::take(&mut s.dismissed_reminders));
+}
+
+/// Known config-reminder ids; anything else is dropped so a hand-edited file
+/// cannot smuggle stale ids into the frontend.
+const DISMISSED_REMINDER_IDS: &[&str] = &["layout-local-model", "network-proxy"];
+
+fn normalize_dismissed_reminders(raw: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for id in raw {
+        let id = id.trim();
+        if id.is_empty() || !DISMISSED_REMINDER_IDS.contains(&id) || out.iter().any(|k| k == id) {
+            continue;
+        }
+        out.push(id.to_string());
+    }
+    out
+}
+
+/// Migration rule for `EmbeddingSettings::source`: an explicit value wins,
+/// otherwise any populated BYOK field (an all-`*` mask counts as populated)
+/// implies a custom endpoint. An all-empty triple uses the built-in endpoint
+/// only in builds that actually carry the compiled-in key; source builds without
+/// that key fall back to `custom` so the settings UI does not show an unusable
+/// built-in provider.
+fn resolve_embedding_source(settings: &EmbeddingSettings) -> String {
+    let explicit = settings.source.trim().to_ascii_lowercase();
+    if explicit == EMBEDDING_SOURCE_BUILTIN || explicit == EMBEDDING_SOURCE_CUSTOM {
+        return explicit;
+    }
+    let configured = !settings.base_url.trim().is_empty()
+        || !settings.api_key.trim().is_empty()
+        || !settings.model.trim().is_empty();
+    if configured || !builtin::available() {
+        EMBEDDING_SOURCE_CUSTOM.to_string()
+    } else {
+        EMBEDDING_SOURCE_BUILTIN.to_string()
+    }
+}
+
+/// Anything but an explicit custom endpoint uses the built-in gateway — but
+/// only when this build actually carries a key, so a build without one keeps
+/// the stored-values behaviour (and `recommend.no_embedding`).
+fn embedding_uses_builtin(settings: &EmbeddingSettings) -> bool {
+    settings.source.trim() != EMBEDDING_SOURCE_CUSTOM && builtin::available()
+}
+
+fn normalize_layout_provider_configs(configs: &mut HashMap<String, LayoutProviderConfig>) {
+    const PROVIDERS: &[&str] = &["paddle", "mineru", "openaiCompatible"];
+    // MinerU `language` vocabulary (API v4); anything else resets to the
+    // Chinese-English default so the request never carries an unknown pack id.
+    const MINERU_LANGUAGES: &[&str] = &[
+        "ch",
+        "ch_server",
+        "en",
+        "japan",
+        "korean",
+        "chinese_cht",
+        "ta",
+        "te",
+        "ka",
+        "el",
+        "th",
+        "latin",
+        "arabic",
+        "cyrillic",
+        "east_slavic",
+        "devanagari",
+    ];
+    configs.retain(|k, _| PROVIDERS.contains(&k.as_str()));
+    for cfg in configs.values_mut() {
+        cfg.api_key = cfg.api_key.trim().to_string();
+        // Keep trailing slashes (same reason as translate configs): normalize
+        // runs on every save and echoes back into the settings UI.
+        cfg.base_url = cfg.base_url.trim().to_string();
+        cfg.model = cfg.model.trim().to_string();
+        cfg.prompt = cfg.prompt.trim().to_string();
+        cfg.language = cfg.language.trim().to_string();
+        if !MINERU_LANGUAGES.contains(&cfg.language.as_str()) {
+            cfg.language = "ch".to_string();
+        }
+    }
+}
+
+fn normalize_translate_provider_configs(configs: &mut HashMap<String, TranslateProviderConfig>) {
+    const COMMERCIAL: &[&str] = &["deepl", "azure", "googleCloud", "openaiCompatible"];
+    configs.retain(|k, _| COMMERCIAL.contains(&k.as_str()));
+    for cfg in configs.values_mut() {
+        cfg.api_key = cfg.api_key.trim().to_string();
+        // Keep trailing slashes: this runs on every save and the result is
+        // echoed back into the settings UI, so stripping "/" would make it
+        // impossible to type paths like ".../v1". Endpoints trim on use.
+        cfg.base_url = cfg.base_url.trim().to_string();
+        cfg.region = cfg.region.trim().to_string();
+        cfg.model = cfg.model.trim().to_string();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn roundtrip_defaults() {
+        let n = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("agentero-settings-test-{n}"));
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("settings.json");
+        let s = AppSettings::default();
+        persist(&path, &s).expect("write");
+        let (loaded, existed) = read_file(&path);
+        assert!(existed);
+        assert_eq!(loaded.theme, "system");
+        assert_eq!(loaded.translator_base_url, DEFAULT_TRANSLATOR_BASE_URL);
+        assert_eq!(loaded.auto_update_internal_links, "ask");
+        assert_eq!(loaded.paper_note_mode, "standard");
+        assert!(!loaded.onboarding_done);
+        assert!(!loaded.feature_tour_done);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn onboarding_flags_roundtrip() {
+        let n = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("agentero-settings-onboarding-{n}"));
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("settings.json");
+        let s = AppSettings {
+            onboarding_done: true,
+            feature_tour_done: true,
+            ..AppSettings::default()
+        };
+        persist(&path, &s).expect("write");
+        let raw = fs::read_to_string(&path).expect("read json");
+        let json: serde_json::Value = serde_json::from_str(&raw).expect("parse json");
+        assert_eq!(json["onboardingDone"], true);
+        assert_eq!(json["featureTourDone"], true);
+        let (loaded, existed) = read_file(&path);
+        assert!(existed);
+        assert!(loaded.onboarding_done);
+        assert!(loaded.feature_tour_done);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_onboarding_flags_default_false() {
+        let json = r#"{"theme":"dark"}"#;
+        let s: AppSettings = serde_json::from_str(json).expect("deserialize");
+        assert!(!s.onboarding_done);
+        assert!(!s.feature_tour_done);
+        assert_eq!(s.theme, "dark");
+    }
+
+    #[test]
+    fn dismissed_reminders_whitelist() {
+        let mut s = AppSettings {
+            dismissed_reminders: vec![
+                "layout-local-model".into(),
+                "unknown".into(),
+                "layout-local-model".into(),
+                "  network-proxy ".into(),
+            ],
+            ..AppSettings::default()
+        };
+        normalize(&mut s);
+        assert_eq!(
+            s.dismissed_reminders,
+            vec!["layout-local-model", "network-proxy"]
+        );
+    }
+
+    #[test]
+    fn normalize_empty_translator_url() {
+        let mut s = AppSettings {
+            translator_base_url: "  ".into(),
+            ..AppSettings::default()
+        };
+        normalize(&mut s);
+        assert_eq!(s.translator_base_url, DEFAULT_TRANSLATOR_BASE_URL);
+    }
+
+    #[test]
+    fn redact_and_merge_api_keys() {
+        let mut previous = AppSettings::default();
+        previous.translate.provider_configs.insert(
+            "deepl".into(),
+            TranslateProviderConfig {
+                api_key: "sk-secret".into(),
+                ..Default::default()
+            },
+        );
+
+        let redacted = redact_secrets(previous.clone());
+        assert_eq!(
+            redacted
+                .translate
+                .provider_configs
+                .get("deepl")
+                .map(|c| c.api_key.as_str()),
+            Some("*********") // "sk-secret".chars().count()
+        );
+        assert!(is_translate_api_key_mask("*********"));
+        assert!(!is_translate_api_key_mask("sk-secret"));
+
+        let mut incoming = redacted;
+        merge_secrets(&mut incoming, &previous);
+        assert_eq!(
+            incoming
+                .translate
+                .provider_configs
+                .get("deepl")
+                .map(|c| c.api_key.as_str()),
+            Some("sk-secret")
+        );
+
+        // Explicit empty clears the secret.
+        incoming
+            .translate
+            .provider_configs
+            .get_mut("deepl")
+            .unwrap()
+            .api_key
+            .clear();
+        merge_secrets(&mut incoming, &previous);
+        assert_eq!(
+            incoming
+                .translate
+                .provider_configs
+                .get("deepl")
+                .map(|c| c.api_key.as_str()),
+            Some("")
+        );
+
+        // MCP tunnel runtime key follows the same mask round-trip.
+        let mut with_tunnel = AppSettings {
+            mcp_tunnel_id: " Tunnel_ABC ".into(),
+            mcp_tunnel_api_key: "  sk-tunnel-secret ".into(),
+            ..AppSettings::default()
+        };
+        normalize(&mut with_tunnel);
+        assert_eq!(with_tunnel.mcp_tunnel_id, "tunnel_abc");
+        assert_eq!(with_tunnel.mcp_tunnel_api_key, "sk-tunnel-secret");
+
+        let redacted_tunnel = redact_secrets(with_tunnel.clone());
+        assert!(is_translate_api_key_mask(
+            &redacted_tunnel.mcp_tunnel_api_key
+        ));
+        let mut echoed = redacted_tunnel;
+        merge_secrets(&mut echoed, &with_tunnel);
+        assert_eq!(echoed.mcp_tunnel_api_key, "sk-tunnel-secret");
+    }
+
+    #[test]
+    fn commercial_provider_key_mapping() {
+        assert_eq!(
+            commercial_provider_settings_key("googleCloud"),
+            Some("googleCloud")
+        );
+        assert_eq!(
+            commercial_provider_settings_key("GOOGLECLOUD"),
+            Some("googleCloud")
+        );
+        assert_eq!(
+            commercial_provider_settings_key("openaiCompatible"),
+            Some("openaiCompatible")
+        );
+        assert_eq!(commercial_provider_settings_key("deeplx"), None);
+    }
+
+    #[test]
+    fn normalize_parser_backend_and_openai_compatible_config() {
+        let mut s = AppSettings::default();
+        s.layout.parser_backend = "bogus".into();
+        s.layout.provider_configs.insert(
+            "openaiCompatible".into(),
+            LayoutProviderConfig {
+                api_key: "  sk-x  ".into(),
+                base_url: " https://api.siliconflow.cn/v1 ".into(),
+                model: "  deepseek-ai/DeepSeek-OCR  ".into(),
+                prompt: "  Convert to markdown.  ".into(),
+                ..Default::default()
+            },
+        );
+        s.layout
+            .provider_configs
+            .insert("unknown".into(), LayoutProviderConfig::default());
+        normalize(&mut s);
+        assert_eq!(s.layout.parser_backend, "local");
+        assert!(!s.layout.provider_configs.contains_key("unknown"));
+        let cfg = s.layout.provider_configs.get("openaiCompatible").unwrap();
+        assert_eq!(cfg.api_key, "sk-x");
+        assert_eq!(cfg.base_url, "https://api.siliconflow.cn/v1");
+        assert_eq!(cfg.model, "deepseek-ai/DeepSeek-OCR");
+        assert_eq!(cfg.prompt, "Convert to markdown.");
+
+        let mut ok = AppSettings::default();
+        ok.layout.parser_backend = "openaiCompatible".into();
+        normalize(&mut ok);
+        assert_eq!(ok.layout.parser_backend, "openaiCompatible");
+    }
+
+    #[test]
+    fn layout_provider_key_accepts_openai_compatible() {
+        assert_eq!(
+            layout_provider_settings_key("OPENAICOMPATIBLE"),
+            Some("openaiCompatible")
+        );
+    }
+
+    #[test]
+    fn normalize_layout_language_whitelist() {
+        let mut s = AppSettings::default();
+        s.layout.provider_configs.insert(
+            "mineru".into(),
+            LayoutProviderConfig {
+                language: " japan ".into(),
+                ..Default::default()
+            },
+        );
+        normalize(&mut s);
+        assert_eq!(
+            s.layout.provider_configs.get("mineru").unwrap().language,
+            "japan"
+        );
+
+        // Unknown / legacy value resets to the Chinese-English default.
+        let mut s = AppSettings::default();
+        s.layout.provider_configs.insert(
+            "mineru".into(),
+            LayoutProviderConfig {
+                language: "auto".into(),
+                ..Default::default()
+            },
+        );
+        normalize(&mut s);
+        assert_eq!(
+            s.layout.provider_configs.get("mineru").unwrap().language,
+            "ch"
+        );
+    }
+
+    #[test]
+    fn normalize_rejects_unknown_internal_link_rename_policy() {
+        let mut s = AppSettings {
+            auto_update_internal_links: "unsafe".into(),
+            ..AppSettings::default()
+        };
+        normalize(&mut s);
+        assert_eq!(s.auto_update_internal_links, "ask");
+    }
+
+    #[test]
+    fn normalize_caps_translate_custom_prompt() {
+        // Hand-edited oversized prompt is capped; empty and normal values pass.
+        let mut s = AppSettings {
+            translate: TranslateSettings {
+                custom_prompt: "x".repeat(9000),
+                ..Default::default()
+            },
+            ..AppSettings::default()
+        };
+        normalize(&mut s);
+        assert_eq!(s.translate.custom_prompt.chars().count(), 8000);
+
+        let mut s = AppSettings {
+            translate: TranslateSettings {
+                custom_prompt: "keep me".into(),
+                ..Default::default()
+            },
+            ..AppSettings::default()
+        };
+        normalize(&mut s);
+        assert_eq!(s.translate.custom_prompt, "keep me");
+    }
+
+    #[test]
+    fn normalize_strips_unknown_translate_placeholders() {
+        let mut s = AppSettings {
+            translate: TranslateSettings {
+                custom_prompt: "{{audience}} only".into(),
+                custom_system: "Style {{tone}} for {{targetLang}}.".into(),
+                custom_user: "<<<{{text}}>>> {{mood}}".into(),
+                ..Default::default()
+            },
+            ..AppSettings::default()
+        };
+        normalize(&mut s);
+        assert_eq!(s.translate.custom_prompt, " only");
+        assert_eq!(s.translate.custom_system, "Style  for {{targetLang}}.");
+        assert_eq!(s.translate.custom_user, "<<<{{text}}>>> ");
+    }
+
+    #[test]
+    fn normalize_rejects_unknown_paper_note_mode() {
+        let mut s = AppSettings {
+            paper_note_mode: "fancy".into(),
+            ..AppSettings::default()
+        };
+        normalize(&mut s);
+        assert_eq!(s.paper_note_mode, "standard");
+    }
+
+    #[test]
+    fn normalize_rejects_unknown_pdf_reading_modes() {
+        let mut s = AppSettings {
+            pdf_scroll_strategy: "diagonal".into(),
+            pdf_spread_mode: "triple".into(),
+            ..AppSettings::default()
+        };
+        normalize(&mut s);
+        assert_eq!(s.pdf_scroll_strategy, "vertical");
+        assert_eq!(s.pdf_spread_mode, "none");
+    }
+
+    #[test]
+    fn normalize_reading_layout_prefs() {
+        let mut invalid = AppSettings {
+            wiki_embed_font_size: 99,
+            markdown_max_width: 500,
+            ..AppSettings::default()
+        };
+        normalize(&mut invalid);
+        assert_eq!(invalid.wiki_embed_font_size, 13);
+        assert_eq!(invalid.markdown_max_width, 0);
+
+        let mut valid = AppSettings {
+            wiki_embed_font_size: 18,
+            markdown_max_width: 800,
+            ..AppSettings::default()
+        };
+        normalize(&mut valid);
+        assert_eq!(valid.wiki_embed_font_size, 18);
+        assert_eq!(valid.markdown_max_width, 800);
+    }
+
+    #[test]
+    fn set_fires_subscribers_with_redacted_snapshot() {
+        let n = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("agentero-settings-sub-test-{n}"));
+        let _ = fs::create_dir_all(&dir);
+        let store = AppSettingsStore {
+            inner: Mutex::new(AppSettings::default()),
+            path: dir.join("settings.json"),
+            listeners: Mutex::new(Vec::new()),
+        };
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        {
+            let seen = Arc::clone(&seen);
+            store.subscribe(move |s| {
+                seen.lock().unwrap().push(
+                    s.translate
+                        .provider_configs
+                        .get("deepl")
+                        .map_or(String::new(), |c| c.api_key.clone()),
+                );
+            });
+        }
+
+        let mut incoming = AppSettings::default();
+        incoming.translate.provider_configs.insert(
+            "deepl".into(),
+            TranslateProviderConfig {
+                api_key: "sk-secret".into(),
+                ..Default::default()
+            },
+        );
+        let out = store.set(incoming).expect("set");
+
+        // Listener fired exactly once with the redacted snapshot.
+        assert_eq!(*seen.lock().unwrap(), vec!["*********".to_string()]);
+        assert_eq!(
+            out.translate
+                .provider_configs
+                .get("deepl")
+                .map(|c| c.api_key.as_str()),
+            Some("*********")
+        );
+        // The plaintext secret is what lands on disk.
+        let (loaded, _) = read_file(&store.path);
+        assert_eq!(
+            loaded
+                .translate
+                .provider_configs
+                .get("deepl")
+                .map(|c| c.api_key.as_str()),
+            Some("sk-secret")
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn library_column_widths_roundtrip_and_normalize() {
+        let old: LibraryColumnPref =
+            serde_json::from_str(r#"{"key":"title","visible":true}"#).unwrap();
+        assert_eq!(old.width_rem, None);
+        let mut s = AppSettings::default();
+        s.library_columns[0].width_rem = Some(25.5);
+        s.library_columns[1].width_rem = Some(-2.0);
+        s.library_columns[2].width_rem = Some(999.0);
+        normalize(&mut s);
+        let encoded = serde_json::to_string(&s).unwrap();
+        let loaded: AppSettings = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(loaded.library_columns[0].width_rem, Some(25.5));
+        assert_eq!(loaded.library_columns[1].width_rem, None);
+        assert_eq!(loaded.library_columns[2].width_rem, Some(120.0));
+    }
+
+    #[test]
+    fn normalize_reconciles_library_columns() {
+        let mut s = AppSettings {
+            library_columns: vec![
+                LibraryColumnPref {
+                    key: "bogus".into(),
+                    width_rem: None,
+                    visible: true,
+                },
+                LibraryColumnPref {
+                    key: "title".into(),
+                    width_rem: None,
+                    visible: false,
+                },
+                LibraryColumnPref {
+                    key: "year".into(),
+                    width_rem: None,
+                    visible: false,
+                },
+            ],
+            ..AppSettings::default()
+        };
+        normalize(&mut s);
+        let keys: Vec<&str> = s.library_columns.iter().map(|c| c.key.as_str()).collect();
+        // Unknown dropped; `year` renamed in place; missing columns appended.
+        assert_eq!(
+            keys,
+            vec![
+                "title",
+                "date",
+                "authors",
+                "publication",
+                "tags",
+                "id",
+                "citations",
+                "addedAt"
+            ]
+        );
+        // Title forced visible even though stored hidden.
+        let title = s.library_columns.iter().find(|c| c.key == "title").unwrap();
+        assert!(title.visible);
+        // Non-title hidden preference preserved through the rename.
+        let date = s.library_columns.iter().find(|c| c.key == "date").unwrap();
+        assert!(!date.visible);
+        // Appended column defaults to visible.
+        let authors = s
+            .library_columns
+            .iter()
+            .find(|c| c.key == "authors")
+            .unwrap();
+        assert!(authors.visible);
+    }
+
+    #[test]
+    fn library_columns_added_date_persists_through_host_store() {
+        let store = AppSettingsStore::for_tests(AppSettings::default());
+        let mut legacy = AppSettings::default();
+        legacy.library_columns.retain(|col| col.key != "addedAt");
+        legacy.library_columns.reverse();
+        legacy.library_columns[0].visible = false;
+        let existing: Vec<_> = legacy
+            .library_columns
+            .iter()
+            .map(|col| (col.key.clone(), col.visible))
+            .collect();
+        // Simulate an older settings.json, exercising the real disk load path.
+        persist(&store.path, &legacy).expect("write legacy settings");
+        let (mut loaded, existed) = read_file(&store.path);
+        assert!(existed);
+        let added = loaded.library_columns.last().unwrap();
+        assert_eq!(added.key, "addedAt");
+        assert!(!added.visible);
+        assert_eq!(
+            loaded.library_columns[..existing.len()]
+                .iter()
+                .map(|col| (col.key.clone(), col.visible))
+                .collect::<Vec<_>>(),
+            existing
+        );
+
+        // Enable and move the column, then save via the desktop Host store.
+        let mut added = loaded.library_columns.pop().unwrap();
+        added.visible = true;
+        loaded.library_columns.insert(0, added);
+        let expected = serde_json::to_value(&loaded.library_columns).unwrap();
+        let returned = store.set(loaded).expect("save settings through Host");
+        assert_eq!(
+            serde_json::to_value(&returned.library_columns).unwrap(),
+            expected
+        );
+        let (reloaded, _) = read_file(&store.path);
+        assert_eq!(
+            serde_json::to_value(&reloaded.library_columns).unwrap(),
+            expected
+        );
+        fs::remove_file(&store.path).expect("remove test settings");
+    }
+
+    /// `agentero` is a parser (body-text) backend only. Layout analysis stays on
+    /// the bundled offline PP-DocLayoutV3 model, so `LAYOUT_BACKENDS` must not
+    /// grow the built-in id and `default_layout_backend` must not consult it.
+    #[test]
+    fn layout_backend_never_becomes_builtin() {
+        assert_eq!(default_layout_backend(), "local");
+        assert_eq!(AppSettings::default().layout.backend, "local");
+
+        let mut s = AppSettings::default();
+        s.layout.backend = BUILTIN_PROVIDER_ID.into();
+        normalize(&mut s);
+        assert_eq!(s.layout.backend, "local");
+    }
+
+    #[test]
+    fn builtin_parser_backend_sticks_but_never_stores_a_key() {
+        let mut s = AppSettings::default();
+        s.layout.parser_backend = BUILTIN_PROVIDER_ID.into();
+        s.layout.provider_configs.insert(
+            BUILTIN_PROVIDER_ID.into(),
+            LayoutProviderConfig {
+                api_key: "sk-must-not-be-written".into(),
+                base_url: "https://gateway.test/v1".into(),
+                model: "some/ocr-model".into(),
+                ..Default::default()
+            },
+        );
+        normalize(&mut s);
+        // Listed in PARSER_BACKENDS, so normalize does not reset it.
+        assert_eq!(s.layout.parser_backend, BUILTIN_PROVIDER_ID);
+        // Unlisted in the provider-config whitelist, so the card is dropped.
+        assert!(s.layout.provider_configs.is_empty());
+
+        let store = AppSettingsStore::for_tests(AppSettings::default());
+        let mut incoming = AppSettings::default();
+        incoming.layout.parser_backend = BUILTIN_PROVIDER_ID.into();
+        incoming.layout.provider_configs.insert(
+            BUILTIN_PROVIDER_ID.into(),
+            LayoutProviderConfig {
+                api_key: "sk-must-not-be-written".into(),
+                ..Default::default()
+            },
+        );
+        store.set(incoming).expect("set");
+        let raw = fs::read_to_string(store.path()).expect("settings written");
+        assert!(!raw.contains("sk-must-not-be-written"));
+        // The secret that actually matters is the compiled-in one; guarded
+        // because it exists only in a keyed build.
+        if let Some(key) = builtin::api_key() {
+            assert!(!raw.contains(key), "built-in key reached settings.json");
+        }
+        assert!(raw.contains(BUILTIN_PROVIDER_ID), "parserBackend kept");
+        let _ = fs::remove_file(store.path());
+    }
+
+    #[test]
+    fn layout_getters_resolve_builtin_without_a_provider_card() {
+        let store = AppSettingsStore::for_tests(AppSettings::default());
+        let status = builtin::status();
+        assert_eq!(
+            store.layout_base_url(BUILTIN_PROVIDER_ID).as_deref(),
+            Some(status.base_url.as_str())
+        );
+        assert_eq!(
+            store.layout_model(BUILTIN_PROVIDER_ID).as_deref(),
+            Some(status.ocr_model.as_str())
+        );
+        assert_eq!(
+            store.layout_api_key(BUILTIN_PROVIDER_ID).is_some(),
+            builtin::available()
+        );
+        // Prompt/language/force-OCR stay unset: the VLM engine derives the
+        // prompt from the model id, and the other two are MinerU-only.
+        assert!(store.layout_prompt(BUILTIN_PROVIDER_ID).is_none());
+        assert!(store.layout_language(BUILTIN_PROVIDER_ID).is_none());
+        assert!(!store.layout_is_ocr(BUILTIN_PROVIDER_ID));
+        assert_eq!(
+            layout_provider_settings_key("Agentero"),
+            Some(BUILTIN_PROVIDER_ID)
+        );
+    }
+
+    #[test]
+    fn embedding_source_is_inferred_only_when_unset() {
+        let empty_default_source = if builtin::available() {
+            "builtin"
+        } else {
+            "custom"
+        };
+        let mut fresh = AppSettings::default();
+        normalize(&mut fresh);
+        assert_eq!(fresh.embedding.source, empty_default_source);
+
+        // Legacy file: BYOK fields populated, no `source` key at all.
+        let mut legacy: AppSettings = serde_json::from_str(
+            r#"{"embedding":{"baseUrl":"https://embed.test/v1","model":"bge-m3"}}"#,
+        )
+        .expect("deserialize");
+        assert_eq!(legacy.embedding.source, "");
+        normalize(&mut legacy);
+        assert_eq!(legacy.embedding.source, "custom");
+
+        // An explicit choice wins over inference from the other fields.
+        let mut explicit = AppSettings::default();
+        explicit.embedding.source = " BUILTIN ".into();
+        explicit.embedding.model = "bge-m3".into();
+        normalize(&mut explicit);
+        assert_eq!(explicit.embedding.source, "builtin");
+
+        // A `*` mask counts as configured, so a redacted round-trip stays custom.
+        let mut masked = AppSettings::default();
+        masked.embedding.api_key = "****".into();
+        normalize(&mut masked);
+        assert_eq!(masked.embedding.source, "custom");
+
+        // Unknown values are re-inferred.
+        let mut unknown = AppSettings::default();
+        unknown.embedding.source = "gateway".into();
+        normalize(&mut unknown);
+        assert_eq!(unknown.embedding.source, empty_default_source);
+    }
+
+    #[test]
+    fn embedding_config_prefers_builtin_unless_custom() {
+        let status = builtin::status();
+        let store = AppSettingsStore::for_tests(AppSettings::default());
+        match store.embedding_config() {
+            Some((base_url, api_key, model)) => {
+                assert!(builtin::available(), "no key compiled in → no config");
+                assert_eq!(base_url, status.base_url);
+                assert_eq!(model, status.embedding_model);
+                assert!(api_key.is_some());
+            }
+            None => {
+                assert!(!builtin::available());
+            }
+        }
+
+        let store = AppSettingsStore::for_tests(AppSettings {
+            embedding: EmbeddingSettings {
+                source: "custom".into(),
+                base_url: "https://embed.test/v1".into(),
+                api_key: "sk-custom-test".into(),
+                model: "bge-m3".into(),
+            },
+            ..AppSettings::default()
+        });
+        assert_eq!(
+            store.embedding_config(),
+            Some((
+                "https://embed.test/v1".into(),
+                Some("sk-custom-test".into()),
+                "bge-m3".into()
+            ))
+        );
+    }
+
+    #[test]
+    fn embedding_is_builtin_tracks_the_resolved_endpoint() {
+        // `probe_embedding` suppresses webview-supplied endpoint overrides
+        // exactly when this is true; the two must never disagree.
+        let store = AppSettingsStore::for_tests(AppSettings::default());
+        assert_eq!(store.embedding_is_builtin(), builtin::available());
+
+        let custom = AppSettingsStore::for_tests(AppSettings {
+            embedding: EmbeddingSettings {
+                source: "custom".into(),
+                base_url: "https://embed.test/v1".into(),
+                api_key: "sk-custom-test".into(),
+                model: "bge-m3".into(),
+            },
+            ..AppSettings::default()
+        });
+        assert!(!custom.embedding_is_builtin());
+        assert_eq!(
+            custom.embedding_config().map(|(base, _, _)| base),
+            Some("https://embed.test/v1".into())
+        );
+    }
+
+    #[test]
+    fn decision_config_never_returns_masked_key() {
+        let store = AppSettingsStore::for_tests(AppSettings {
+            decision: DecisionSettings {
+                provider: "jev".into(),
+                api_key: "sk-jev-secret".into(),
+                base_url: "https://jev.test/v1".into(),
+                model: "jev-latest".into(),
+                smart_highlight: false,
+            },
+            ..AppSettings::default()
+        });
+        assert_eq!(
+            store.decision_config(),
+            Some(SystemOneCredentials {
+                api_key: "sk-jev-secret".into(),
+                base_url: "https://jev.test/v1".into(),
+                model: "jev-latest".into(),
+            })
+        );
+
+        // After redaction the getter must treat the mask as unset.
+        let redacted = redact_secrets(AppSettings {
+            decision: DecisionSettings {
+                provider: "jev".into(),
+                api_key: "sk-jev-secret".into(),
+                base_url: "https://jev.test/v1".into(),
+                model: "jev-latest".into(),
+                smart_highlight: false,
+            },
+            ..AppSettings::default()
+        });
+        let masked_store = AppSettingsStore::for_tests(redacted);
+        assert!(masked_store.decision_config().is_none());
+    }
+
+    #[test]
+    fn fresh_install_defaults_follow_builtin_availability() {
+        let s = AppSettings::default();
+        if builtin::available() {
+            assert_eq!(s.translate.provider, BUILTIN_PROVIDER_ID);
+            assert_eq!(s.layout.parser_backend, BUILTIN_PROVIDER_ID);
+        } else {
+            assert_eq!(s.translate.provider, "tencenttransmart");
+            assert_eq!(s.layout.parser_backend, "local");
+        }
+        assert_eq!(s.layout.backend, "local");
+    }
+}

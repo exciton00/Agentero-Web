@@ -11,6 +11,7 @@ pub mod open_request;
 pub mod paper;
 pub mod pdf;
 pub mod sync;
+pub mod system;
 pub mod translate;
 pub mod vault;
 
