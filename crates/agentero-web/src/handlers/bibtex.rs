@@ -1,17 +1,18 @@
 //! Experimental BibTeX / BibLaTeX network mount.
 //!
-//! `GET /bibtex` and `GET /biblatex` serve the current Vault's bibliography for
-//! reference managers (Zotero "Add by URL", JabRef, Overleaf, …). Rendering is
-//! local (`agentero_core::features::paper::catalog::bibtex_export`): metadata is
-//! never sent to a cloud translation service, which matters for self-hosted
-//! users.
+//! `GET /agentero_online.bib` serves the current Vault's bibliography for
+//! reference managers (Zotero "Add by URL", JabRef, Overleaf, …). One stable
+//! URL is mounted; the output dialect follows `settings.bibtexMount.format`
+//! (`bibtex` or `biblatex`). Rendering is local
+//! (`agentero_core::features::paper::catalog::bibtex_export`): metadata is never
+//! sent to a cloud translation service, which matters for self-hosted users.
 //!
 //! Contract:
-//! - disabled mount or dialect mismatch → `404 {"error":{"code":"not_mounted"}}`;
+//! - disabled → `404 {"error":{"code":"not_mounted"}}`;
 //! - enabled → `200` `application/x-bibtex; charset=utf-8`, `Cache-Control:
 //!   no-store`, `X-Agentero-Bib-Count: <n>` (empty body when nothing matches);
 //! - `GET /api/bibtex/status` → `{enabled, format, tags, dirs, count,
-//!   generatedAt, path}` for the Experimental settings pane.
+//!   generatedAt, path}`, where `path` is always [`MOUNT_PATH`].
 
 use std::sync::Arc;
 
@@ -26,27 +27,25 @@ use agentero_core::features::system::settings::BibtexMountSettings;
 
 use crate::state::AppState;
 
+/// Stable mount path served to reference managers.
+pub const MOUNT_PATH: &str = "/agentero_online.bib";
+
 /// Served content type (UTF-8 is the documented, intentional encoding for both
 /// dialects; the bibtex dialect escapes TeX specials instead of losing Unicode).
 const BIB_CONTENT_TYPE: &str = "application/x-bibtex; charset=utf-8";
 
-/// Pure mount gate (unit-tested): enabled AND the request path matches the
-/// configured dialect.
-fn mount_allows(mount: &BibtexMountSettings, requested: BibFormat) -> bool {
-    mount.enabled && mount.format.trim().eq_ignore_ascii_case(requested.as_str())
+/// Pure mount gate (unit-tested).
+fn mount_enabled(mount: &BibtexMountSettings) -> bool {
+    mount.enabled
 }
 
-fn not_mounted(requested: BibFormat) -> Response {
-    let message = format!(
-        "the {} network mount is not enabled in Settings → Experimental",
-        requested.as_str()
-    );
+fn not_mounted() -> Response {
     (
         StatusCode::NOT_FOUND,
         Json(json!({
             "error": {
                 "code": "not_mounted",
-                "message": message,
+                "message": "the bibliography network mount is not enabled in Settings → Experimental",
             }
         })),
     )
@@ -66,14 +65,16 @@ fn internal_error(message: impl Into<String>) -> Response {
         .into_response()
 }
 
-async fn serve(state: Arc<AppState>, requested: BibFormat) -> Response {
+async fn serve(state: Arc<AppState>) -> Response {
     let mount = state.settings.bibtex_mount();
-    if !mount_allows(&mount, requested) {
-        return not_mounted(requested);
+    if !mount_enabled(&mount) {
+        return not_mounted();
     }
+    // The mounted URL is stable; the settings choose the serialization dialect.
+    let format = BibFormat::parse(&mount.format);
     let vault = state.config.vault_root.clone();
     let rendered = tokio::task::spawn_blocking(move || {
-        bibtex_export::render(&vault, requested, &mount).map_err(|error| error.to_string())
+        bibtex_export::render(&vault, format, &mount).map_err(|error| error.to_string())
     })
     .await;
     let rendered = match rendered {
@@ -97,14 +98,9 @@ async fn serve(state: Arc<AppState>, requested: BibFormat) -> Response {
     response
 }
 
-/// `GET /bibtex`
-pub async fn bibtex_handler(State(state): State<Arc<AppState>>) -> Response {
-    serve(state, BibFormat::Bibtex).await
-}
-
-/// `GET /biblatex`
-pub async fn biblatex_handler(State(state): State<Arc<AppState>>) -> Response {
-    serve(state, BibFormat::Biblatex).await
+/// `GET /agentero_online.bib` (the mounted bibliography; dialect from settings).
+pub async fn online_bib_handler(State(state): State<Arc<AppState>>) -> Response {
+    serve(state).await
 }
 
 /// `GET /api/bibtex/status`
@@ -129,7 +125,7 @@ pub async fn status_handler(State(state): State<Arc<AppState>>) -> Response {
         "dirs": mount.dirs,
         "count": count,
         "generatedAt": agentero_core::time::now_rfc3339_millis(),
-        "path": requested.mount_path(),
+        "path": MOUNT_PATH,
     }))
     .into_response()
 }
@@ -148,13 +144,25 @@ mod tests {
     }
 
     #[test]
-    fn mount_gate_requires_enabled_and_matching_dialect() {
-        assert!(mount_allows(&mount(true, "bibtex"), BibFormat::Bibtex));
-        assert!(!mount_allows(&mount(true, "bibtex"), BibFormat::Biblatex));
-        assert!(!mount_allows(&mount(false, "bibtex"), BibFormat::Bibtex));
-        assert!(mount_allows(&mount(true, "BibLaTeX"), BibFormat::Biblatex));
-        // Unknown formats normalize to bibtex upstream; the raw gate still only
-        // matches the normalized dialect path.
-        assert!(!mount_allows(&mount(true, "ris"), BibFormat::Biblatex));
+    fn single_stable_mount_path() {
+        assert_eq!(MOUNT_PATH, "/agentero_online.bib");
+        assert!(MOUNT_PATH.ends_with(".bib"));
+    }
+
+    #[test]
+    fn mount_gate_only_checks_the_master_switch() {
+        assert!(mount_enabled(&mount(true, "bibtex")));
+        assert!(mount_enabled(&mount(true, "biblatex")));
+        assert!(!mount_enabled(&mount(false, "bibtex")));
+    }
+
+    #[test]
+    fn dialect_follows_the_settings_format() {
+        // Legacy/unknown values fall back to bibtex, matching settings normalize.
+        assert_eq!(BibFormat::parse("bibtex"), BibFormat::Bibtex);
+        assert_eq!(BibFormat::parse("biblatex"), BibFormat::Biblatex);
+        assert_eq!(BibFormat::parse(" BiblAteX "), BibFormat::Biblatex);
+        assert_eq!(BibFormat::parse("ris"), BibFormat::Bibtex);
+        assert_eq!(BibFormat::parse(""), BibFormat::Bibtex);
     }
 }

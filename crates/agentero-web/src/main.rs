@@ -88,10 +88,13 @@ async fn run() {
         .route("/bibtex/status", get(handlers::bibtex::status_handler));
 
     let app = Router::new()
-        // Experimental bibliography mount: exact root paths served for
-        // reference managers; must be registered before the SPA fallback.
-        .route("/bibtex", get(handlers::bibtex::bibtex_handler))
-        .route("/biblatex", get(handlers::bibtex::biblatex_handler))
+        // Experimental BibTeX/BibLaTeX network mount: one stable `.bib` URL for
+        // reference managers (content dialect follows settings.bibtexMount.format);
+        // must be registered before the SPA fallback.
+        .route(
+            handlers::bibtex::MOUNT_PATH,
+            get(handlers::bibtex::online_bib_handler),
+        )
         .nest("/api", api)
         .fallback(static_files::serve)
         .with_state(state);

@@ -25,7 +25,10 @@ use crate::fs::json_store;
 use crate::time::now_rfc3339_millis;
 
 /// Schema version of the hidden cache file; bump on incompatible changes.
-pub const TAG_INDEX_VERSION: u32 = 1;
+///
+/// v2: `#`-prefixed reserved tags are filtered out (see
+/// `papers::is_internal_tag_name`), so v1 caches must rebuild.
+pub const TAG_INDEX_VERSION: u32 = 2;
 
 /// Vault-relative location of the cache file (inside the hidden `.agentero/`).
 pub const TAG_INDEX_REL: &str = ".agentero/tag-index.json";
@@ -299,6 +302,10 @@ mod tests {
                 name: "@arxiv:cs.CL".into(),
                 color: None,
             },
+            PaperTag {
+                name: "#submitted:NeurIPS 2017".into(),
+                color: None,
+            },
         ];
         papers::upsert_paper(root.path(), &alpha).unwrap();
         let beta = PaperRecord::local_pdf("beta".into(), "Beta Paper".into())
@@ -313,7 +320,11 @@ mod tests {
         let vault = root.path();
         let view = read_tag_index(vault).unwrap();
         assert!(tag_index_path(vault).is_file());
-        assert_eq!(view.tags.len(), 1, "internal @arxiv tag must be filtered");
+        assert_eq!(
+            view.tags.len(),
+            1,
+            "internal @arxiv and #-managed tags must be filtered"
+        );
         assert_eq!(view.tags[0].name, "tag1");
         assert_eq!(view.tags[0].color.as_deref(), Some("blue"));
         assert_eq!(view.tags[0].count, 1);

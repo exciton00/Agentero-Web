@@ -82,6 +82,11 @@ pub fn is_internal_tag_name(name: &str) -> bool {
     if n.is_empty() {
         return false;
     }
+    // `#`-prefixed tags are Host-managed bookkeeping (e.g.
+    // `#submitted:NeurIPS 2017`); users never see or filter on them.
+    if n.starts_with('#') {
+        return true;
+    }
     let lower = n.to_ascii_lowercase();
     lower.starts_with(ZOTERO_INTERNAL_TAG_PREFIX)
         || lower.starts_with(ARXIV_INTERNAL_TAG_PREFIX)
@@ -2069,6 +2074,11 @@ mod tests {
         assert!(is_internal_tag_name("Computer Science - Machine Learning"));
         assert!(is_internal_tag_name("Statistics - Machine Learning"));
         assert!(is_arxiv_category_label("High Energy Physics - Theory"));
+        // Host-managed `#`-prefixed bookkeeping tags (e.g. venue submission
+        // metadata written by the publication pipeline) are reserved too.
+        assert!(is_internal_tag_name("#submitted:NeurIPS 2017"));
+        assert!(is_internal_tag_name("  #venue:ICML "));
+        assert!(!is_internal_tag_name("tag#submitted"));
         assert!(!is_internal_tag_name("survey"));
         assert!(!is_arxiv_category_label("Machine Learning"));
         assert_eq!(

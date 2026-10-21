@@ -427,9 +427,9 @@ pub struct LayoutProviderConfig {
 }
 
 /// Experimental "bibtex/biblatex network mount": when enabled the Web host
-/// serves the current Vault's bibliography over `GET /bibtex` or
-/// `GET /biblatex` (local serialization only — metadata is never sent to a
-/// cloud translation service).
+/// serves the current Vault's bibliography over `GET /agentero_online.bib`
+/// (local serialization only — metadata is never sent to a cloud translation
+/// service).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct BibtexMountSettings {

@@ -7,16 +7,19 @@
 //! `Result<ApiResult<T>, String>` transport rejection for typed commands).
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use agentero_core::features::paper::analyze::refs;
+use agentero_core::features::paper::capabilities::CapsCache;
 use agentero_core::features::paper::catalog::move_paper::move_with_index;
 use agentero_core::features::paper::catalog::papers::{self, PaperRecord};
 use agentero_core::features::paper::catalog::tag_index;
 use agentero_core::features::paper::import::seed_notes_template;
 use agentero_core::features::paper::venue;
+use agentero_core::features::pdf::layout_index;
 use agentero_core::features::pdf::marks::activity;
 use agentero_core::fs::{resolve_paper_dir, sanitize_vault_rel};
 use agentero_core::usage;
@@ -578,5 +581,266 @@ pub async fn activity_record_events(_ctx: &RpcCtx, args: &Value) -> HandlerResul
     match result {
         Ok(count) => typed_ok(count),
         Err(error) => fail_msg(error),
+    }
+}
+
+
+// ---------------------------------------------------------------------------
+// Library row assets: status badges + delete-from-context-menu
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PaperAssetsStatusArgs {
+    vault_path: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PaperDeleteAssetsArgs {
+    vault_path: String,
+    /// Vault-relative paper folder path.
+    paper_path: String,
+    /// `pdf` (top-level PDFs) or `layout` (generated layout sidecars).
+    kind: String,
+}
+
+/// One library row's generated-asset presence (`paper_assets_status`).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PaperAssetStatus {
+    /// Vault-relative paper folder path.
+    path: String,
+    has_pdf: bool,
+    has_layout: bool,
+    has_layout_index: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PaperDeleteAssetsResult {
+    /// Vault-relative paths that were actually removed.
+    removed: Vec<String>,
+}
+
+/// Status rows for every catalog paper (deduped by logical id, same set the
+/// Library table shows).
+fn collect_assets_status(
+    vault: &Path,
+    caps: &CapsCache,
+) -> Result<Vec<PaperAssetStatus>, String> {
+    let rows = papers::list_all_unique_by_id(vault).map_err(|error| error.to_string())?;
+    let mut out = Vec::with_capacity(rows.len());
+    for paper in rows {
+        if paper.path.trim().is_empty() {
+            continue;
+        }
+        let paper_caps = caps.caps_for(vault, &paper.path);
+        let source = vault.join(&paper.path).join("source");
+        out.push(PaperAssetStatus {
+            has_pdf: paper_caps.has_pdf(),
+            has_layout: source.join(layout_index::LAYOUT_RAW_FILE).is_file(),
+            has_layout_index: source.join(layout_index::LAYOUT_INDEX_FILE).is_file(),
+            path: paper.path,
+        });
+    }
+    out.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(out)
+}
+
+fn paper_source_dir(paper_dir: &Path) -> PathBuf {
+    paper_dir.join("source")
+}
+
+/// Delete one kind of generated asset for a paper folder and report what was
+/// removed. Missing files are a successful no-op (empty `removed`).
+fn delete_paper_assets(vault: &Path, paper_path: &str, kind: &str) -> Result<Vec<String>, String> {
+    let rel = sanitize_vault_rel(paper_path).map_err(|_| "invalid paper path".to_string())?;
+    let paper_dir = vault.join(&rel);
+    if !paper_dir.is_dir() {
+        return Err(format!("paper folder not found: {rel}"));
+    }
+    let mut removed = Vec::new();
+    match kind.trim().to_ascii_lowercase().as_str() {
+        "pdf" => {
+            // Only the paper's own top-level PDFs (`{paperDir}/*.pdf`): figure
+            // PDFs under `source/assets/**` belong to the parsed body and must
+            // survive a re-download of the source PDF.
+            let entries = std::fs::read_dir(&paper_dir)
+                .map_err(|error| format!("read paper dir {rel}: {error}"))?;
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let is_file = entry.file_type().map(|kind| kind.is_file()).unwrap_or(false);
+                let is_pdf = path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"));
+                if !is_file || !is_pdf {
+                    continue;
+                }
+                if std::fs::remove_file(&path).is_ok() {
+                    if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
+                        removed.push(format!("{rel}/{name}"));
+                    }
+                }
+            }
+        }
+        "layout" => {
+            let source = paper_source_dir(&paper_dir);
+            for name in [layout_index::LAYOUT_RAW_FILE, layout_index::LAYOUT_INDEX_FILE] {
+                let target = source.join(name);
+                if target.is_file() && std::fs::remove_file(&target).is_ok() {
+                    removed.push(format!("{rel}/source/{name}"));
+                }
+            }
+        }
+        other => {
+            return Err(format!(
+                "unknown asset kind: {other} (expected \"pdf\" or \"layout\")"
+            ))
+        }
+    }
+    removed.sort();
+    Ok(removed)
+}
+
+/// `paper_assets_status({vaultPath})` → `ApiResult<PaperAssetStatus[]>`.
+pub async fn assets_status(ctx: &RpcCtx, args: &Value) -> HandlerResult {
+    let args: PaperAssetsStatusArgs = match parse_args(args) {
+        Ok(args) => args,
+        Err(error) => return fail_msg(error),
+    };
+    let caps = ctx.state.caps.clone();
+    let result = blocking(move || {
+        let vault = vault_root(&args.vault_path)?;
+        collect_assets_status(&vault, &caps)
+    })
+    .await;
+    match result {
+        Ok(rows) => ok(rows),
+        Err(error) => fail_msg(error),
+    }
+}
+
+/// `paper_delete_assets({vaultPath, paperPath, kind})` →
+/// `ApiResult<{removed: string[]}>`.
+pub async fn delete_assets(ctx: &RpcCtx, args: &Value) -> HandlerResult {
+    let args: PaperDeleteAssetsArgs = match parse_args(args) {
+        Ok(args) => args,
+        Err(error) => return fail_msg(error),
+    };
+    let caps = ctx.state.caps.clone();
+    let result = blocking(move || {
+        let vault = vault_root(&args.vault_path)?;
+        let removed = delete_paper_assets(&vault, &args.paper_path, &args.kind)?;
+        // The caps probe and the tag index cache both mirror disk state.
+        caps.invalidate(&vault, &args.paper_path);
+        tag_index::invalidate_tag_index(&vault);
+        tag_index::ensure_tag_index_best_effort(&vault);
+        Ok(PaperDeleteAssetsResult { removed })
+    })
+    .await;
+    match result {
+        Ok(result) => ok(result),
+        Err(error) => fail_msg(error),
+    }
+}
+
+
+#[cfg(test)]
+mod asset_tests {
+    use super::*;
+    use agentero_core::features::paper::catalog::papers::PaperRecord;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn fixture() -> PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let unique = format!(
+            "{}-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        );
+        let root = std::env::temp_dir().join(format!("agentero-web-assets-{unique}"));
+        let paper_dir = root.join("papers/demo");
+        std::fs::create_dir_all(paper_dir.join("source/assets")).unwrap();
+        std::fs::write(paper_dir.join("demo.pdf"), b"%PDF-1.7").unwrap();
+        std::fs::write(paper_dir.join("demo-extra.PDF"), b"%PDF-1.7").unwrap();
+        std::fs::write(paper_dir.join("NOTES.md"), b"# notes").unwrap();
+        std::fs::write(paper_dir.join("source/assets/figure.pdf"), b"%PDF-1.7").unwrap();
+        std::fs::write(paper_dir.join("source/layout.json"), b"{}").unwrap();
+        std::fs::write(paper_dir.join("source/layout-index.json"), b"{}").unwrap();
+        papers::upsert_paper(
+            &root,
+            &PaperRecord::local_pdf("demo".into(), "Demo Paper".into()).at_path("papers/demo"),
+        )
+        .unwrap();
+        root
+    }
+
+    #[test]
+    fn reports_pdf_and_layout_presence() {
+        let root = fixture();
+        let caps = CapsCache::new();
+        let rows = collect_assets_status(&root, &caps).expect("status");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].path, "papers/demo");
+        assert!(rows[0].has_pdf);
+        assert!(rows[0].has_layout);
+        assert!(rows[0].has_layout_index);
+
+        // Layout-only deletion flips the generated-asset flags, not hasPdf.
+        delete_paper_assets(&root, "papers/demo", "layout").expect("delete layout");
+        let rows = collect_assets_status(&root, &caps).expect("status");
+        assert!(rows[0].has_pdf);
+        assert!(!rows[0].has_layout);
+        assert!(!rows[0].has_layout_index);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn deletes_only_top_level_pdfs_and_layout_sidecars() {
+        let root = fixture();
+        let removed = delete_paper_assets(&root, "papers/demo", "pdf").expect("delete pdf");
+        assert_eq!(
+            removed,
+            vec![
+                "papers/demo/demo-extra.PDF".to_string(),
+                "papers/demo/demo.pdf".to_string(),
+            ]
+        );
+        assert!(!root.join("papers/demo/demo.pdf").exists());
+        assert!(
+            root.join("papers/demo/source/assets/figure.pdf").is_file(),
+            "figure PDFs under source/assets must survive"
+        );
+        assert!(root.join("papers/demo/NOTES.md").is_file());
+
+        let removed = delete_paper_assets(&root, "papers/demo", "layout").expect("delete layout");
+        assert_eq!(
+            removed,
+            vec![
+                "papers/demo/source/layout-index.json".to_string(),
+                "papers/demo/source/layout.json".to_string(),
+            ]
+        );
+        // Idempotent: nothing left to remove is still Ok with an empty list.
+        let again = delete_paper_assets(&root, "papers/demo", "layout").expect("no-op");
+        assert!(again.is_empty());
+        let again = delete_paper_assets(&root, "papers/demo", "pdf").expect("no-op");
+        assert!(again.is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rejects_unknown_kind_and_missing_paper() {
+        let root = fixture();
+        assert!(delete_paper_assets(&root, "papers/demo", "video").is_err());
+        assert!(delete_paper_assets(&root, "papers/missing", "pdf").is_err());
+        assert!(delete_paper_assets(&root, "../escape", "pdf").is_err());
+        let _ = std::fs::remove_dir_all(root);
     }
 }
