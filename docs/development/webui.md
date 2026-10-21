@@ -71,8 +71,14 @@ agentero-core（已有，tauri-free）
 ### 2.4 任务模型
 
 - 服务端任务中心替代桌面 JobCenter：`job:changed` / `job:completed` / `job:failed` / `job:progress` 事件契约不变。
-- 默认服务端执行：import / download assets / parse body / parse refs / citing scan / metadata refresh / **sync**。
-- `job:offer`（浏览器执行）仅用于版面分析（ONNX wasm）——**v1 暂缓**，前端收到 offer 时如实回报"不支持"。
+- **服务端 runner**（Rust）：download assets / parse body / parse refs；`job:progress` 由 core 经 `HostHooks` 广播。
+- **Renderer offer 协议**（浏览器执行）：`import` / `layoutAnalyze` / `citingScan` / `libraryIo` / `metadataRefresh` 默认走桌面 `renderer_offer_runner` 语义——
+  1. 入队后任务立即置 `running`，服务端 emit `job:offer`（定向到发起标签；无标签上下文时广播），payload `{jobId,kind,vaultPath,paperPath,force,params}`；
+  2. 前端执行器（`startJobCenterExecutorListener`）调用 `job_report{jobId,progress?,phase?,error?,state?}` 回报，服务端每次更新快照并 emit `job:changed`，终态额外 emit `job:completed` / `job:failed`；重复/迟到 report 幂等返回当前快照；
+  3. 服务端等待终态：超时（默认 15 分钟，`AGENTERO_WEB_JOB_OFFER_TIMEOUT_SECS` 可调）→ `failed "renderer job report timeout"`；`job_cancel` 立即置 `cancelled` 并唤醒等待方；
+  4. 浏览器重载后由 `job_list` 里 `state=running` 的 offer 重新认领（`claimRunningJobOffers`）。
+- 无浏览器场景（headless/CI）可用 `AGENTERO_WEB_IMPORT_SERVER_FALLBACK=1` 让 `job_import_enqueue` 的 identifier 模式改走服务端 core import。
+- `job_connector_sync_enqueue`（Zotero Connector）、`job_model_download` 等未移植：返回明确的 unsupported 业务错误。
 
 ## 3. 功能矩阵
 
@@ -118,7 +124,17 @@ agentero-core（已有，tauri-free）
 - **版面分析（ONNX）**：仍暂缓，等 renderer offer 协议落地后浏览器 wasm 可直接跑。
 - 多文件串行识别（性能）、deferred RecognizeMetadata runner、其余 JobKind。
 
-## 6. 待确认 / 需要产品决策
+## 6. 产品决策（已确认，2026-10-21）
+
+| 项 | 决策 | 实现状态 |
+|---|---|---|
+| 版面分析 | **需要**；采用**自建 MinerU**（server-side，v4.0.9 self-hosted）。URL/key 只存在运行时 `settings.json`（用户 BYOK），**不进仓库**。浏览器本地 ONNX 作为未配置远程时的 fallback | web 端在 `settings.layout.backend=mineru` 时由服务端调用 MinerU 并写 `layout.json`/`layout-index.json`（`layout_remote_analyze_pdf` RPC） |
+| 站点代理（arXiv/Cool Papers/ModelScope 网页内嵌） | 不保留 | web 构建隐藏 Plaza 区块；相关 RPC 返回 unsupported |
+| LaTeX 编译（rtex） | 不做 | `detect_latex_engines` 返回空，编译入口不显示 |
+| Zotero 本地库迁移 | 不做 | `zotero_*` / welcome「Migrate from Zotero」在 web 隐藏/不支持 |
+| 内置翻译 provider 凭证 | 不编入；只保留 BYOK / 免费引擎 | 镜像不注入 `AGENTERO_BUILTIN_*` 构建变量 |
+
+## 7. 待确认 / 需要产品决策
 
 1. **版面分析（ONNX）**：v1 暂缓是否可接受？（影响 Figures 侧栏、区域批注）
 2. **站点代理/广场**：arXiv、Cool Papers、ModelScope 的网页内嵌阅读是否要保留？（需要服务端反代 + SSRF allowlist）
@@ -126,7 +142,7 @@ agentero-core（已有，tauri-free）
 4. **LaTeX 编译**（rtex）：服务端需装 TeX Live，镜像 +1GB；是否需要？
 5. **Agent 安装方式**：镜像内置 Node + ACP adapters，用户自己装 claude/codex CLI（挂载或登录）——可接受吗？
 
-## 7. 风险
+## 8. 风险
 
 - **Agent 移植**是最大块（22K LOC，WebviewWindow/AppHandle 解耦），也是"产品灵魂"，优先做技术验证。
 - **写并发**：catalog 单写者；多标签同 Vault 写同一文件需靠现有保存冲突检查。
@@ -134,7 +150,7 @@ agentero-core（已有，tauri-free）
 - **部署依赖**：pdfium `.so`（liteparse）、Node 22 + ACP adapters、TeX（可选）、ONNX 模型（若启用）。
 - **上游漂移**：`feat/webui` 需定期 rebase `origin/main`；settings 迁 core 是一次上游友好的重构。
 
-## 8. 开发约定
+## 9. 开发约定
 
 - 命令名 / 参数 / 返回结构**必须**与 `src/lib/core/bindings.ts` 一致；新增命令先改前端契约。
 - 事件名 / payload 必须与 `events_contract.rs` 一致（45 个）。

@@ -23,7 +23,15 @@ import {
 	layoutSidecarBlocksAnalysis,
 	readLayoutSidecar,
 	writeLayoutIndexFromRaw,
+	writeLayoutSidecar,
 } from "@/lib/pdf/layout/io";
+import {
+	invokeLayoutRemoteAnalyzePdf,
+	paddlePageToRegions,
+} from "@/lib/pdf/layout/paddle";
+import { isRemoteLayoutProvider, layoutProviderFor } from "@/lib/pdf/layout/providers";
+import type { PdfLayoutRegion } from "@/lib/pdf/layout/types";
+import { loadSettings } from "@/lib/settings/store";
 import type { LayoutTaskLike } from "@/lib/pdf/layout/run-analysis";
 import { runDocumentLayoutAnalysis } from "@/lib/pdf/layout/run-analysis";
 import { clearLayoutDocumentResult } from "@/lib/pdf/layout/store";
@@ -112,6 +120,43 @@ export async function analyzePaperLayoutHeadless(opts: {
 		throw new Error("Failed to read paper PDF");
 	}
 	if (opts.signal?.aborted) throw new Error("cancelled");
+
+	// Remote layout backend (Settings → Layout): the Host owns the API key and
+	// talks to MinerU / Paddle, so the browser does not need the ONNX model.
+	// Falls through to local ONNX when no remote provider is configured.
+	const layoutProvider = layoutProviderFor(loadSettings().layout.backend);
+	if (layoutProvider && isRemoteLayoutProvider(layoutProvider)) {
+		const requestId = `headless-layout-${Date.now().toString(36)}`;
+		const result = await invokeLayoutRemoteAnalyzePdf({
+			provider: layoutProvider.id,
+			pdfBase64: arrayBufferToBase64(buffer),
+			fileName: pdfPath.split(/[/\\]/).pop() || "paper.pdf",
+			requestId,
+		});
+		if (opts.signal?.aborted) throw new Error("cancelled");
+		const raw: PdfLayoutRegion[] = [];
+		result.pages.forEach((page, pageIndex) => {
+			// MinerU reports PDF points (scale 1); Paddle reports rendered px.
+			const width = page.widthPx && page.widthPx > 0 ? page.widthPx : 1224;
+			const height = page.heightPx && page.heightPx > 0 ? page.heightPx : 1584;
+			raw.push(
+				...paddlePageToRegions({
+					page,
+					pageIndex,
+					pageWidth: width,
+					pageHeight: height,
+					idPrefix: layoutProvider.id,
+				}),
+			);
+		});
+		await writeLayoutSidecar(paperAbsPath, raw, layoutProvider.sidecarMode);
+		await writeLayoutIndexFromRaw(paperAbsPath, raw);
+		return {
+			fromCache: false,
+			summary: `${layoutProvider.id}: ${raw.length} regions`,
+			regionCount: raw.length,
+		};
+	}
 
 	const engine = await getHeadlessPdfEngine();
 	const documentId =
@@ -236,4 +281,15 @@ export async function analyzePaperLayoutHeadless(opts: {
 		}
 		clearLayoutDocumentResult(documentId);
 	}
+}
+
+/** Base64-encode PDF bytes for the Host-side remote layout request. */
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+	const bytes = new Uint8Array(buffer);
+	let binary = "";
+	const chunk = 0x8000;
+	for (let i = 0; i < bytes.length; i += chunk) {
+		binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+	}
+	return btoa(binary);
 }

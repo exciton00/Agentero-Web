@@ -1,6 +1,7 @@
 import { FolderOpen, FolderPlus, Server, Trash2 } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { isWebHost } from "@/lib/core/tauri";
 import { SiZotero } from "react-icons/si";
 import {
 	type OpenRemoteVaultArgs,
@@ -144,26 +145,30 @@ export function VaultWelcome({
 						<FolderOpen className="size-3.5" />
 						{t("app:vault.openVaultButton")}
 					</Button>
-					<Button
-						type="button"
-						variant="outline"
-						size="sm"
-						disabled={busy}
-						onClick={() => setRemoteOpen(true)}
-					>
-						<Server className="size-3.5" />
-						{t("app:vault.openRemoteVaultButton")}
-					</Button>
-					<Button
-						type="button"
-						variant="outline"
-						size="sm"
-						disabled={busy}
-						onClick={onMigrateZotero}
-					>
-						<SiZotero className="size-3.5 text-[#CC2936]" />
-						{t("sidebar:zoteroMigrate.button")}
-					</Button>
+					{isWebHost() ? null : (
+						<>
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								disabled={busy}
+								onClick={() => setRemoteOpen(true)}
+							>
+								<Server className="size-3.5" />
+								{t("app:vault.openRemoteVaultButton")}
+							</Button>
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								disabled={busy}
+								onClick={onMigrateZotero}
+							>
+								<SiZotero className="size-3.5 text-[#CC2936]" />
+								{t("sidebar:zoteroMigrate.button")}
+							</Button>
+						</>
+					)}
 				</div>
 
 				{recentVaults.length > 0 || recentRemotes.length > 0 ? (

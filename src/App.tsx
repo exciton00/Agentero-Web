@@ -60,7 +60,7 @@ import {
 import { runSelectionQuickChat } from "@/lib/agent/selection-quick-chat";
 import { pinActiveSelection } from "@/lib/agent/selection-store";
 import { closeTopOverlay } from "@/lib/core/overlay-stack";
-import { hasHostTransport, isMacOS, isTauri } from "@/lib/core/tauri";
+import { hasHostTransport, isMacOS, isTauri, isWebHost } from "@/lib/core/tauri";
 import { doctorSetDirtyPaths } from "@/lib/doctor/api";
 import { openMagicWand } from "@/lib/paper/import-actions";
 import { scheduleLibraryRefresh } from "@/lib/paper/library-store";
@@ -121,7 +121,9 @@ import { workspaceStore } from "@/lib/workspace/store";
 // Other desktop platforms also use native decorations, but have no native menu
 // bar, so the title bar shows a Settings gear as the entry point.
 const isMacDesktop = isTauri() && isMacOS();
-const showSettingsGear = isTauri() && !isMacOS();
+// Windows/Linux desktop and the headless web build have no native menu bar, so
+// the gear is the settings entry point in both.
+const showSettingsGear = isWebHost() || (isTauri() && !isMacOS());
 
 function zoomIn(): void {
 	const current = getSettings().uiScale;

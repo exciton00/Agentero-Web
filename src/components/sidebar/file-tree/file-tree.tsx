@@ -9,6 +9,7 @@ import {
 import { useTranslation } from "react-i18next";
 import { FileTree as AiFileTree } from "@/components/ai-elements/file-tree";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { isWebHost } from "@/lib/core/tauri";
 import { useSettings } from "@/hooks/use-app-stores";
 import { cn } from "@/lib/core/utils";
 import type {
@@ -214,7 +215,7 @@ export const FileTree = memo(
 		ref,
 	) {
 		const { t } = useTranslation("sidebar");
-		const plazaEnabled = useSettings((s) => s.plazaEnabled);
+		const plazaEnabled = useSettings((s) => s.plazaEnabled) && !isWebHost();
 		const plazaHiddenSources = useSettings((s) => s.plazaHiddenSources);
 		const containerRef = useRef<HTMLDivElement>(null);
 		const {

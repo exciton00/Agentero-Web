@@ -4,11 +4,19 @@
 
 import { commands } from "@/lib/core/bindings";
 import { notifyError } from "@/lib/core/notify";
-import { isTauri } from "@/lib/core/tauri";
+import { isTauri, isWebHost } from "@/lib/core/tauri";
 import { getVaultPath } from "@/lib/vault/store";
 import { setSettingsOpenState, uiStore } from "./ui-store";
 
 export function openSettingsWindow(section: string = "general"): void {
+	if (isWebHost()) {
+		// The web build has no native windows: settings are a separate browser
+		// tab using the existing `?window=settings` shell route.
+		const url = new URL(window.location.href);
+		url.search = `?window=settings&section=${encodeURIComponent(section)}`;
+		window.open(url.toString(), "_blank", "noopener");
+		return;
+	}
 	if (!isTauri()) return;
 	void (async () => {
 		try {
@@ -25,6 +33,10 @@ export function openSettingsWindow(section: string = "general"): void {
 }
 
 export function closeSettingsWindow(): void {
+	if (isWebHost()) {
+		window.close();
+		return;
+	}
 	if (!isTauri()) return;
 	void (async () => {
 		try {
