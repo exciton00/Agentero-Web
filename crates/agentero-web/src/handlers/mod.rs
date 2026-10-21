@@ -1,5 +1,6 @@
 //! Domain handlers. Each module mirrors one desktop feature's command shell.
 
+pub mod agent;
 pub mod domain;
 pub mod files;
 pub mod markdown;

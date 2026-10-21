@@ -8,10 +8,15 @@
 use serde_json::Value;
 
 use crate::error::HandlerResult;
-use crate::handlers::{markdown, paper, search, vault};
+use crate::handlers::{agent, markdown, paper, search, vault};
 use crate::rpc::RpcCtx;
 
 pub async fn dispatch(ctx: &RpcCtx, command: &str, args: &Value) -> Option<HandlerResult> {
+    // Agent (BYOA/ACP) + doctor surface has its own registry so this table stays
+    // readable; it claims `agent_*` / `doctor_*` / `remote_agent_*` names.
+    if let Some(result) = agent::dispatch(ctx, command, args).await {
+        return Some(result);
+    }
     let result = match command {
         // ---- Vault file search ----
         "vault_search" => search::vault_search(ctx, args).await,

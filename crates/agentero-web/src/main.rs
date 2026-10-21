@@ -7,6 +7,7 @@
 // Scaffolding types are used as the port grows; keep the build warning-free.
 #![allow(dead_code)]
 
+mod agent_runtime;
 mod config;
 mod error;
 mod events;
@@ -28,6 +29,15 @@ use crate::state::AppState;
 
 #[tokio::main]
 async fn main() {
+    // Domain code re-executes this binary as an isolated PDFium worker
+    // (`spawn_pdf_worker` in agentero-core); it must short-circuit before the
+    // HTTP server starts, exactly like the desktop Host and the CLI.
+    if let Some(status) =
+        agentero_core::features::paper::analyze::parse::try_run_pdf_parse_worker()
+    {
+        std::process::exit(status);
+    }
+
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let config = match Config::from_env() {

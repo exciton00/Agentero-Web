@@ -246,6 +246,7 @@ name = "agentero-web"
 version = "0.12.0"
 dependencies = [
  "agentero-core",
+ "agentero-host",
  "axum",
  "dirs",
  "env_logger",

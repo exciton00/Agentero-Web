@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use agentero_core::features::paper::capabilities::CapsCache;
 use agentero_core::features::system::settings::AppSettingsStore;
 
+use crate::agent_runtime::build_agent_host;
 use crate::config::Config;
 use crate::events::{EventBus, WebHostHooks};
 use crate::handlers::runtime::sync::SyncService;
@@ -27,6 +28,8 @@ pub struct AppState {
     pub sync: Arc<SyncService>,
     /// Live browser-tab connections keyed by window label (targeted events).
     connections: Mutex<HashMap<String, usize>>,
+    /// BYOA/ACP agent runtime (tauri-free port; emits through the WebSocket bus).
+    pub agents: Arc<agentero_host::service::AgentHost>,
 }
 
 impl AppState {
@@ -37,6 +40,7 @@ impl AppState {
         let watcher = FsWatchService::new(events.clone(), caps.clone());
         let tasks = TaskCenter::new(events.clone());
         let sync = Arc::new(SyncService::new(events.clone()));
+        let agents = build_agent_host(events.clone());
         Self {
             config,
             settings,
@@ -46,6 +50,7 @@ impl AppState {
             tasks,
             sync,
             connections: Mutex::new(HashMap::new()),
+            agents,
         }
     }
 
