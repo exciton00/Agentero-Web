@@ -1,6 +1,7 @@
 import { DEFAULT_LAYOUT_SETTINGS } from "@/lib/pdf/layout/settings";
 import type {
 	AppSettings,
+	BibtexMountSettings,
 	DecisionProviderId,
 	DecisionSettings,
 	EmbeddingSettings,
@@ -32,6 +33,14 @@ export const DEFAULT_DECISION_SETTINGS: DecisionSettings = {
 	baseUrl: DEFAULT_DECISION_BASE_URL,
 	model: DEFAULT_DECISION_MODEL,
 	smartHighlight: false,
+};
+
+/** Web-only bibliography mount defaults (off, BibTeX, whole Vault). */
+export const DEFAULT_BIBTEX_MOUNT_SETTINGS: BibtexMountSettings = {
+	enabled: false,
+	format: "bibtex",
+	tags: [],
+	dirs: [],
 };
 
 /**
@@ -223,6 +232,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
 	layout: { ...DEFAULT_LAYOUT_SETTINGS, providerConfigs: {} },
 	dismissedReminders: [],
 	decision: { ...DEFAULT_DECISION_SETTINGS },
+	bibtexMount: { ...DEFAULT_BIBTEX_MOUNT_SETTINGS },
 };
 
 /** Snap an arbitrary scale value to the closest supported preset. */

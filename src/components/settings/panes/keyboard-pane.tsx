@@ -5,6 +5,7 @@ import {
 	SettingsSectionLabel,
 	settingsRowClassName,
 } from "@/components/settings/settings-layout";
+import { isWebHost } from "@/lib/core/tauri";
 import {
 	formatShortcut,
 	type ShortcutDef,
@@ -32,9 +33,18 @@ export function KeyboardPane() {
 						{t(`shortcuts:groups.${GROUP_KEY[group]}`)}
 					</SettingsSectionLabel>
 					<SettingsGroup>
-						{items.map((item) => (
-							<ShortcutRow key={item.id} def={item} />
-						))}
+						{items
+							.filter(
+								(item) =>
+									!(
+										isWebHost() &&
+										(item.id === "revealInFinder" ||
+											item.id === "openInTerminal")
+									),
+							)
+							.map((item) => (
+								<ShortcutRow key={item.id} def={item} />
+							))}
 					</SettingsGroup>
 				</div>
 			))}

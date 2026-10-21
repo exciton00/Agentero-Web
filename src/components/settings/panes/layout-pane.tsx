@@ -465,12 +465,18 @@ function ProviderConfigCard({
 	const displayIsOcr = draft.isOcr !== undefined ? draft.isOcr : stored.isOcr;
 	const displaySelfHosted =
 		draft.selfHosted !== undefined ? draft.selfHosted : stored.selfHosted;
-	const configured = displayApiKey.trim().length > 0;
+	// A provider is usable with a key, or — for self-hosted engines — with a
+	// configured endpoint (the Host resolves the stored credentials).
+	const endpointConfigured =
+		provider.supportsSelfHosted &&
+		Boolean(displaySelfHosted) &&
+		displayBaseUrl.trim().length > 0;
+	const configured = displayApiKey.trim().length > 0 || endpointConfigured;
 
 	const runProbe = useCallback(
 		(apiKey: string) => {
-			if (!isTauri()) return;
-			if (!apiKey.trim()) {
+			// Host round-trip through the transport shim (web host included).
+			if (!apiKey.trim() && !endpointConfigured) {
 				setStatus("idle");
 				return;
 			}
@@ -483,7 +489,7 @@ function ProviderConfigCard({
 				if (!ac.signal.aborted) setStatus(ok ? "ok" : "fail");
 			});
 		},
-		[provider.id],
+		[provider.id, endpointConfigured],
 	);
 
 	/**

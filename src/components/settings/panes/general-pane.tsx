@@ -38,7 +38,7 @@ import { errorText } from "@/lib/core/error";
 import { callApi } from "@/lib/core/ipc";
 import { notifyError, notifySuccess } from "@/lib/core/notify";
 import { openExternalUrl } from "@/lib/core/open-external";
-import { isTauri } from "@/lib/core/tauri";
+import { isTauri, isWebHost } from "@/lib/core/tauri";
 import {
 	type EasyScholarProbeStatus,
 	hasEasyScholarKey,
@@ -441,10 +441,17 @@ export function GeneralPane({
 				{t("general.sections.plaza")}
 			</SettingsSectionLabel>
 			<SettingsGroup>
-				<SettingsRow label={t("general.plaza.label")} htmlFor="plaza-enabled">
+				<SettingsRow
+					label={t("general.plaza.label")}
+					description={
+						isWebHost() ? t("general.plaza.webUnavailable") : undefined
+					}
+					htmlFor="plaza-enabled"
+				>
 					<Switch
 						id="plaza-enabled"
-						checked={settings.plazaEnabled}
+						checked={isWebHost() ? false : settings.plazaEnabled}
+						disabled={isWebHost()}
 						onCheckedChange={(v) => patch({ plazaEnabled: v })}
 					/>
 				</SettingsRow>
@@ -774,17 +781,19 @@ function ConnectorSettingsBlock({
 	patch: (p: Partial<AppSettings>) => void;
 }) {
 	const { t } = useTranslation(["settings", "common"]);
+	// The Zotero Connector is a local desktop service; the web host has none.
+	const webHost = isWebHost();
 	const [status, setStatus] = useState<ConnectorStatus | null>(null);
 	const [busy, setBusy] = useState(false);
 
 	const refresh = useCallback(async () => {
-		if (!isTauri()) return;
+		if (webHost || !isTauri()) return;
 		try {
 			setStatus(await connectorGetStatus());
 		} catch {
 			// ignore probe failures in settings
 		}
-	}, []);
+	}, [webHost]);
 
 	useEffect(() => {
 		void refresh();
@@ -834,16 +843,21 @@ function ConnectorSettingsBlock({
 					<span className="inline-flex items-center gap-1.5">
 						{t("general.connector.label")}
 						<span className="text-caption font-normal leading-none text-muted-foreground/60">
-							{t("general.connector.hint")}
+							{webHost
+								? t("general.connector.webUnavailable")
+								: t("general.connector.hint")}
 						</span>
 					</span>
+				}
+				description={
+					webHost ? t("general.connector.webUnavailable") : undefined
 				}
 				htmlFor="connector-enabled"
 			>
 				<Switch
 					id="connector-enabled"
-					checked={settings.connectorEnabled}
-					disabled={busy}
+					checked={webHost ? false : settings.connectorEnabled}
+					disabled={webHost || busy}
 					onCheckedChange={(v) => void onToggle(v)}
 				/>
 			</SettingsRow>
@@ -851,7 +865,14 @@ function ConnectorSettingsBlock({
 				label={
 					<>
 						{t("general.connector.portLabel")}
-						{status?.listening ? (
+						{webHost ? (
+							<span className="ml-1.5">
+								<StatusDot
+									tone="idle"
+									label={t("general.connector.webUnavailable")}
+								/>
+							</span>
+						) : status?.listening ? (
 							<span className="ml-1.5">
 								<StatusDot tone="ok" label={t("common:listening")} />
 							</span>
@@ -868,7 +889,7 @@ function ConnectorSettingsBlock({
 					className="h-8 w-28"
 					defaultValue={settings.connectorPort}
 					onBlur={(e) => void onPortBlur(e.currentTarget.value)}
-					disabled={busy}
+					disabled={webHost || busy}
 				/>
 			</SettingsRow>
 		</SettingsGroup>

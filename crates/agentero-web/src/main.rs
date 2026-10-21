@@ -63,6 +63,11 @@ async fn run() {
 
     let state = Arc::new(AppState::new(config.clone()));
 
+    // Process-wide cloud-sync auto scheduler: one tokio task ticking every few
+    // seconds over the configured vaults (autoSync + intervalMinutes). It stops
+    // with the runtime on shutdown.
+    state.sync.clone().start_auto_sync();
+
     let api = Router::new()
         .route("/rpc/{command}", post(rpc::rpc_handler))
         .route("/events", get(events::ws_handler))
@@ -78,9 +83,15 @@ async fn run() {
         .route("/rename", post(handlers::files::rename_handler))
         .route("/upload", post(handlers::files::upload_handler))
         .route("/healthz", get(|| async { "ok" }))
-        .route("/config", get(config_handler));
+        .route("/config", get(config_handler))
+        // Experimental bibtex/biblatex network mount status (UI green light).
+        .route("/bibtex/status", get(handlers::bibtex::status_handler));
 
     let app = Router::new()
+        // Experimental bibliography mount: exact root paths served for
+        // reference managers; must be registered before the SPA fallback.
+        .route("/bibtex", get(handlers::bibtex::bibtex_handler))
+        .route("/biblatex", get(handlers::bibtex::biblatex_handler))
         .nest("/api", api)
         .fallback(static_files::serve)
         .with_state(state);

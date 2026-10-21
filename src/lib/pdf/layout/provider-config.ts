@@ -3,7 +3,7 @@
  * (Settings → Layout pane and the onboarding layout step).
  */
 
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import {
 	invokeLayoutRemoteProbe,
 	tinyProbeJpegBase64,
@@ -103,7 +103,7 @@ export async function probeLayoutProvider(
 	provider: LayoutProviderId,
 	apiKey: string,
 ): Promise<boolean> {
-	if (!isTauri()) return false;
+	if (!hasHostTransport()) return false;
 	const base64 = tinyProbeJpegBase64();
 	if (!base64) return false;
 	try {

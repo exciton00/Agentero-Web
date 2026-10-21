@@ -209,6 +209,9 @@ pub struct AppSettings {
     pub translate: TranslateSettings,
     #[serde(default)]
     pub layout: LayoutSettings,
+    /// Experimental bibtex/biblatex network mount (served by the Web host).
+    #[serde(default)]
+    pub bibtex_mount: BibtexMountSettings,
     /// PostHog product analytics opt-out (applies from the next launch).
     #[serde(default = "default_true")]
     pub telemetry_enabled: bool,
@@ -423,6 +426,44 @@ pub struct LayoutProviderConfig {
     pub self_hosted: bool,
 }
 
+/// Experimental "bibtex/biblatex network mount": when enabled the Web host
+/// serves the current Vault's bibliography over `GET /bibtex` or
+/// `GET /biblatex` (local serialization only — metadata is never sent to a
+/// cloud translation service).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct BibtexMountSettings {
+    /// Master switch. Off keeps both mount paths 404.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Mount path flavour: `bibtex` | `biblatex` (normalize() whitelists it).
+    #[serde(default = "default_bibtex_mount_format")]
+    pub format: String,
+    /// Tag filter (OR match). Empty = no tag filter.
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// Vault-relative directory filter (prefix match under `papers/`).
+    /// Empty = no directory filter.
+    #[serde(default)]
+    pub dirs: Vec<String>,
+}
+
+impl Default for BibtexMountSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            format: default_bibtex_mount_format(),
+            tags: Vec::new(),
+            dirs: Vec::new(),
+        }
+    }
+}
+
+/// Default mount format when the setting is missing or invalid.
+pub fn default_bibtex_mount_format() -> String {
+    "bibtex".to_string()
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -475,6 +516,7 @@ impl Default for AppSettings {
             embedding: EmbeddingSettings::default(),
             translate: TranslateSettings::default(),
             layout: LayoutSettings::default(),
+            bibtex_mount: BibtexMountSettings::default(),
             telemetry_enabled: default_true(),
             plaza_enabled: default_true(),
             plaza_hidden_sources: Vec::new(),
@@ -670,7 +712,10 @@ impl AppSettingsStore {
 
     /// In-memory store over `settings` for tests. The path is a scratch name
     /// under the temp dir and is only written if the test calls [`set`](Self::set).
-    #[cfg(test)]
+    ///
+    /// Public to dependent crates' tests too (desktop command tests build a
+    /// scratch store); never use it in production code paths.
+    #[doc(hidden)]
     pub fn for_tests(settings: AppSettings) -> Self {
         use std::time::{SystemTime, UNIX_EPOCH};
         let nanos = SystemTime::now()
@@ -705,6 +750,14 @@ impl AppSettingsStore {
 
     pub fn path(&self) -> &PathBuf {
         &self.path
+    }
+
+    /// Experimental bibtex/biblatex mount settings (cloned; never a secret).
+    pub fn bibtex_mount(&self) -> BibtexMountSettings {
+        self.inner
+            .lock()
+            .map(|settings| settings.bibtex_mount.clone())
+            .unwrap_or_default()
     }
 
     pub fn get(&self) -> Result<SettingsGetResult, AppError> {
@@ -1150,7 +1203,64 @@ fn cap_translate_template(raw: &str) -> String {
         .collect()
 }
 
+/// Normalize the experimental mount settings: whitelist the format, trim +
+/// de-duplicate tags (case-insensitive, first casing wins) and keep only
+/// relative `papers/…` directories (no absolute paths, no `..` segments).
+fn normalize_bibtex_mount(mount: &mut BibtexMountSettings) {
+    let format = mount.format.trim().to_ascii_lowercase();
+    mount.format = if format == "biblatex" {
+        "biblatex".to_string()
+    } else {
+        default_bibtex_mount_format()
+    };
+    mount.tags = normalize_mount_strings(&mount.tags);
+    mount.dirs = normalize_mount_dirs(&mount.dirs);
+}
+
+fn normalize_mount_strings(values: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for raw in values {
+        let value = raw.trim();
+        if value.is_empty() {
+            continue;
+        }
+        if out.iter().any(|existing| existing.eq_ignore_ascii_case(value)) {
+            continue;
+        }
+        out.push(value.to_string());
+    }
+    out
+}
+
+fn normalize_mount_dirs(values: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for raw in values {
+        let trimmed = raw.trim().replace('\\', "/");
+        // Reject absolute paths before stripping separators: "/papers" is not
+        // a vault-relative scope even though it starts with the right word.
+        if trimmed.is_empty() || Path::new(&trimmed).is_absolute() {
+            continue;
+        }
+        let normalized = trimmed.trim_matches('/');
+        if normalized.is_empty() {
+            continue;
+        }
+        if normalized.split('/').any(|segment| segment == "..") {
+            continue;
+        }
+        if normalized != "papers" && !normalized.starts_with("papers/") {
+            continue;
+        }
+        if out.iter().any(|existing| existing == normalized) {
+            continue;
+        }
+        out.push(normalized.to_string());
+    }
+    out
+}
+
 fn normalize(s: &mut AppSettings) {
+    normalize_bibtex_mount(&mut s.bibtex_mount);
     if s.connector_port == 0 {
         s.connector_port = default_connector_port();
     }
@@ -1524,6 +1634,68 @@ mod tests {
         assert!(!loaded.onboarding_done);
         assert!(!loaded.feature_tour_done);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bibtex_mount_defaults_off_and_normalizes_scope() {
+        let mut mount = BibtexMountSettings::default();
+        assert!(!mount.enabled);
+        assert_eq!(mount.format, "bibtex");
+        assert!(mount.tags.is_empty() && mount.dirs.is_empty());
+
+        let mut settings = AppSettings::default();
+        settings.bibtex_mount = BibtexMountSettings {
+            enabled: true,
+            format: "  BibLaTeX ".into(),
+            tags: vec![
+                " vision ".into(),
+                "Vision".into(),
+                "".into(),
+                "nlp".into(),
+            ],
+            dirs: vec![
+                "papers".into(),
+                "papers/tag1/".into(),
+                " /papers/absolute ".into(),
+                "../papers".into(),
+                "papers/../etc".into(),
+                "notes".into(),
+                "papers/tag1".into(),
+            ],
+        };
+        normalize(&mut settings);
+        let mount = settings.bibtex_mount;
+        assert!(mount.enabled);
+        assert_eq!(mount.format, "biblatex");
+        // Trimmed + case-insensitive de-dup, first casing wins.
+        assert_eq!(mount.tags, vec!["vision".to_string(), "nlp".to_string()]);
+        // Only relative `papers/…` prefixes, de-duplicated, backslashes kept out.
+        assert_eq!(mount.dirs, vec!["papers".to_string(), "papers/tag1".to_string()]);
+
+        // Invalid format falls back to bibtex.
+        let mut settings = AppSettings::default();
+        settings.bibtex_mount.format = "ris".into();
+        normalize(&mut settings);
+        assert_eq!(settings.bibtex_mount.format, "bibtex");
+    }
+
+    #[test]
+    fn bibtex_mount_serializes_camel_case_and_defaults_when_missing() {
+        let mut settings = AppSettings::default();
+        settings.bibtex_mount.enabled = true;
+        settings.bibtex_mount.format = "biblatex".into();
+        settings.bibtex_mount.tags = vec!["tag1".into()];
+        settings.bibtex_mount.dirs = vec!["papers/tag1".into()];
+        let value = serde_json::to_value(&settings).expect("serialize settings");
+        assert_eq!(value["bibtexMount"]["enabled"], true);
+        assert_eq!(value["bibtexMount"]["format"], "biblatex");
+        assert_eq!(value["bibtexMount"]["tags"][0], "tag1");
+        assert_eq!(value["bibtexMount"]["dirs"][0], "papers/tag1");
+
+        // Older settings.json files (no field) load with the mount disabled.
+        let loaded: AppSettings = serde_json::from_str(r#"{"theme":"dark"}"#).expect("load legacy");
+        assert!(!loaded.bibtex_mount.enabled);
+        assert_eq!(loaded.bibtex_mount.format, "bibtex");
     }
 
     #[test]

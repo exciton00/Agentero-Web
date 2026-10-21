@@ -1557,6 +1557,8 @@ export type AppSettings_Deserialize = {
 	embedding?: EmbeddingSettings,
 	translate?: TranslateSettings,
 	layout?: LayoutSettings,
+	/**  Experimental bibtex/biblatex network mount (served by the Web host). */
+	bibtexMount?: BibtexMountSettings,
 	/**  PostHog product analytics opt-out (applies from the next launch). */
 	telemetryEnabled?: boolean,
 	/**  Plaza discovery sources in the sidebar. Default on. */
@@ -1692,6 +1694,8 @@ export type AppSettings_Serialize = {
 	embedding: EmbeddingSettings,
 	translate: TranslateSettings,
 	layout: LayoutSettings,
+	/**  Experimental bibtex/biblatex network mount (served by the Web host). */
+	bibtexMount: BibtexMountSettings,
 	/**  PostHog product analytics opt-out (applies from the next launch). */
 	telemetryEnabled: boolean,
 	/**  Plaza discovery sources in the sidebar. Default on. */
@@ -1821,6 +1825,26 @@ export type Bbox = {
 	y: number | null,
 	w: number | null,
 	h: number | null,
+};
+
+/**
+ *  Experimental "bibtex/biblatex network mount": when enabled the Web host
+ *  serves the current Vault's bibliography over `GET /bibtex` or
+ *  `GET /biblatex` (local serialization only — metadata is never sent to a
+ *  cloud translation service).
+ */
+export type BibtexMountSettings = {
+	/**  Master switch. Off keeps both mount paths 404. */
+	enabled?: boolean,
+	/**  Mount path flavour: `bibtex` | `biblatex` (normalize() whitelists it). */
+	format?: string,
+	/**  Tag filter (OR match). Empty = no tag filter. */
+	tags?: string[],
+	/**
+	 *  Vault-relative directory filter (prefix match under `papers/`).
+	 *  Empty = no directory filter.
+	 */
+	dirs?: string[],
 };
 
 /**  A client device that was manually approved by the desktop user. */

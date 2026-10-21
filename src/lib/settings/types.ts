@@ -370,6 +370,11 @@ export type AppSettings = {
 	 * the OpenAI Decisions API can be configured once its contract ships.
 	 */
 	decision: DecisionSettings;
+	/**
+	 * Web-only HTTP bibliography mount (`/bibtex` / `/biblatex`). Optional so a
+	 * Host that predates the field still loads; the settings UI normalizes it.
+	 */
+	bibtexMount?: BibtexMountSettings;
 };
 
 /**
@@ -405,6 +410,29 @@ export type DecisionSettings = {
 	/** Enable the experimental smart-highlight action in the PDF toolbar. */
 	smartHighlight: boolean;
 };
+
+/** Bibliography wire format served by the web-only HTTP mount. */
+export type BibtexMountFormat = "bibtex" | "biblatex";
+
+/**
+ * Web-only HTTP bibliography mount: serves catalog papers under the Vault as
+ * `/bibtex` or `/biblatex`. `tags` and `dirs` are AND-combined; empty arrays
+ * mean "no restriction".
+ */
+export type BibtexMountSettings = {
+	enabled: boolean;
+	format: BibtexMountFormat;
+	/** Catalog tag names; empty = any tag. */
+	tags: string[];
+	/** Vault-relative directories; empty = the whole Vault. */
+	dirs: string[];
+};
+
+export function isBibtexMountFormat(
+	value: unknown,
+): value is BibtexMountFormat {
+	return value === "bibtex" || value === "biblatex";
+}
 
 /**
  * Config reminders the app may surface once per session; "don't remind again"

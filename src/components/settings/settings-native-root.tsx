@@ -1,9 +1,12 @@
+import { ArrowLeft } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { SettingsSection } from "@/components/settings/types";
 import { TrafficLightSpacer } from "@/components/shell/traffic-light-spacer";
+import { Button } from "@/components/ui/button";
 import { applyLocale } from "@/i18n";
 import { commands } from "@/lib/core/bindings";
-import { hasHostTransport, isMacOS } from "@/lib/core/tauri";
+import { hasHostTransport, isMacOS, isWebHost } from "@/lib/core/tauri";
 import {
 	applyDocumentChrome,
 	ensureSettingsLoaded,
@@ -28,6 +31,7 @@ function readSearchParams() {
  * the full `App`, so the second webview stays lightweight.
  */
 export function SettingsNativeRoot() {
+	const { t } = useTranslation("settings");
 	const [{ section, vaultPath }, setSearchParams] = useState(readSearchParams);
 	const [settings, setSettings] = useState(loadSettings);
 	const isMac = useMemo(() => isMacOS(), []);
@@ -115,7 +119,30 @@ export function SettingsNativeRoot() {
 			  lights (Overlay title bar). Windows / Linux use native decorations,
 			  so the OS title bar already provides the title and caption buttons.
 			*/}
-			{isMac ? (
+			{isWebHost() ? (
+				/* Browser tab: no native window chrome, so the settings page gets a
+				   small header with a way back to the workbench. */
+				<header
+					data-settings-titlebar
+					className="flex h-9 shrink-0 items-center gap-2 border-b border-sidebar-border/80 bg-sidebar/80 px-2 backdrop-blur-xl backdrop-saturate-150 select-none"
+				>
+					<Button
+						type="button"
+						variant="ghost"
+						size="sm"
+						className="gap-1.5"
+						onClick={() => {
+							window.location.href = "/";
+						}}
+					>
+						<ArrowLeft className="size-4" aria-hidden />
+						{t("backToWorkspace")}
+					</Button>
+					<span className="min-w-0 flex-1 truncate font-medium text-sm">
+						{t("title")}
+					</span>
+				</header>
+			) : isMac ? (
 				<header
 					data-settings-titlebar
 					className="flex h-8 shrink-0 items-center border-b border-sidebar-border/80 bg-sidebar/80 backdrop-blur-xl backdrop-saturate-150 select-none supports-backdrop-blur:bg-sidebar/65"
