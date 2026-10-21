@@ -3,6 +3,7 @@
 pub mod agent;
 pub mod domain;
 pub mod files;
+pub mod layout;
 pub mod markdown;
 pub mod paper;
 pub mod runtime;

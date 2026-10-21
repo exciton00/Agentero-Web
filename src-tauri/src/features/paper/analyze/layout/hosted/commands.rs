@@ -6,13 +6,11 @@ use crate::features::paper::analyze::layout::hosted::engine::{
     engine_for, HostedProviderCredentials, LayoutAnalyzeContext,
 };
 use crate::features::paper::analyze::layout::hosted::{
-    LayoutRemoteAnalyzePdfArgs, LayoutRemoteAnalyzePdfResult, LayoutRemoteProbeArgs,
-    LayoutRemoteProbeResult,
+    resolve_remote_credentials, LayoutRemoteAnalyzePdfArgs, LayoutRemoteAnalyzePdfResult,
+    LayoutRemoteProbeArgs, LayoutRemoteProbeResult, DEFAULT_REMOTE_PROVIDER,
 };
-use crate::features::system::settings::{is_translate_api_key_mask, AppSettingsStore};
+use crate::features::system::settings::AppSettingsStore;
 use tauri::{AppHandle, Manager};
-
-const DEFAULT_REMOTE_PROVIDER: &str = "paddle";
 
 /// Inject the stored provider access token before any `.await`
 /// (managed state must not be held across await).
@@ -22,29 +20,7 @@ fn inject_provider_credentials(
     api_key: &mut Option<String>,
 ) -> HostedProviderCredentials {
     let store = app.state::<AppSettingsStore>();
-    let needs_stored_key = api_key
-        .as_deref()
-        .map(|k| {
-            let t = k.trim();
-            t.is_empty() || is_translate_api_key_mask(t)
-        })
-        .unwrap_or(true);
-    if needs_stored_key {
-        if let Some(key) = store.layout_api_key(provider) {
-            *api_key = Some(key);
-        } else if api_key.as_deref().is_some_and(is_translate_api_key_mask) {
-            *api_key = None;
-        }
-    }
-    // Move the key out of args so the plaintext never lingers in the
-    // Debug-derivable args struct; engines read credentials only.
-    HostedProviderCredentials {
-        api_key: api_key.take(),
-        base_url: store.layout_base_url(provider),
-        language: store.layout_language(provider),
-        is_ocr: store.layout_is_ocr(provider),
-        self_hosted: store.layout_self_hosted(provider),
-    }
+    resolve_remote_credentials(&store, provider, api_key)
 }
 
 fn unknown_provider(provider: &str) -> AppError {
@@ -75,7 +51,7 @@ pub async fn layout_remote_analyze_pdf(
         format!("pdf_chars={}", args.pdf_base64.len()),
     );
     let ctx = LayoutAnalyzeContext {
-        app: app.clone(),
+        app: crate::features::host_hooks::wrap(&app),
         credentials,
         args,
     };

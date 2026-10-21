@@ -3,12 +3,12 @@
 //! `POST {base}/api/v2/ocr/jobs` (multipart PDF upload) → poll
 //! `GET {base}/api/v2/ocr/jobs/{jobId}` → download the JSONL result.
 
-use crate::core::error::AppError;
-use crate::core::http;
-use crate::features::paper::analyze::layout::hosted::engine::{
+use crate::error::AppError;
+use crate::http;
+use crate::features::paper::analyze::layout_hosted::engine::{
     HostedLayoutAnalyzer, HostedProviderCredentials, LayoutAnalyzeContext,
 };
-use crate::features::paper::analyze::layout::hosted::{
+use crate::features::paper::analyze::layout_hosted::{
     emit_cloud_progress, parse_det_boxes, LayoutRemoteAnalyzePdfResult, LayoutRemotePageResult,
     LayoutRemoteProbeArgs, LayoutRemoteProbeResult,
 };
@@ -244,7 +244,7 @@ fn resolve_cloud_target(api_key: Option<&str>) -> Result<(String, String), AppEr
 /// JSONL result. Shared by the layout analyze path and the PAPER.md body-parse
 /// engine (which reads per-page markdown from the same JSONL). Returns the raw
 /// JSONL text plus the job-level `dataInfo` (rendered page sizes).
-pub(crate) async fn run_paddle_ocr_job(
+pub async fn run_paddle_ocr_job(
     api_key: Option<&str>,
     file_bytes: Vec<u8>,
     file_name: String,
@@ -347,7 +347,7 @@ pub(crate) async fn run_paddle_ocr_job(
     }
 
     // Keep the raw JSONL for diagnosis (scale/field issues); best effort.
-    let debug_path = crate::core::paths::agentero_cache_dir().join("paddle-last-result.jsonl");
+    let debug_path = crate::paths::agentero_cache_dir().join("paddle-last-result.jsonl");
     if let Some(parent) = debug_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }

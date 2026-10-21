@@ -2,18 +2,33 @@
 //! the provider registry. Engine implementations live in per-provider files
 //! (`paddle.rs`, `mineru.rs`); commands dispatch through [`engine::engine_for`].
 //!
+//! Tauri-free since the headless Web port: the host seam is
+//! [`crate::app_handle::AppHandle`] (desktop wraps its emitter, the Web host
+//! routes into the WebSocket event bus, the CLI no-ops). Desktop command
+//! shells live in `src-tauri/.../layout/hosted/commands.rs`.
+//!
 //! Engines return raw layout detection boxes; coordinate conversion stays in
 //! the frontend.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::{AppHandle, Emitter};
 
-pub mod commands;
+use crate::app_handle::AppHandle;
+use crate::features::system::settings::{is_translate_api_key_mask, AppSettingsStore};
+
 pub mod engine;
 pub mod mineru;
 pub mod openai_compatible;
 pub mod paddle;
+
+// Re-export the engine facade so hosts (desktop command shell, Web RPC) only
+// need this one module path.
+pub use engine::{
+    engine_for, HostedLayoutAnalyzer, HostedProviderCredentials, LayoutAnalyzeContext,
+};
+
+/// Default remote provider id when a command omits `provider`.
+pub const DEFAULT_REMOTE_PROVIDER: &str = "paddle";
 
 /// Cloud-job progress callback: `(phase, extracted_pages, total_pages)`.
 pub(crate) type ProgressFn<'a> = &'a (dyn Fn(&str, Option<u64>, Option<u64>) + Send + Sync);
@@ -125,15 +140,49 @@ pub(crate) fn emit_cloud_progress(
     total_pages: Option<u64>,
     request_id: Option<String>,
 ) {
-    let _ = app.emit(
+    app.emit(
         CLOUD_PROGRESS_EVENT,
-        CloudProgressPayload {
+        &CloudProgressPayload {
             phase: phase.to_string(),
             extracted_pages,
             total_pages,
             request_id,
         },
     );
+}
+
+/// Resolve provider credentials from the Host-held settings and inject the
+/// stored access token into `api_key` (renderers only ever send a `*` mask or
+/// nothing at all).
+///
+/// Shared by the desktop command shell and the Web RPC handler so credential
+/// lookup, mask handling and defaulting cannot drift between hosts.
+pub fn resolve_remote_credentials(
+    store: &AppSettingsStore,
+    provider: &str,
+    api_key: &mut Option<String>,
+) -> HostedProviderCredentials {
+    let needs_stored_key = api_key
+        .as_deref()
+        .map(|key| {
+            let trimmed = key.trim();
+            trimmed.is_empty() || is_translate_api_key_mask(trimmed)
+        })
+        .unwrap_or(true);
+    if needs_stored_key {
+        if let Some(key) = store.layout_api_key(provider) {
+            *api_key = Some(key);
+        } else if api_key.as_deref().is_some_and(is_translate_api_key_mask) {
+            *api_key = None;
+        }
+    }
+    HostedProviderCredentials {
+        api_key: api_key.take(),
+        base_url: store.layout_base_url(provider),
+        language: store.layout_language(provider),
+        is_ocr: store.layout_is_ocr(provider),
+        self_hosted: store.layout_self_hosted(provider),
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, specta::Type)]
@@ -154,52 +203,43 @@ pub struct LayoutRemoteProbeResult {
     pub job_id: String,
 }
 
-/// Anti-drift: bind the owned `LayoutRemoteProgressEvent` mirror (in
-/// `app::events_contract`, feeding the `layout-remote:progress` payload type
-/// in bindings.ts) to the private `CloudProgressPayload` actually emitted
-/// here: serde shapes (both `requestId` variants, covering
-/// `skip_serializing_if`) and field types must stay identical.
+/// Wire-shape guard for the `layout-remote:progress` payload consumed by
+/// `bindings.ts` (`LayoutRemoteProgressEvent`): camelCase keys, both
+/// `requestId` variants (the `None` one must be omitted).
 #[cfg(test)]
-mod events_contract_shape_tests {
-    use super::CloudProgressPayload;
-    use crate::app::events_contract::LayoutRemoteProgressEvent as MirrorLayoutRemoteProgress;
+mod progress_payload_shape_tests {
+    use super::{CloudProgressPayload, CLOUD_PROGRESS_EVENT};
 
-    fn samples(request_id: Option<String>) -> (CloudProgressPayload, MirrorLayoutRemoteProgress) {
-        (
-            CloudProgressPayload {
-                phase: "extract".to_string(),
-                extracted_pages: Some(3),
-                total_pages: Some(10),
-                request_id: request_id.clone(),
-            },
-            MirrorLayoutRemoteProgress {
-                phase: "extract".to_string(),
-                extracted_pages: Some(3),
-                total_pages: Some(10),
-                request_id,
-            },
-        )
+    #[test]
+    fn event_name_stays_stable() {
+        assert_eq!(CLOUD_PROGRESS_EVENT, "layout-remote:progress");
     }
 
     #[test]
-    fn layout_remote_progress_mirror_matches_emit_payload_shape() {
-        for request_id in [Some("req-1".to_string()), None] {
-            let (real, mirror) = samples(request_id);
-            assert_eq!(
-                serde_json::to_value(&real).unwrap(),
-                serde_json::to_value(&mirror).unwrap(),
-                "LayoutRemoteProgressEvent mirror drifted from CloudProgressPayload"
-            );
-        }
-    }
-
-    #[test]
-    fn layout_remote_progress_mirror_field_types_match() {
-        fn eq_type<T>(_: &T, _: &T) {}
-        let (real, mirror) = samples(Some("req-1".to_string()));
-        eq_type(&real.phase, &mirror.phase);
-        eq_type(&real.extracted_pages, &mirror.extracted_pages);
-        eq_type(&real.total_pages, &mirror.total_pages);
-        eq_type(&real.request_id, &mirror.request_id);
+    fn progress_payload_matches_bindings_shape() {
+        let payload = CloudProgressPayload {
+            phase: "extract".to_string(),
+            extracted_pages: Some(3),
+            total_pages: Some(10),
+            request_id: Some("req-1".to_string()),
+        };
+        assert_eq!(
+            serde_json::to_value(&payload).unwrap(),
+            serde_json::json!({
+                "phase": "extract",
+                "extractedPages": 3,
+                "totalPages": 10,
+                "requestId": "req-1",
+            })
+        );
+        let without_request = CloudProgressPayload {
+            phase: "uploading".to_string(),
+            extracted_pages: None,
+            total_pages: None,
+            request_id: None,
+        };
+        let value = serde_json::to_value(&without_request).unwrap();
+        assert_eq!(value["phase"], "uploading");
+        assert!(value.get("requestId").is_none());
     }
 }

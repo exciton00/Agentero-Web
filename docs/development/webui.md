@@ -117,6 +117,12 @@ agentero-core（已有，tauri-free）
 - **导入**：`paper_import_local_pdf`（上传→识别→入库，含识别失败降级）、`paper_resolve_identifier`（arXiv/DOI）、`paper_import`（BibTeX）、`lookup_import_batch`、`paper_export`、ParseBody/ParseRefs 服务端任务（PAPER.md + agentero-cite.json 落盘）。
 - **部署**：三阶段 Docker 镜像构建成功（170MB，含 Node 22 + PDFium），`docker compose up` 实测：容器 `/vault` 数据、浏览器 library/PDF/笔记正常；健康检查用内置 Node 探活。
 
+### 本轮验证（真实自建 MinerU）
+
+- `layout_remote_probe` → `mineru 4.0.9`；`layout_remote_analyze_pdf`（1.2MB 论文 PDF）→ 9 pages / 182 boxes，约 6 秒；WS `layout-remote:progress`（uploading → running → downloading）payload 与 requestId 均匹配。
+- 浏览器端到端：打开论文 → 版面分析 job 走 renderer offer → 前端 headless 执行器检测 `settings.layout.backend=mineru` → 服务端调用 MinerU → 写 `source/layout.json`（`source.mode="mineru-layout"`，183 regions）与 `layout-index.json` → PDF 工具栏「Analysis」打开 **FIGURES 面板（15 个图/表，缩略图 + caption + 页码跳转）**。
+- 隐私：MinerU URL/key 只存在运行时 `settings.json`，仓库零泄露（提交前扫描通过）。
+
 ### 尚未完成 / 下一轮
 
 - **魔棒入库的 renderer 任务**：桌面把 Import/LayoutAnalyze/CitingScan/LibraryIo/MetadataRefresh 通过 `job:offer` 交给前端执行；web 服务端目前只有 look-up 版本，导致浏览器魔法棒「按标识符导入」走 `job_import_enqueue` 后拿不到候选 picker。下一步在 TaskCenter 实现 `job:offer` → 浏览器 `job_report` 的 offer/claim/report 协议（前端执行器已存在），一次性打通魔棒、版面分析、引用扫描等 renderer 类任务。

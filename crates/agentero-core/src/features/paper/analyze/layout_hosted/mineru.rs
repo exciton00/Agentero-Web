@@ -12,12 +12,12 @@
 //! (`docvortex.middle`, 0–1 normalized boxes), 3.x zips the cloud-shaped
 //! `*content_list.json` + `*middle.json` pair.
 
-use crate::core::error::AppError;
-use crate::core::http;
-use crate::features::paper::analyze::layout::hosted::engine::{
+use crate::error::AppError;
+use crate::http;
+use crate::features::paper::analyze::layout_hosted::engine::{
     HostedLayoutAnalyzer, HostedProviderCredentials, LayoutAnalyzeContext,
 };
-use crate::features::paper::analyze::layout::hosted::{
+use crate::features::paper::analyze::layout_hosted::{
     emit_cloud_progress, LayoutRemoteAnalyzePdfResult, LayoutRemoteBox, LayoutRemotePageResult,
     LayoutRemoteProbeArgs, LayoutRemoteProbeResult,
 };
@@ -54,13 +54,13 @@ const MAX_BODY_IMAGE_BYTES: u64 = 128 * 1024 * 1024;
 
 /// The Markdown and figure files required to materialize a MinerU body parse.
 /// Paths remain relative to `PAPER.md`, for example `images/figure-1.jpg`.
-pub(crate) struct MineruMarkdownBundle {
+pub struct MineruMarkdownBundle {
     pub markdown: String,
     pub assets: Vec<MineruMarkdownAsset>,
 }
 
 /// One image extracted from a MinerU result ZIP.
-pub(crate) struct MineruMarkdownAsset {
+pub struct MineruMarkdownAsset {
     pub relative_path: String,
     pub bytes: Vec<u8>,
 }
@@ -575,7 +575,7 @@ fn safe_mineru_image_path(name: &str) -> Result<Option<String>, AppError> {
 /// Markdown instead of rewriting the links to application-specific URLs.
 /// Entry names differ per protocol: `full.md` (cloud v4), `markdown.md`
 /// (self-hosted 4.0) and `<stem>.md` (3.x).
-pub(crate) fn read_mineru_markdown_bundle(bytes: &[u8]) -> Result<MineruMarkdownBundle, AppError> {
+pub fn read_mineru_markdown_bundle(bytes: &[u8]) -> Result<MineruMarkdownBundle, AppError> {
     let markdown = read_zip_entry_by_candidates(bytes, &["full.md", "markdown.md", ".md"])?;
     let cursor = std::io::Cursor::new(bytes);
     let mut archive = zip::ZipArchive::new(cursor)
@@ -921,7 +921,7 @@ async fn analyze_pdf(ctx: LayoutAnalyzeContext) -> Result<LayoutRemoteAnalyzePdf
 /// `selfHosted` chooses between the cloud batch flow (including custom relays)
 /// and a self-hosted deployment, whose dialect is detected from `/v1/health`
 /// (4.0+) or `/health` (3.x).
-pub(crate) async fn run_mineru_extract(
+pub async fn run_mineru_extract(
     credentials: &HostedProviderCredentials,
     pdf_bytes: Vec<u8>,
     file_name: &str,
