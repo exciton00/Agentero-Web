@@ -830,6 +830,7 @@ impl Git {
                 last_sync_at: Some(now()),
                 last_version: version,
                 last_error: None,
+                ..local::read_meta(vault)
             },
         )?;
         engine::refresh_catalog_if_needed(vault, &outcome).await;

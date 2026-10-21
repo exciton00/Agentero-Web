@@ -125,7 +125,12 @@ pub async fn sync_vault_locked(
             )
         })?;
     match sync_vault(vault, cfg, progress).await {
-        Ok(outcome) => Ok(outcome),
+        Ok(outcome) => {
+            // Persist the summary before returning: the Web/CLI status
+            // surfaces it after restarts and panel refreshes.
+            local::record_outcome(vault, &outcome);
+            Ok(outcome)
+        }
         Err(e) => {
             local::record_error(vault, &e.to_string());
             Err(e)
@@ -259,6 +264,7 @@ async fn run_sync<S: RemoteStore>(
                         last_sync_at: Some(now()),
                         last_version: ptr.version,
                         last_error: None,
+                        ..local::read_meta(vault)
                     },
                 )?;
                 // The manifest just adopted references every blob `merged`
@@ -349,6 +355,7 @@ async fn run_sync<S: RemoteStore>(
                         last_sync_at: Some(now()),
                         last_version: new_version,
                         last_error: None,
+                        ..local::read_meta(vault)
                     },
                 )?;
                 // The published manifest is now the authority on what the

@@ -162,13 +162,15 @@
 			"probeProbing": "Checking…"
 		},
 		"plaza": {
-			"label": "Plaza"
+			"label": "Plaza",
+			"webUnavailable": "Unavailable in the web version (site proxy not implemented)"
 		},
 		"connector": {
 			"label": "Zotero Connector compatibility",
 			"hint": "Quit local Zotero first",
 			"portLabel": "Connector port",
-			"invalidPort": "Port must be between 1 and 65535."
+			"invalidPort": "Port must be between 1 and 65535.",
+			"webUnavailable": "Unavailable in the web version"
 		},
 		"mcp": {
 			"exposeText": {
@@ -656,6 +658,36 @@
 				"fail": "Unreachable",
 				"unconfigured": "API key required"
 			}
+		},
+		"bibtexMount": {
+			"section": "BibTeX / BibLaTeX network mount",
+			"enable": "Enable bibliography mount",
+			"mountedAt": "Mounted at {{path}}",
+			"format": "Mount format",
+			"scope": "Mount scope",
+			"tags": {
+				"label": "Tags",
+				"all": "All tags",
+				"search": "Filter tags",
+				"loading": "Loading tag index…",
+				"unavailable": "Tag index unavailable",
+				"none": "No tags available"
+			},
+			"dirs": {
+				"label": "Directories",
+				"all": "All folders",
+				"search": "Filter folders",
+				"loading": "Loading folders…",
+				"unavailable": "Folder list unavailable",
+				"none": "No folders under papers/"
+			},
+			"refresh": "Refresh",
+			"save": {
+				"saving": "Saving…",
+				"saved": "Saved",
+				"failed": "Save failed",
+				"unsupported": "This Host does not persist the mount yet; changes apply to this window only."
+			}
 		}
 	},
 	"doctor": {
@@ -893,11 +925,13 @@
 		"title": "Cloud sync",
 		"advanced": "Advanced",
 		"localVaultOnly": "Cloud sync is available for local vaults only.",
+		"loadingVault": "Detecting the Vault…",
 		"backend": "Sync method",
 		"backendS3": "Object storage",
 		"backendWebdav": "WebDAV",
 		"backendGit": "Git",
 		"backendLocked": "Disconnect before switching the storage backend.",
+		"remoteTarget": "Remote target",
 		"serverUrl": "Server URL",
 		"username": "Username",
 		"password": "Password",
@@ -911,6 +945,7 @@
 		"pathStyle": "Path-style addressing",
 		"pathStyleHint": "Keep on for R2 / MinIO; turn off for bucket subdomains.",
 		"gitRemote": "Repository URL",
+		"gitRemoteHint": "Local path or SSH / HTTPS URL. Credentials come from system Git.",
 		"gitBranch": "Branch",
 		"noConditionalWrites": "This storage doesn't support conditional (atomic) writes, so sync falls back to plain uploads. Fine for single-device use; concurrent edits from multiple devices may need an extra sync round to converge.",
 		"saved": "Sync configured",
@@ -922,9 +957,18 @@
 		"statusError": "Connection error",
 		"providerDocsAria": "Open {{name}} setup guide",
 		"lastSync": "Last synced {{time}}",
+		"lastSyncLabel": "Last sync",
 		"neverSynced": "Not synced yet.",
 		"done": "Sync complete: {{up}} uploaded, {{down}} downloaded",
 		"conflicts": "{{count}} conflict copy(ies) saved next to the originals",
+		"lastResult": "Last result",
+		"noRecentResult": "No result yet.",
+		"resultVersion": "v{{version}}",
+		"resultUploaded": "{{count}} uploaded",
+		"resultDownloaded": "{{count}} downloaded",
+		"resultDeletedLocal": "{{count}} deleted locally",
+		"resultRemovedRemote": "{{count}} removed remotely",
+		"resultConflicts": "{{count}} conflicts",
 		"phase": {
 			"scan": "Scanning vault…",
 			"pull": "Fetching remote state…",
@@ -935,12 +979,17 @@
 		"connect": "Connect",
 		"save": "Save",
 		"autoSync": "Auto sync",
+		"autoSyncWebHint": "Automatic sync runs on the server at the interval below; manual sync is also available.",
 		"interval": "Sync interval",
 		"intervalMinutes": "{{count}} min",
 		"scope": "Sync scope",
 		"scopeHint": "Notes, metadata and highlights always sync. Unselected content is neither uploaded nor downloaded — and is never deleted because of the filter. PDFs and LaTeX sources can be re-downloaded from their source at any time.",
 		"scopePdf": "PDFs",
 		"scopeSource": "LaTeX sources",
-		"scopeAttachments": "Attachments"
-	}
+		"scopeAttachments": "Attachments",
+		"lastError": "Last sync failed: {{error}}",
+		"scopeSize": "{{files}} files · {{size}}",
+		"autoSyncNextRun": "Next automatic sync: {{time}} · runs on the server"
+	},
+	"backToWorkspace": "Back to workspace"
 }

@@ -96,8 +96,12 @@ fn default_git_branch() -> String {
     "main".into()
 }
 
-/// Interval choices offered by the settings UI; anything else snaps to 30.
+/// Interval choices offered by the settings UI.
 pub const INTERVAL_CHOICES: &[u32] = &[15, 30, 60];
+
+/// Upper bound for `intervalMinutes` (one week); the Web scheduler clamps
+/// stored values into `1..=MAX_INTERVAL_MINUTES`.
+pub const MAX_INTERVAL_MINUTES: u32 = 7 * 24 * 60;
 
 /// Replace a non-empty secret with the same number of `*` characters (same
 /// convention as the desktop translate API-key mask).
@@ -172,9 +176,14 @@ impl SyncBackendConfig {
             // meaning there (and is hidden in the settings UI).
             self.scope = SyncScope::all();
         }
-        if !INTERVAL_CHOICES.contains(&self.interval_minutes) {
-            self.interval_minutes = default_interval_minutes();
-        }
+        // The desktop UI only offers INTERVAL_CHOICES, but the scheduler
+        // honours any positive minute value (the Web host exposes it to
+        // automation and tests); 0 falls back to the default.
+        self.interval_minutes = if self.interval_minutes == 0 {
+            default_interval_minutes()
+        } else {
+            self.interval_minutes.clamp(1, MAX_INTERVAL_MINUTES)
+        };
         self
     }
 
@@ -536,17 +545,29 @@ mod tests {
     }
 
     #[test]
-    fn normalized_snaps_unknown_interval_to_default() {
+    fn normalized_clamps_interval_to_at_least_one_minute() {
+        // The Web host's auto-sync scheduler honours small intervals (tests
+        // use 1); the desktop UI still only offers INTERVAL_CHOICES.
         let mut cfg = SyncBackendConfig {
             endpoint: "http://x/".into(),
             interval_minutes: 7,
             ..SyncBackendConfig::default()
         };
         cfg = cfg.normalized();
-        assert_eq!(cfg.interval_minutes, 30);
+        assert_eq!(cfg.interval_minutes, 7);
         assert_eq!(cfg.endpoint, "http://x");
+        cfg.interval_minutes = 1;
+        assert_eq!(cfg.clone().normalized().interval_minutes, 1);
         cfg.interval_minutes = 60;
-        assert_eq!(cfg.normalized().interval_minutes, 60);
+        assert_eq!(cfg.clone().normalized().interval_minutes, 60);
+        cfg.interval_minutes = 0;
+        assert_eq!(
+            cfg.clone().normalized().interval_minutes,
+            30,
+            "0 keeps the default"
+        );
+        cfg.interval_minutes = u32::MAX;
+        assert_eq!(cfg.normalized().interval_minutes, MAX_INTERVAL_MINUTES);
     }
 
     #[test]

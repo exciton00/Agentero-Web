@@ -7,6 +7,7 @@
 //! - `.agentero/sync/pushed.jsonl` — blobs uploaded but not yet published
 
 use crate::error::AppError;
+use crate::features::sync::engine::SyncOutcome;
 use crate::features::sync::snapshot::Manifest;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -21,6 +22,25 @@ struct VaultIdentity {
     created_at: String,
 }
 
+/// Durable summary of the last successful pass (survives panel refresh and
+/// server restarts). Shapes the `lastOutcome` field of `sync_get_status`.
+///
+/// `conflict_copies` keeps the engine's vault-relative conflict-copy file
+/// paths (`SyncOutcome.conflictCopies` is `string[]` everywhere).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LastSyncOutcome {
+    pub version: u64,
+    pub uploaded: u64,
+    pub downloaded: u64,
+    pub deleted_local: u64,
+    pub removed_remote: u64,
+    #[serde(default)]
+    pub conflict_copies: Vec<String>,
+    /// RFC 3339 millisecond timestamp of when the pass finished.
+    pub finished_at: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncMeta {
@@ -30,9 +50,12 @@ pub struct SyncMeta {
     pub last_version: u64,
     /// Last failed pass's error message; cleared by the next success.
     /// Surfaced by the CLI `sync status` (the desktop reports it live via
-    /// `sync:state` events instead).
+    /// `sync:state` events instead) and by the Web `sync_get_status`.
     #[serde(default)]
     pub last_error: Option<String>,
+    /// Summary of the last successful pass; untouched by later failures.
+    #[serde(default)]
+    pub last_outcome: Option<LastSyncOutcome>,
 }
 
 /// Record a failed pass on top of the existing meta (keeps last_sync_at /
@@ -42,6 +65,33 @@ pub fn record_error(vault: &Path, error: &str) {
     let mut meta = read_meta(vault);
     meta.last_error = Some(error.to_string());
     let _ = write_meta(vault, &meta);
+}
+
+/// Format a `SystemTime` as the canonical RFC 3339 millisecond timestamp
+/// (scheduler next-run estimates share the `generatedAt` format).
+pub fn rfc3339_millis_from_system_time(time: std::time::SystemTime) -> String {
+    let datetime: chrono::DateTime<chrono::Utc> = time.into();
+    datetime.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+/// Persist the summary of a successful pass (keeps `last_sync_at` /
+/// `last_version` written by the engine, clears `last_error`).
+/// Best-effort: failing to write the summary must never fail the pass.
+pub fn record_outcome(vault: &Path, outcome: &SyncOutcome) {
+    let mut meta = read_meta(vault);
+    meta.last_error = None;
+    meta.last_outcome = Some(LastSyncOutcome {
+        version: outcome.version,
+        uploaded: outcome.uploaded as u64,
+        downloaded: outcome.downloaded as u64,
+        deleted_local: outcome.deleted_local as u64,
+        removed_remote: outcome.removed_remote as u64,
+        conflict_copies: outcome.conflict_copies.clone(),
+        finished_at: crate::time::now_rfc3339_millis(),
+    });
+    if let Err(error) = write_meta(vault, &meta) {
+        log::warn!(target: "agentero::sync", "record sync outcome: {error}");
+    }
 }
 
 fn identity_path(vault: &Path) -> PathBuf {
@@ -205,6 +255,54 @@ mod tests {
         clear_pushed(&vault);
         assert!(read_pushed(&vault, "store-b").is_empty());
 
+        let _ = fs::remove_dir_all(&vault);
+    }
+
+    #[test]
+    fn outcome_is_persisted_and_cleared_by_the_next_success() {
+        let vault =
+            std::env::temp_dir().join(format!("agentero-sync-outcome-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&vault).unwrap();
+
+        record_error(&vault, "previous failure");
+        record_outcome(
+            &vault,
+            &SyncOutcome {
+                version: 7,
+                uploaded: 2,
+                downloaded: 1,
+                deleted_local: 0,
+                removed_remote: 3,
+                conflict_copies: vec![
+                    "papers/attention/NOTES.conflict-2026.md".to_string(),
+                    "notes/scratch.conflict-1.md".to_string(),
+                ],
+            },
+        );
+        let meta = read_meta(&vault);
+        assert_eq!(meta.last_error, None, "success clears the failure");
+        let outcome = meta.last_outcome.expect("outcome persisted");
+        assert_eq!(outcome.version, 7);
+        assert_eq!(outcome.uploaded, 2);
+        assert_eq!(outcome.removed_remote, 3);
+        assert!(!outcome.finished_at.is_empty());
+        assert_eq!(
+            outcome.conflict_copies,
+            vec![
+                "papers/attention/NOTES.conflict-2026.md".to_string(),
+                "notes/scratch.conflict-1.md".to_string(),
+            ]
+        );
+
+        // A later failure keeps the last successful outcome.
+        record_error(&vault, "network down");
+        let meta = read_meta(&vault);
+        assert_eq!(meta.last_error.as_deref(), Some("network down"));
+        assert_eq!(meta.last_outcome.expect("kept").version, 7);
+
+        // The summary round-trips through state.json (panel refresh / restart).
+        let roundtrip = read_json::<SyncMeta>(&sync_dir(&vault).join("state.json")).expect("json");
+        assert_eq!(roundtrip.last_outcome.expect("roundtrip").uploaded, 2);
         let _ = fs::remove_dir_all(&vault);
     }
 

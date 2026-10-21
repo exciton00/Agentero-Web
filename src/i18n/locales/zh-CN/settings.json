@@ -162,13 +162,15 @@
 			"probeProbing": "检测中…"
 		},
 		"plaza": {
-			"label": "广场"
+			"label": "广场",
+			"webUnavailable": "Web 版不可用（站点代理未实现）"
 		},
 		"connector": {
 			"label": "兼容 Zotero Connector",
 			"hint": "请先退出本地Zotero",
 			"portLabel": "Connector 端口",
-			"invalidPort": "端口必须在 1 到 65535 之间。"
+			"invalidPort": "端口必须在 1 到 65535 之间。",
+			"webUnavailable": "Web 版不可用"
 		},
 		"mcp": {
 			"exposeText": {
@@ -656,6 +658,36 @@
 				"fail": "不可用",
 				"unconfigured": "需要填写 API Key"
 			}
+		},
+		"bibtexMount": {
+			"section": "BIBTEX / BIBLATEX 文献网络挂载",
+			"enable": "启用文献挂载",
+			"mountedAt": "已挂载在路径 {{path}}",
+			"format": "挂载类型",
+			"scope": "挂载范围",
+			"tags": {
+				"label": "标签",
+				"all": "全部标签",
+				"search": "筛选标签",
+				"loading": "标签索引加载中…",
+				"unavailable": "标签索引不可用",
+				"none": "暂无标签"
+			},
+			"dirs": {
+				"label": "目录",
+				"all": "全部目录",
+				"search": "筛选目录",
+				"loading": "目录加载中…",
+				"unavailable": "目录列表不可用",
+				"none": "papers/ 下暂无目录"
+			},
+			"refresh": "刷新",
+			"save": {
+				"saving": "保存中…",
+				"saved": "已保存",
+				"failed": "保存失败",
+				"unsupported": "当前 Host 尚未持久化该挂载，改动仅在当前窗口生效。"
+			}
 		}
 	},
 	"doctor": {
@@ -893,11 +925,13 @@
 		"title": "云同步",
 		"advanced": "高级",
 		"localVaultOnly": "云同步仅支持本地 Vault。",
+		"loadingVault": "正在检测 Vault…",
 		"backend": "同步方式",
 		"backendS3": "对象存储",
 		"backendWebdav": "WebDAV",
 		"backendGit": "Git",
 		"backendLocked": "切换存储后端前请先解绑。",
+		"remoteTarget": "远程目标",
 		"serverUrl": "服务器地址",
 		"username": "用户名",
 		"password": "密码",
@@ -911,6 +945,7 @@
 		"pathStyle": "Path-style 寻址",
 		"pathStyleHint": "R2 / MinIO 保持开启；使用 Bucket 子域名时关闭。",
 		"gitRemote": "仓库地址",
+		"gitRemoteHint": "本地路径或 SSH / HTTPS URL。凭据由系统 Git 提供。",
 		"gitBranch": "分支",
 		"noConditionalWrites": "该存储不支持条件（原子）写入，同步已降级为普通上传。单设备使用不受影响；多设备并发修改可能需要多一轮同步才能收敛。",
 		"saved": "同步已配置",
@@ -922,9 +957,18 @@
 		"statusError": "连接异常",
 		"providerDocsAria": "打开 {{name}} 配置指南",
 		"lastSync": "上次同步 {{time}}",
+		"lastSyncLabel": "上次同步",
 		"neverSynced": "尚未同步。",
 		"done": "同步完成：上传 {{up}}，下载 {{down}}",
 		"conflicts": "已在原文件旁保存 {{count}} 个冲突副本",
+		"lastResult": "上次结果",
+		"noRecentResult": "暂无结果。",
+		"resultVersion": "v{{version}}",
+		"resultUploaded": "上传 {{count}}",
+		"resultDownloaded": "下载 {{count}}",
+		"resultDeletedLocal": "本地删除 {{count}}",
+		"resultRemovedRemote": "远端删除 {{count}}",
+		"resultConflicts": "冲突 {{count}}",
 		"phase": {
 			"scan": "正在扫描 Vault…",
 			"pull": "正在获取远端状态…",
@@ -935,12 +979,17 @@
 		"connect": "连接",
 		"save": "保存",
 		"autoSync": "自动同步",
+		"autoSyncWebHint": "自动同步由服务端按下面的间隔执行；也可手动立即同步。",
 		"interval": "同步间隔",
 		"intervalMinutes": "{{count}} 分钟",
 		"scope": "同步范围",
 		"scopeHint": "笔记、元数据与标注永远同步。未勾选的内容不会上传或下载，也不会因过滤而被删除。PDF 与 LaTeX 源码可随时从来源重新下载。",
 		"scopePdf": "PDF 文件",
 		"scopeSource": "LaTeX 源码",
-		"scopeAttachments": "支撑材料"
-	}
+		"scopeAttachments": "支撑材料",
+		"lastError": "上次同步失败：{{error}}",
+		"scopeSize": "{{files}} 个文件 · {{size}}",
+		"autoSyncNextRun": "下次自动同步：{{time}}（由服务端执行）"
+	},
+	"backToWorkspace": "返回工作台"
 }

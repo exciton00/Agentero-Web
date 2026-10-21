@@ -45,7 +45,7 @@ import { formatBytes } from "@/lib/core/background-tasks";
 import { events } from "@/lib/core/bindings";
 import { errorMessage, notifyError, notifySuccess } from "@/lib/core/notify";
 import { openExternalUrl } from "@/lib/core/open-external";
-import { hasHostTransport } from "@/lib/core/tauri";
+import { hasHostTransport, isWebHost } from "@/lib/core/tauri";
 import { toSafeDisposer } from "@/lib/core/tauri-events";
 import { cn } from "@/lib/core/utils";
 import {
@@ -53,6 +53,8 @@ import {
 	isSyncProgressPhase,
 	SYNC_INTERVAL_CHOICES,
 	type SyncBackendConfig,
+	type SyncBackendKind,
+	type SyncOutcome,
 	type SyncProgressEvent,
 	type SyncScopeSizes,
 	type SyncStateEvent,
@@ -64,6 +66,34 @@ import {
 	syncScopeSizes,
 } from "@/lib/sync/api";
 import { isRemoteVaultHandle } from "@/lib/vault/remote/remote-vault";
+import { getSavedVaultPath } from "@/lib/vault/session";
+
+/**
+ * The headless host returns the persisted last-pass summary, its error and the
+ * scheduler's next run on top of the shared `SyncStatus_Serialize` shape.
+ * (The desktop commands only carry the live fields, so these stay optional.)
+ */
+type WebSyncStatus = SyncStatus & {
+	lastOutcome?: WebSyncOutcome | null;
+	lastError?: string | null;
+	autoSyncNextRunAt?: string | null;
+};
+
+type WebSyncOutcome = {
+	version: number;
+	uploaded: number;
+	downloaded: number;
+	deletedLocal: number;
+	removedRemote: number;
+	conflictCopies: string[];
+	finishedAt: string;
+};
+
+type WebSyncScopeSizes = SyncScopeSizes & {
+	pdfFiles?: number;
+	sourceFiles?: number;
+	attachmentFiles?: number;
+};
 
 type SyncProviderLink = {
 	id: string;
@@ -156,27 +186,126 @@ const BACKEND_OPTIONS = [
 	{ value: "git", labelKey: "sync.backendGit" },
 ] as const;
 
+const BACKEND_LABEL_KEYS = {
+	s3: "sync.backendS3",
+	webdav: "sync.backendWebdav",
+	git: "sync.backendGit",
+} as const satisfies Record<SyncBackendKind, string>;
+
+/**
+ * Human-readable remote target for the status card. Secrets never reach this
+ * code (the Host masks them), but WebDAV URLs may embed credentials, so strip
+ * the userinfo before showing the target.
+ */
+function remoteTargetLabel(config: SyncBackendConfig): string {
+	if (config.backend === "git") {
+		return config.gitBranch
+			? `${config.gitRemote} · ${config.gitBranch}`
+			: config.gitRemote;
+	}
+	if (config.backend === "webdav") {
+		try {
+			const url = new URL(config.webdavUrl);
+			url.username = "";
+			url.password = "";
+			return url.toString();
+		} catch {
+			return config.webdavUrl;
+		}
+	}
+	const bucket = [config.endpoint, config.bucket].filter(Boolean).join(" / ");
+	return config.prefix ? `${bucket} / ${config.prefix}` : bucket;
+}
+
+/**
+ * The settings window is a separate browser tab in the web build, so it has no
+ * `vault_path` query parameter and never calls `initVaultStore()`. Resolve the
+ * active Vault from the web host instead of declaring cloud sync unavailable.
+ * Desktop keeps using the prop only: without a Vault open there, the pane must
+ * not silently attach to the last stored path.
+ */
+function savedWebVaultPath(): string | null {
+	if (!isWebHost()) return null;
+	const stored = getSavedVaultPath({ allowRestore: true });
+	return stored && !isRemoteVaultHandle(stored) ? stored : null;
+}
+
+function useSettingsVaultPath(vaultPath: string | null): {
+	path: string | null;
+	resolving: boolean;
+} {
+	const initial = vaultPath ?? savedWebVaultPath();
+	const [state, setState] = useState<{
+		path: string | null;
+		resolving: boolean;
+	}>({ path: initial, resolving: !initial && isWebHost() });
+
+	useEffect(() => {
+		if (vaultPath) {
+			setState({ path: vaultPath, resolving: false });
+			return;
+		}
+		if (!isWebHost()) {
+			setState({ path: null, resolving: false });
+			return;
+		}
+		const stored = savedWebVaultPath();
+		if (stored) {
+			setState({ path: stored, resolving: false });
+			return;
+		}
+		let cancelled = false;
+		void (async () => {
+			try {
+				const { bootstrapWebVault } = await import("@/web-transport");
+				const root = await bootstrapWebVault();
+				if (!cancelled) {
+					setState({ path: root ?? null, resolving: false });
+				}
+			} catch {
+				if (!cancelled) setState({ path: null, resolving: false });
+			}
+		})();
+		return () => {
+			cancelled = true;
+		};
+	}, [vaultPath]);
+
+	return state;
+}
+
 export function SyncPane({ vaultPath }: { vaultPath: string | null }) {
 	const { t } = useTranslation("settings");
+	const settingsVault = useSettingsVaultPath(vaultPath);
 	const localVault =
-		hasHostTransport() && vaultPath && !isRemoteVaultHandle(vaultPath)
-			? vaultPath
+		hasHostTransport() &&
+		settingsVault.path &&
+		!isRemoteVaultHandle(settingsVault.path)
+			? settingsVault.path
 			: null;
 
-	const [status, setStatus] = useState<SyncStatus | null>(null);
+	const [status, setStatus] = useState<WebSyncStatus | null>(null);
 	const [form, setForm] = useState<SyncBackendConfig>(emptySyncConfig());
 	const [saving, setSaving] = useState(false);
 	const [syncing, setSyncing] = useState(false);
 	const [progress, setProgress] = useState<SyncProgressEvent | null>(null);
 	const [syncError, setSyncError] = useState<string | null>(null);
-	const [advancedOpen, setAdvancedOpen] = useState(false);
-	const [scopeSizes, setScopeSizes] = useState<SyncScopeSizes | null>(null);
+	const [lastOutcome, setLastOutcome] = useState<SyncOutcome | null>(null);
+	// The web settings tab has no native window size; show every S3 field
+	// (region / prefix / path-style) without hiding them behind "Advanced".
+	const [advancedOpen, setAdvancedOpen] = useState(() => isWebHost());
+	const [scopeSizes, setScopeSizes] = useState<WebSyncScopeSizes | null>(null);
 
 	const refresh = useCallback(async () => {
 		if (!localVault) return;
-		const next = await syncGetStatus(localVault);
+		const next = (await syncGetStatus(localVault)) as WebSyncStatus;
 		setStatus(next);
 		setSyncing(next.running);
+		// Persisted summary: shows "last result" after a page refresh/restart
+		// instead of only inside the session that ran the sync.
+		if (next.lastOutcome) {
+			setLastOutcome(next.lastOutcome as unknown as SyncOutcome);
+		}
 		if (next.config) {
 			setForm(next.config);
 			// Surface the advanced group when it holds non-default values.
@@ -192,7 +321,11 @@ export function SyncPane({ vaultPath }: { vaultPath: string | null }) {
 	}, [localVault]);
 
 	useEffect(() => {
-		void refresh().catch((error) => notifyError(errorMessage(error)));
+		void refresh().catch((error) => {
+			const message = errorMessage(error);
+			setSyncError(message);
+			notifyError(message);
+		});
 	}, [refresh]);
 
 	useEffect(() => {
@@ -245,8 +378,13 @@ export function SyncPane({ vaultPath }: { vaultPath: string | null }) {
 		return (
 			<section>
 				<PageTitle title={t("sync.title")} />
-				<p className="text-muted-foreground text-sm">
-					{t("sync.localVaultOnly")}
+				<p className="flex items-center gap-2 text-muted-foreground text-sm">
+					{settingsVault.resolving ? (
+						<LoaderCircle className="size-4 animate-spin" aria-hidden />
+					) : null}
+					{settingsVault.resolving
+						? t("sync.loadingVault")
+						: t("sync.localVaultOnly")}
 				</p>
 			</section>
 		);
@@ -274,6 +412,7 @@ export function SyncPane({ vaultPath }: { vaultPath: string | null }) {
 			const next = await syncConfigure(localVault, form);
 			setStatus(next);
 			if (next.config) setForm(next.config);
+			setLastOutcome(null);
 			setSyncError(null);
 			notifySuccess(t("sync.saved"));
 		} catch (error) {
@@ -289,6 +428,7 @@ export function SyncPane({ vaultPath }: { vaultPath: string | null }) {
 		setSyncing(true);
 		try {
 			const outcome = await syncNow(localVault);
+			setLastOutcome(outcome);
 			setSyncError(null);
 			notifySuccess(
 				t("sync.done", {
@@ -303,6 +443,7 @@ export function SyncPane({ vaultPath }: { vaultPath: string | null }) {
 			}
 		} catch (error) {
 			const message = errorMessage(error);
+			setLastOutcome(null);
 			setSyncError(message);
 			notifyError(message);
 		} finally {
@@ -313,10 +454,12 @@ export function SyncPane({ vaultPath }: { vaultPath: string | null }) {
 	};
 
 	const disconnect = async () => {
+		const previousBackend = status?.config?.backend ?? form.backend;
 		try {
 			await syncDisconnect(localVault);
 			setStatus(null);
-			setForm(emptySyncConfig());
+			setForm(emptySyncConfig(previousBackend));
+			setLastOutcome(null);
 			setSyncError(null);
 			void refresh().catch(() => undefined);
 		} catch (error) {
@@ -342,8 +485,9 @@ export function SyncPane({ vaultPath }: { vaultPath: string | null }) {
 		/>
 	);
 
-	const statusText =
-		syncing && progress
+	const statusText = syncError
+		? t("sync.statusError")
+		: syncing && progress
 			? t(`sync.phase.${progress.phase}`, {
 					current: progress.current,
 					total: progress.total,
@@ -354,7 +498,9 @@ export function SyncPane({ vaultPath }: { vaultPath: string | null }) {
 					})
 				: status?.configured
 					? t("sync.neverSynced")
-					: null;
+					: status
+						? t("sync.statusDisconnected")
+						: null;
 	const syncStatusLabel = syncError
 		? t("sync.statusError")
 		: syncing
@@ -370,6 +516,8 @@ export function SyncPane({ vaultPath }: { vaultPath: string | null }) {
 				? "bg-emerald-500"
 				: "bg-muted-foreground/35";
 	const configChanged = JSON.stringify(form) !== JSON.stringify(status?.config);
+	const savedConfig = status?.config ?? null;
+	const remoteTarget = savedConfig ? remoteTargetLabel(savedConfig) : "";
 	const primaryAction =
 		!status?.configured || configChanged ? (
 			<Button
@@ -422,6 +570,101 @@ export function SyncPane({ vaultPath }: { vaultPath: string | null }) {
 				}
 				actions={primaryAction}
 			/>
+
+			{syncError ? (
+				<p
+					role="alert"
+					className="mb-4 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-destructive text-xs leading-relaxed"
+				>
+					{syncError}
+				</p>
+			) : status?.lastError ? (
+				<p
+					role="alert"
+					className="mb-4 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-destructive text-xs leading-relaxed"
+				>
+					{t("sync.lastError", { error: status.lastError })}
+				</p>
+			) : null}
+
+			{status?.configured && savedConfig ? (
+				<SettingsGroup>
+					<SettingsRow label={t("sync.backend")}>
+						<span className="text-muted-foreground text-sm">
+							{t(BACKEND_LABEL_KEYS[savedConfig.backend])}
+						</span>
+					</SettingsRow>
+					<SettingsRow label={t("sync.remoteTarget")}>
+						<span
+							className="block max-w-[26rem] truncate text-muted-foreground text-sm"
+							title={remoteTarget}
+						>
+							{remoteTarget}
+						</span>
+					</SettingsRow>
+					<SettingsRow label={t("sync.lastSyncLabel")}>
+						<span className="flex items-center gap-2 text-muted-foreground text-xs tabular-nums">
+							<span>
+								{status.lastSyncAt
+									? formatLocaleTimestamp(status.lastSyncAt)
+									: t("sync.neverSynced")}
+							</span>
+							{status.lastVersion > 0 ? (
+								<span className="text-foreground/60">
+									{t("sync.resultVersion", {
+										version: status.lastVersion,
+									})}
+								</span>
+							) : null}
+						</span>
+					</SettingsRow>
+					<SettingsRow label={t("sync.lastResult")}>
+						{lastOutcome ? (
+							<span className="flex max-w-[34rem] flex-wrap items-center justify-end gap-x-3 gap-y-1 text-muted-foreground text-xs tabular-nums">
+								<span className="font-medium text-foreground">
+									{t("sync.resultVersion", {
+										version: lastOutcome.version,
+									})}
+								</span>
+								<span>
+									{t("sync.resultUploaded", {
+										count: lastOutcome.uploaded,
+									})}
+								</span>
+								<span>
+									{t("sync.resultDownloaded", {
+										count: lastOutcome.downloaded,
+									})}
+								</span>
+								<span>
+									{t("sync.resultDeletedLocal", {
+										count: lastOutcome.deletedLocal,
+									})}
+								</span>
+								<span>
+									{t("sync.resultRemovedRemote", {
+										count: lastOutcome.removedRemote,
+									})}
+								</span>
+								<span
+									className={cn(
+										lastOutcome.conflictCopies.length > 0 &&
+											"text-amber-600 dark:text-amber-500",
+									)}
+								>
+									{t("sync.resultConflicts", {
+										count: lastOutcome.conflictCopies.length,
+									})}
+								</span>
+							</span>
+						) : (
+							<span className="text-muted-foreground text-xs">
+								{t("sync.noRecentResult")}
+							</span>
+						)}
+					</SettingsRow>
+				</SettingsGroup>
+			) : null}
 
 			{status?.configured && !isGit && !form.conditionalWrites ? (
 				<p className="mb-3 text-muted-foreground text-xs">
@@ -500,7 +743,11 @@ export function SyncPane({ vaultPath }: { vaultPath: string | null }) {
 
 			{isGit ? (
 				<SettingsGroup>
-					<SettingsRow label={t("sync.gitRemote")} htmlFor="sync-gitRemote">
+					<SettingsRow
+						label={t("sync.gitRemote")}
+						htmlFor="sync-gitRemote"
+						description={t("sync.gitRemoteHint")}
+					>
 						{field("gitRemote", {
 							placeholder: "git@github.com:you/papers.git",
 						})}
@@ -541,7 +788,19 @@ export function SyncPane({ vaultPath }: { vaultPath: string | null }) {
 			)}
 
 			<SettingsGroup>
-				<SettingsRow label={t("sync.autoSync")} htmlFor="sync-autoSync">
+				<SettingsRow
+					label={t("sync.autoSync")}
+					htmlFor="sync-autoSync"
+					description={
+						isWebHost()
+							? form.autoSync && status?.autoSyncNextRunAt
+								? t("sync.autoSyncNextRun", {
+										time: formatLocaleTimestamp(status.autoSyncNextRunAt),
+									})
+								: t("sync.autoSyncWebHint")
+							: undefined
+					}
+				>
 					<Switch
 						id="sync-autoSync"
 						checked={form.autoSync}
@@ -581,7 +840,10 @@ export function SyncPane({ vaultPath }: { vaultPath: string | null }) {
 							<span className="flex items-center gap-2">
 								{scopeSizes ? (
 									<span className="text-muted-foreground text-xs tabular-nums">
-										{formatBytes(scopeSizes.pdf)}
+										{t("sync.scopeSize", {
+											files: scopeSizes.pdfFiles ?? 0,
+											size: formatBytes(scopeSizes.pdf),
+										})}
 									</span>
 								) : null}
 								<Switch
@@ -598,7 +860,10 @@ export function SyncPane({ vaultPath }: { vaultPath: string | null }) {
 							<span className="flex items-center gap-2">
 								{scopeSizes ? (
 									<span className="text-muted-foreground text-xs tabular-nums">
-										{formatBytes(scopeSizes.source)}
+										{t("sync.scopeSize", {
+											files: scopeSizes.sourceFiles ?? 0,
+											size: formatBytes(scopeSizes.source),
+										})}
 									</span>
 								) : null}
 								<Switch
@@ -615,7 +880,10 @@ export function SyncPane({ vaultPath }: { vaultPath: string | null }) {
 							<span className="flex items-center gap-2">
 								{scopeSizes ? (
 									<span className="text-muted-foreground text-xs tabular-nums">
-										{formatBytes(scopeSizes.attachments)}
+										{t("sync.scopeSize", {
+											files: scopeSizes.attachmentFiles ?? 0,
+											size: formatBytes(scopeSizes.attachments),
+										})}
 									</span>
 								) : null}
 								<Switch
