@@ -27,11 +27,16 @@ pub async fn dispatch(ctx: &RpcCtx, command: &str, args: &Value) -> Option<Handl
         // ---- Vault filesystem watcher (per-tab, reference counted) ----
         "fs_watch_start" => Some(fs_watch_start(ctx, args).await),
         "fs_watch_stop" => Some(fs_watch_stop(ctx).await),
-        // ---- Server-side task center ----
+        // ---- Task center: registry + host runners + renderer offers ----
         "job_list"
         | "job_cancel"
         | "job_report"
         | "job_import_enqueue"
+        | "job_layout_analyze_enqueue"
+        | "job_citing_scan_enqueue"
+        | "job_library_io_enqueue"
+        | "job_metadata_refresh_enqueue"
+        | "job_connector_sync_enqueue"
         | "job_download_assets_enqueue"
         | "job_parse_body_enqueue"
         | "job_parse_refs_enqueue"

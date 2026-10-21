@@ -6,18 +6,27 @@
 //!   → `Result<ApiResult<…>, String>`;
 //! * `job_cancel` → `Result<ApiResult<bool>, String>`.
 //!
-//! Jobs the desktop executed in the renderer (`import`, `downloadAssets`) or in
-//! Host runners (`parseBody`, `parseRefs`) run on the server here through the
-//! shared `agentero-core` pipelines, so the browser does not need the
-//! multi-command orchestration. Byte/count progress still arrives as
-//! `job:progress` (core forwards payloads through `WebHostHooks`), and the
-//! `DownloadAssets` runner owns the same follow-ups as the desktop runner:
-//! `PAPER.md` backfill (`ParseBody`) once assets land, plus the
-//! `paper:assets-ready` fact event.
+//! Two execution models, split exactly like the desktop Host:
+//!
+//! * **renderer offers** — `job_import_enqueue` / `job_layout_analyze_enqueue` /
+//!   `job_citing_scan_enqueue` / `job_library_io_enqueue` /
+//!   `job_metadata_refresh_enqueue` register the job as `running` and emit
+//!   `job:offer` to the requesting tab (`{jobId,kind,vaultPath,paperPath,force,params}`);
+//!   the browser executes it and reports back through `job_report`.
+//! * **host runners** — `downloadAssets` / `parseBody` / `parseRefs` run the
+//!   shared `agentero-core` pipelines inside the TaskCenter. Byte/count progress
+//!   still arrives as `job:progress` (core forwards payloads through
+//!   `WebHostHooks`), and the `DownloadAssets` runner owns the same follow-ups as
+//!   the desktop runner: `PAPER.md` backfill (`ParseBody`) once assets land,
+//!   plus the `paper:assets-ready` fact event.
+//!
+//! `job_import_enqueue` defaults to the renderer offer (desktop semantics); the
+//! previous server-side lookup import is kept behind
+//! `AGENTERO_WEB_IMPORT_SERVER_FALLBACK=1` for headless/CI runs with no tab.
 
 use std::path::PathBuf;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use agentero_core::features::paper::capabilities::CapsCache;
@@ -112,12 +121,46 @@ struct JobPapersNeedingAssetsArgs {
     vault_path: String,
 }
 
+/// `JobVaultScopeEnqueueArgs` — vault-scope renderer kinds (`CitingScan` /
+/// `LibraryIo` / `MetadataRefresh`): no paper target, `params` carries the payload.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct JobVaultScopeEnqueueArgs {
+    vault_path: String,
+    #[serde(default)]
+    lane: Option<JobLane>,
+    #[serde(default)]
+    force: bool,
+    #[serde(default)]
+    params: Option<Value>,
+}
+
+/// `job:offer` payload (desktop `JobOfferPayload`): the browser executor's task
+/// context. `vaultPath` is the canonical vault root, like the desktop offer.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JobOfferPayload {
+    job_id: String,
+    kind: JobKind,
+    vault_path: String,
+    paper_path: Option<String>,
+    force: bool,
+    params: Option<Value>,
+}
+
 pub async fn dispatch(ctx: &RpcCtx, command: &str, args: &Value) -> Option<HandlerResult> {
     Some(match command {
         "job_list" => job_list(ctx, args).await,
         "job_cancel" => job_cancel(ctx, args).await,
         "job_report" => job_report(ctx, args).await,
         "job_import_enqueue" => job_import_enqueue(ctx, args).await,
+        "job_layout_analyze_enqueue" => job_layout_analyze_enqueue(ctx, args).await,
+        "job_citing_scan_enqueue" => job_citing_scan_enqueue(ctx, args).await,
+        "job_library_io_enqueue" => job_library_io_enqueue(ctx, args).await,
+        "job_metadata_refresh_enqueue" => job_metadata_refresh_enqueue(ctx, args).await,
+        "job_connector_sync_enqueue" => fail_msg(
+            "Zotero Connector is not available in the headless web host",
+        ),
         "job_download_assets_enqueue" => job_download_assets_enqueue(ctx, args).await,
         "job_parse_body_enqueue" => job_parse_body_enqueue(ctx, args).await,
         "job_parse_refs_enqueue" => job_parse_refs_enqueue(ctx, args).await,
@@ -162,35 +205,61 @@ async fn job_report(ctx: &RpcCtx, args: &Value) -> HandlerResult {
         args.state,
     ) {
         Some(snapshot) => typed_ok(snapshot),
-        None => fail_msg("job not found or not running"),
+        None => fail_msg("job not found"),
     }
 }
 
-/// `job_import_enqueue` — server-executed identifier import.
+/// `job_import_enqueue` — renderer-executed import orchestration (magic wand /
+/// local PDF / BibTeX), desktop `job_import_enqueue` semantics.
 ///
-/// Supports the identifier magic-wand mode (`params.mode == "lookup"`,
-/// `params.text`), which maps directly onto
-/// `agentero_core::features::paper::import::import_by_identifier_with_progress`
-/// (the same pipeline the CLI uses). Renderer-only modes (skill / plaza /
-/// papers.cool UI pickers) report a business error instead of hanging;
-/// `lookup_import_batch` covers the batch/search flows.
+/// The job is offered to the requesting browser tab; the frontend import
+/// executor drives the multi-command flow and reports progress / terminal state
+/// through `job_report`. With `AGENTERO_WEB_IMPORT_SERVER_FALLBACK=1` the
+/// identifier (`lookup`) mode runs the server-side core pipeline instead
+/// (headless / CI runs with no browser tab).
 async fn job_import_enqueue(ctx: &RpcCtx, args: &Value) -> HandlerResult {
     let args: JobImportEnqueueArgs = match parse_args(args) {
         Ok(args) => args,
         Err(error) => return typed_err(error),
     };
+    let mode = args
+        .params
+        .as_ref()
+        .and_then(|params| params.get("mode"))
+        .and_then(Value::as_str)
+        .unwrap_or("lookup");
+    if !server_import_fallback_enabled() || mode != "lookup" {
+        let parent_dir = args
+            .path
+            .as_deref()
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+            .unwrap_or("papers")
+            .replace('\\', "/");
+        let parent_dir = match agentero_core::fs::sanitize_vault_rel(&parent_dir) {
+            Ok(path) => path,
+            Err(error) => return fail_msg(error),
+        };
+        let spec = match JobSpec::new(JobKind::Import, &args.vault_path) {
+            Ok(spec) => spec
+                .paper_path(parent_dir)
+                .lane(args.lane)
+                .force(args.force)
+                .params(args.params),
+            Err(error) => return fail_msg(error),
+        };
+        return enqueue_renderer_job(ctx, spec);
+    }
+    job_import_server_fallback(ctx, args).await
+}
+
+/// Server-side identifier import (`AGENTERO_WEB_IMPORT_SERVER_FALLBACK=1`): core
+/// resolves the identifier, commits the paper and emits `paper:imported`; no
+/// browser tab is involved.
+async fn job_import_server_fallback(ctx: &RpcCtx, args: JobImportEnqueueArgs) -> HandlerResult {
     let Some(params) = args.params.as_ref() else {
         return fail_msg("import job requires params");
     };
-    let mode = params
-        .get("mode")
-        .and_then(Value::as_str)
-        .unwrap_or("lookup");
-    if mode != "lookup" {
-        return fail_msg(format!(
-            "import mode \"{mode}\" is not supported by the headless web host"
-        ));
-    }
     let text = params
         .get("text")
         .and_then(Value::as_str)
@@ -217,7 +286,9 @@ async fn job_import_enqueue(ctx: &RpcCtx, args: &Value) -> HandlerResult {
             .paper_path(parent_dir.clone())
             .lane(args.lane)
             .force(args.force)
-            .params(Some(params.clone())),
+            .params(Some(params.clone()))
+            // Executed by the server in fallback mode, not the browser.
+            .host(crate::tasks::ExecHost::Host),
         Err(error) => return fail_msg(error),
     };
 
@@ -255,6 +326,113 @@ async fn job_import_enqueue(ctx: &RpcCtx, args: &Value) -> HandlerResult {
         })
     });
     typed_ok(snapshot)
+}
+
+/// `job_layout_analyze_enqueue` — renderer offer (browser ONNX/wasm layout pass).
+async fn job_layout_analyze_enqueue(ctx: &RpcCtx, args: &Value) -> HandlerResult {
+    let args: JobEnqueueArgs = match parse_args(args) {
+        Ok(args) => args,
+        Err(error) => return typed_err(error),
+    };
+    let paper_path = match sanitize_paper_path(args.path.as_deref(), "layoutAnalyze") {
+        Ok(path) => path,
+        Err(error) => return fail_msg(error),
+    };
+    let spec = match JobSpec::new(JobKind::LayoutAnalyze, &args.vault_path) {
+        Ok(spec) => spec
+            .paper_path(paper_path)
+            .lane(args.lane)
+            .force(args.force),
+        Err(error) => return fail_msg(error),
+    };
+    enqueue_renderer_job(ctx, spec)
+}
+
+/// `job_citing_scan_enqueue` — renderer offer (reverse-citation scan UI flow).
+async fn job_citing_scan_enqueue(ctx: &RpcCtx, args: &Value) -> HandlerResult {
+    job_vault_scope_renderer_enqueue(ctx, args, JobKind::CitingScan).await
+}
+
+/// `job_library_io_enqueue` — renderer offer (dialog-driven bibliography I/O).
+async fn job_library_io_enqueue(ctx: &RpcCtx, args: &Value) -> HandlerResult {
+    job_vault_scope_renderer_enqueue(ctx, args, JobKind::LibraryIo).await
+}
+
+/// `job_metadata_refresh_enqueue` — renderer offer (bulk metadata batch).
+async fn job_metadata_refresh_enqueue(ctx: &RpcCtx, args: &Value) -> HandlerResult {
+    job_vault_scope_renderer_enqueue(ctx, args, JobKind::MetadataRefresh).await
+}
+
+async fn job_vault_scope_renderer_enqueue(
+    ctx: &RpcCtx,
+    args: &Value,
+    kind: JobKind,
+) -> HandlerResult {
+    let args: JobVaultScopeEnqueueArgs = match parse_args(args) {
+        Ok(args) => args,
+        Err(error) => return typed_err(error),
+    };
+    let spec = match JobSpec::new(kind, &args.vault_path) {
+        Ok(spec) => spec
+            .lane(args.lane)
+            .force(args.force)
+            .params(args.params),
+        Err(error) => return fail_msg(error),
+    };
+    enqueue_renderer_job(ctx, spec)
+}
+
+/// `true` when `AGENTERO_WEB_IMPORT_SERVER_FALLBACK` opts into the server-side
+/// lookup import (headless/CI deployments with no browser tab to execute offers).
+fn server_import_fallback_enabled() -> bool {
+    std::env::var("AGENTERO_WEB_IMPORT_SERVER_FALLBACK")
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+/// Register a renderer-executed job and offer it to the requesting tab.
+fn enqueue_renderer_job(ctx: &RpcCtx, spec: JobSpec) -> HandlerResult {
+    let job = ctx.state.tasks.spawn_renderer(spec);
+    if job.created {
+        emit_offer(ctx, &job.snapshot);
+    }
+    typed_ok(job.snapshot)
+}
+
+fn emit_offer(ctx: &RpcCtx, snapshot: &JobSnapshot) {
+    let offer = JobOfferPayload {
+        job_id: snapshot.id.clone(),
+        kind: snapshot.kind,
+        vault_path: snapshot.vault_path.clone(),
+        paper_path: snapshot.paper_path.clone(),
+        force: snapshot.force,
+        params: snapshot.params.clone(),
+    };
+    match ctx.window.as_deref() {
+        // Targeted offer: only the tab that issued the RPC executes it.
+        Some(label) => {
+            ctx.state
+                .events
+                .emit_to(label, crate::tasks::JOB_OFFER_EVENT, &offer)
+        }
+        // No tab context (startup reconcile / CLI-ish caller): broadcast, the
+        // first browser executor claims it.
+        None => ctx
+            .state
+            .events
+            .emit(crate::tasks::JOB_OFFER_EVENT, &offer),
+    }
+    log::debug!(
+        "job:offer {} kind={:?} target={:?}",
+        snapshot.id,
+        snapshot.kind,
+        ctx.window
+    );
 }
 
 /// `job_download_assets_enqueue` — server-side PDF/TeX asset download for one

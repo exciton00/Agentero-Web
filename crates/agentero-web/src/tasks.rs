@@ -9,22 +9,31 @@
 //! * `job:progress` is emitted by the domain code itself (byte/count payload
 //!   `AssetDownloadProgress`, forwarded by `WebHostHooks`).
 //!
-//! Jobs run on the server (`spawn` + `tokio::spawn`); renderer execution
-//! (`job:offer`) is not used in v1 — layout analysis is deferred, so every
-//! snapshot reports `host: "host"`. Cancellation is cooperative: `job_cancel`
-//! fires the job's [`CancellationToken`], flips the snapshot to `cancelled`
-//! immediately (like the desktop JobCenter), and installs a process-wide probe
-//! so `agentero-core` pollers (`check_task_not_cancelled`) can stop early.
+//! Two execution models share this registry:
+//!
+//! * **host runner** — [`TaskCenter::spawn`] runs a Rust future (ParseBody /
+//!   ParseRefs / DownloadAssets / …);
+//! * **renderer offer** — [`TaskCenter::spawn_renderer`] registers the job as
+//!   `running` and the browser executes it through the desktop
+//!   `job:offer` → `job_report` protocol (`renderer_offer_runner` parity).
+//!   A background watcher settles unreported offers as failed after the
+//!   configured budget (`AGENTERO_WEB_JOB_OFFER_TIMEOUT_SECS`, default 15 min).
+//!
+//! Cancellation is cooperative: `job_cancel` fires the job's
+//! [`CancellationToken`], flips the snapshot to `cancelled` immediately (like
+//! the desktop JobCenter), wakes renderer waiters, and installs a process-wide
+//! probe so `agentero-core` pollers (`check_task_not_cancelled`) can stop early.
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 use crate::events::EventBus;
@@ -32,6 +41,14 @@ use crate::events::EventBus;
 pub const JOB_CHANGED_EVENT: &str = "job:changed";
 pub const JOB_COMPLETED_EVENT: &str = "job:completed";
 pub const JOB_FAILED_EVENT: &str = "job:failed";
+/// Renderer-executed job offer, emitted to the requesting tab (desktop contract).
+pub const JOB_OFFER_EVENT: &str = "job:offer";
+
+/// Default renderer report budget: the browser must report a terminal state
+/// within 15 minutes, like the desktop `RENDERER_JOB_TIMEOUT`.
+pub const DEFAULT_JOB_OFFER_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+/// Environment override for the renderer report budget (seconds).
+pub const ENV_JOB_OFFER_TIMEOUT_SECS: &str = "AGENTERO_WEB_JOB_OFFER_TIMEOUT_SECS";
 
 /// Job kinds shared with the desktop Host (`JobKind` in bindings.ts).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -94,13 +111,30 @@ pub enum DepPolicy {
     AllSucceeded,
 }
 
-/// Execution host of a job (`ExecHost`). The headless host always executes.
+/// Execution host of a job (`ExecHost` in bindings.ts).
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub enum ExecHost {
     #[default]
     Host,
     Renderer,
+}
+
+/// Execution host of a kind — mirror of the desktop `JobKind::exec_host`.
+///
+/// Renderer kinds are executed by the browser through the `job:offer` /
+/// `job_report` protocol; every other kind runs a Rust runner in the
+/// TaskCenter.
+pub fn exec_host(kind: JobKind) -> ExecHost {
+    match kind {
+        JobKind::LayoutAnalyze
+        | JobKind::Import
+        | JobKind::ConnectorSync
+        | JobKind::CitingScan
+        | JobKind::LibraryIo
+        | JobKind::MetadataRefresh => ExecHost::Renderer,
+        _ => ExecHost::Host,
+    }
 }
 
 /// One job row, wire-compatible with the desktop `JobSnapshot`.
@@ -160,6 +194,8 @@ pub struct JobSpec {
     pub lane: JobLane,
     pub force: bool,
     pub params: Option<Value>,
+    /// Overrides the kind-derived execution host (server-side fallback paths).
+    pub host: Option<ExecHost>,
 }
 
 impl JobSpec {
@@ -179,6 +215,7 @@ impl JobSpec {
             lane: JobLane::Normal,
             force: false,
             params: None,
+            host: None,
         })
     }
 
@@ -201,6 +238,13 @@ impl JobSpec {
 
     pub fn params(mut self, params: Option<Value>) -> Self {
         self.params = params;
+        self
+    }
+
+    /// Force the snapshot's execution host (e.g. a kind the desktop executes in
+    /// the renderer, but which the server runs itself in fallback mode).
+    pub fn host(mut self, host: ExecHost) -> Self {
+        self.host = Some(host);
         self
     }
 
@@ -238,7 +282,7 @@ impl JobSpec {
             error: None,
             force: self.force,
             params: self.params.clone(),
-            host: ExecHost::Host,
+            host: self.host.unwrap_or_else(|| exec_host(self.kind)),
         }
     }
 }
@@ -287,6 +331,16 @@ struct Job {
     cancel: CancellationToken,
     /// Dedupe identity while queued/running (released on any terminal state).
     active_key: String,
+    /// Completion signal for renderer offers (terminal report / cancel).
+    settle: Option<Arc<Notify>>,
+}
+
+/// Outcome of registering a renderer-executed job.
+#[derive(Debug, Clone)]
+pub struct RendererJob {
+    pub snapshot: JobSnapshot,
+    /// `false` when an identical active job was reused (caller must not re-offer).
+    pub created: bool,
 }
 
 #[derive(Default)]
@@ -304,6 +358,8 @@ struct Inner {
     state: Mutex<State>,
     bus: EventBus,
     seq: AtomicU64,
+    /// Renderer report budget in milliseconds (env-overridable, test-overridable).
+    renderer_timeout_ms: AtomicU64,
 }
 
 /// In-memory task registry; cheap to clone (one `Arc`).
@@ -319,6 +375,9 @@ impl TaskCenter {
                 state: Mutex::new(State::default()),
                 bus,
                 seq: AtomicU64::new(1),
+                renderer_timeout_ms: AtomicU64::new(
+                    renderer_timeout_from_env().as_millis().max(1) as u64,
+                ),
             }),
         };
         // Core pollers (`check_task_not_cancelled`) consult this probe; without
@@ -374,6 +433,7 @@ impl TaskCenter {
                     snapshot: snapshot.clone(),
                     cancel: cancel.clone(),
                     active_key: snapshot.fingerprint.clone(),
+                    settle: None,
                 },
             );
             state.order.push(snapshot.id.clone());
@@ -386,6 +446,122 @@ impl TaskCenter {
             center.run_job(job_id, cancel, run).await;
         });
         snapshot
+    }
+
+    /// Override the renderer report budget (tests / embedders).
+    pub fn with_renderer_timeout(self, timeout: Duration) -> Self {
+        self.inner
+            .renderer_timeout_ms
+            .store(timeout.as_millis().max(1) as u64, Ordering::Relaxed);
+        self
+    }
+
+    fn renderer_timeout(&self) -> Duration {
+        Duration::from_millis(
+            self.inner
+                .renderer_timeout_ms
+                .load(Ordering::Relaxed)
+                .max(1),
+        )
+    }
+
+    /// Register a renderer-executed job (desktop `renderer_offer_runner` parity).
+    ///
+    /// The job is `running` immediately; the caller emits `job:offer` with the
+    /// returned snapshot, the browser executes it, and the terminal state arrives
+    /// through [`TaskCenter::report`] (or [`TaskCenter::cancel`]). A background
+    /// watcher settles jobs that never report as failed with
+    /// `"renderer job report timeout"`.
+    pub fn spawn_renderer(&self, spec: JobSpec) -> RendererJob {
+        let id = self.next_id();
+        let mut snapshot = spec.snapshot(id.clone());
+        snapshot.state = JobState::Running;
+        snapshot.phase = Some("running".to_string());
+        snapshot.progress = Some(0.0);
+        let cancel = CancellationToken::new();
+        let settle = Arc::new(Notify::new());
+        {
+            let mut state = self.lock();
+            // Dedupe against an identical active job, like the desktop center:
+            // a re-enqueue while the browser is still executing it is a no-op.
+            if let Some(existing) = state.active.get(&snapshot.fingerprint).and_then(|id| {
+                state
+                    .jobs
+                    .get(id)
+                    .map(|job| (id.clone(), job.snapshot.clone()))
+            }) {
+                if !existing.1.state.is_terminal() {
+                    return RendererJob {
+                        snapshot: existing.1,
+                        created: false,
+                    };
+                }
+            }
+            state
+                .active
+                .insert(snapshot.fingerprint.clone(), snapshot.id.clone());
+            state.jobs.insert(
+                snapshot.id.clone(),
+                Job {
+                    snapshot: snapshot.clone(),
+                    cancel: cancel.clone(),
+                    active_key: snapshot.fingerprint.clone(),
+                    settle: Some(settle.clone()),
+                },
+            );
+            state.order.push(snapshot.id.clone());
+        }
+        self.emit_changed(&snapshot);
+
+        let center = self.clone();
+        let job_id = snapshot.id.clone();
+        let timeout = self.renderer_timeout();
+        tokio::spawn(async move {
+            center.watch_renderer(job_id, cancel, settle, timeout).await;
+        });
+        RendererJob {
+            snapshot,
+            created: true,
+        }
+    }
+
+    /// Await a renderer job's terminal state: terminal report, cancel, or timeout.
+    async fn watch_renderer(
+        self,
+        job_id: String,
+        cancel: CancellationToken,
+        settle: Arc<Notify>,
+        timeout: Duration,
+    ) {
+        let started = tokio::time::Instant::now();
+        loop {
+            // Register the waiter before reading the state: a terminal report
+            // racing this check leaves a Notify permit that wakes the select.
+            let notified = settle.notified();
+            let state = self.snapshot(&job_id).map(|snapshot| snapshot.state);
+            match state {
+                None => return,
+                Some(state) if state.is_terminal() => return,
+                Some(_) => {}
+            }
+            let remaining = timeout.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                log::warn!("renderer job {job_id}: report timeout after {}s", timeout.as_secs());
+                self.finish(
+                    &job_id,
+                    JobOutcome::Failed(format!(
+                        "renderer job report timeout after {}s",
+                        timeout.as_secs()
+                    )),
+                );
+                return;
+            }
+            tokio::select! {
+                _ = notified => {}
+                _ = cancel.cancelled() => {}
+                _ = tokio::time::sleep(remaining) => {}
+            }
+        }
     }
 
     /// Every job, newest registration order preserved. Filters mirror the
@@ -439,6 +615,11 @@ impl TaskCenter {
                 job.snapshot.state = JobState::Cancelled;
                 job.snapshot.progress = None;
                 job.snapshot.phase = Some("cancelled".to_string());
+                if let Some(notify) = &job.settle {
+                    // Wake the renderer watcher immediately (desktop parity:
+                    // cancel must not wait for the next poll tick).
+                    notify.notify_waiters();
+                }
                 (job.snapshot.clone(), job.active_key.clone())
             };
             if guard.active.get(&active_key) == Some(&snapshot.id) {
@@ -451,8 +632,12 @@ impl TaskCenter {
         true
     }
 
-    /// Apply a progress/terminal report (renderer-executor protocol; a no-op
-    /// path for server-run jobs, kept for wire compatibility).
+    /// Apply a renderer-executor report (`job_report`).
+    ///
+    /// Progress/phase updates only touch a running row; a terminal state is
+    /// applied at most once. Late or duplicate reports (the browser may retry
+    /// after a reload) are accepted idempotently and return the current
+    /// snapshot; only unknown job ids return `None`.
     pub fn report(
         &self,
         job_id: &str,
@@ -461,43 +646,75 @@ impl TaskCenter {
         error: Option<String>,
         state: Option<JobState>,
     ) -> Option<JobSnapshot> {
-        let snapshot = {
+        let (snapshot, terminal_event) = {
             let mut guard = self.lock();
-            let (snapshot, active_key, terminal) = {
-                let job = guard.jobs.get_mut(job_id)?;
-                if job.snapshot.state != JobState::Running {
-                    return None;
-                }
-                if let Some(progress) = progress {
-                    job.snapshot.progress = Some(progress.clamp(0.0, 100.0));
-                }
-                if let Some(phase) = phase {
-                    job.snapshot.phase = Some(phase);
-                }
-                if let Some(error) = error {
-                    job.snapshot.error = Some(error);
-                }
-                if let Some(next) = state {
-                    job.snapshot.state = next;
-                }
-                (
-                    job.snapshot.clone(),
-                    job.active_key.clone(),
-                    job.snapshot.state.is_terminal(),
-                )
+            let Some(job) = guard.jobs.get_mut(job_id) else {
+                return None;
             };
-            if terminal {
+            if job.snapshot.state != JobState::Running {
+                // Settled (or never started): idempotent late report.
+                return Some(job.snapshot.clone());
+            }
+            if let Some(progress) = progress {
+                job.snapshot.progress = Some(progress.clamp(0.0, 100.0));
+            }
+            if let Some(phase) = phase {
+                job.snapshot.phase = Some(phase);
+            }
+            if let Some(error) = error {
+                job.snapshot.error = Some(error);
+            }
+            let mut terminal_event = None;
+            if let Some(next) = state {
+                job.snapshot.state = next;
+                if next.is_terminal() {
+                    let error = job.snapshot.error.clone();
+                    match next {
+                        JobState::Succeeded => {
+                            job.snapshot.progress = Some(100.0);
+                            job.snapshot.phase = Some("completed".to_string());
+                            job.snapshot.error = None;
+                            terminal_event = Some(JOB_COMPLETED_EVENT);
+                        }
+                        JobState::Failed => {
+                            job.snapshot.phase = Some("failed".to_string());
+                            job.snapshot.error = error;
+                            terminal_event = Some(JOB_FAILED_EVENT);
+                        }
+                        JobState::Cancelled => {
+                            job.snapshot.progress = None;
+                            job.snapshot.phase = Some("cancelled".to_string());
+                        }
+                        JobState::Skipped => {
+                            job.snapshot.progress = None;
+                            job.snapshot.phase = Some("skipped".to_string());
+                        }
+                        JobState::Queued | JobState::Running => {}
+                    }
+                }
+            }
+            let snapshot = job.snapshot.clone();
+            let active_key = job.active_key.clone();
+            if let Some(notify) = &job.settle {
+                notify.notify_waiters();
+            }
+            if terminal_event.is_some() {
                 if guard.active.get(&active_key) == Some(&snapshot.id) {
                     guard.active.remove(&active_key);
                 }
                 guard.cancelled.remove(&snapshot.id);
             }
-            snapshot
+            (snapshot, terminal_event)
         };
-        // This snapshot is emitted without the terminal-only lifecycle event:
-        // server-run jobs go through `finish`; renderer reports are never
-        // terminal in v1.
         self.emit_changed(&snapshot);
+        if let Some(event) = terminal_event {
+            let error = if event == JOB_FAILED_EVENT {
+                snapshot.error.clone()
+            } else {
+                None
+            };
+            self.emit_terminal(&snapshot, event, error);
+        }
         Some(snapshot)
     }
 
@@ -674,6 +891,15 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+fn renderer_timeout_from_env() -> Duration {
+    std::env::var(ENV_JOB_OFFER_TIMEOUT_SECS)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|seconds| *seconds > 0)
+        .map(Duration::from_secs)
+        .unwrap_or(DEFAULT_JOB_OFFER_TIMEOUT)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -785,4 +1011,144 @@ mod tests {
         assert_eq!(first.id, second.id);
         assert_eq!(center.list(None, None).len(), 1);
     }
+
+    #[tokio::test]
+    async fn renderer_offer_reports_progress_and_completes() {
+        let (center, mut rx) = center();
+        let center = center.with_renderer_timeout(Duration::from_secs(30));
+        let spec = JobSpec::new(JobKind::Import, &vault())
+            .expect("spec")
+            .paper_path("papers")
+            .params(Some(serde_json::json!({ "mode": "lookup", "text": "1706.03762" })));
+        let offered = center.spawn_renderer(spec);
+        assert!(offered.created);
+        assert_eq!(offered.snapshot.state, JobState::Running);
+        assert_eq!(offered.snapshot.host, ExecHost::Renderer);
+        assert_eq!(offered.snapshot.paper_path.as_deref(), Some("papers"));
+        // The job is listable while the browser executes it (browser boot
+        // re-claims running offers through `job_list`).
+        assert_eq!(center.list(None, None).len(), 1);
+
+        let progress = center
+            .report(
+                &offered.snapshot.id,
+                Some(42.0),
+                Some("fetching".to_string()),
+                None,
+                None,
+            )
+            .expect("progress report");
+        assert_eq!(progress.state, JobState::Running);
+        assert_eq!(progress.progress, Some(42.0));
+        assert_eq!(progress.phase.as_deref(), Some("fetching"));
+
+        let done = center
+            .report(
+                &offered.snapshot.id,
+                Some(100.0),
+                None,
+                None,
+                Some(JobState::Succeeded),
+            )
+            .expect("terminal report");
+        assert_eq!(done.state, JobState::Succeeded);
+        assert_eq!(done.progress, Some(100.0));
+        assert_eq!(done.phase.as_deref(), Some("completed"));
+
+        // Late duplicate report is accepted idempotently and cannot move a
+        // settled job back to running.
+        let late = center
+            .report(&offered.snapshot.id, Some(10.0), None, None, Some(JobState::Failed))
+            .expect("late report");
+        assert_eq!(late.state, JobState::Succeeded);
+        assert_eq!(late.progress, Some(100.0));
+
+        let frames = drain(&mut rx);
+        assert!(frames.iter().any(|frame| frame.event == JOB_CHANGED_EVENT));
+        assert_eq!(
+            frames
+                .iter()
+                .filter(|frame| frame.event == JOB_COMPLETED_EVENT)
+                .count(),
+            1,
+            "terminal lifecycle event must be emitted exactly once"
+        );
+        assert!(!frames.iter().any(|frame| frame.event == JOB_FAILED_EVENT));
+    }
+
+    #[tokio::test]
+    async fn renderer_offer_times_out_when_unreported() {
+        let (center, mut rx) = center();
+        let center = center.with_renderer_timeout(Duration::from_millis(150));
+        let offered = center.spawn_renderer(
+            JobSpec::new(JobKind::LayoutAnalyze, &vault())
+                .expect("spec")
+                .paper_path("papers/a"),
+        );
+        let settled = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(snapshot) = center.snapshot(&offered.snapshot.id) {
+                    if snapshot.state.is_terminal() {
+                        break snapshot;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("watchdog settles the unreported offer");
+        assert_eq!(settled.state, JobState::Failed);
+        assert!(
+            settled
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("renderer job report timeout"),
+            "unexpected timeout error: {:?}",
+            settled.error
+        );
+        let frames = drain(&mut rx);
+        assert!(frames.iter().any(|frame| frame.event == JOB_FAILED_EVENT));
+    }
+
+    #[tokio::test]
+    async fn renderer_offer_cancel_settles_and_dedupes() {
+        let (center, _rx) = center();
+        let center = center.with_renderer_timeout(Duration::from_secs(30));
+        let spec = JobSpec::new(JobKind::CitingScan, &vault()).expect("spec");
+        let first = center.spawn_renderer(spec.clone());
+        // Re-enqueueing while the browser still runs it reuses the active job.
+        let reused = center.spawn_renderer(spec);
+        assert!(!reused.created);
+        assert_eq!(reused.snapshot.id, first.snapshot.id);
+        assert_eq!(center.list(None, None).len(), 1);
+
+        assert!(center.cancel(&first.snapshot.id));
+        let cancelled = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let state = center.snapshot(&first.snapshot.id).map(|snapshot| snapshot.state);
+                if state == Some(JobState::Cancelled) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        assert!(cancelled.is_ok(), "watcher must observe the cancellation");
+        // A cancelled job cannot be cancelled twice and reports stay idempotent.
+        assert!(!center.cancel(&first.snapshot.id));
+        assert_eq!(
+            center
+                .report(
+                    &first.snapshot.id,
+                    None,
+                    None,
+                    None,
+                    Some(JobState::Succeeded)
+                )
+                .map(|snapshot| snapshot.state),
+            Some(JobState::Cancelled)
+        );
+    }
+
 }
