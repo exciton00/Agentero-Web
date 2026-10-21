@@ -132,7 +132,14 @@ export function SettingsNativeRoot() {
 						size="sm"
 						className="gap-1.5"
 						onClick={() => {
-							window.location.href = "/";
+							// The gear opens settings with `window.open(..., "_blank")`, so
+							// this tab can close itself and leave the workbench tab intact.
+							// A settings tab opened by hand cannot be script-closed; fall
+							// back to navigating to the workspace in that case.
+							window.close();
+							window.setTimeout(() => {
+								if (!window.closed) window.location.href = "/";
+							}, 0);
 						}}
 					>
 						<ArrowLeft className="size-4" aria-hidden />

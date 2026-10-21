@@ -5,7 +5,10 @@
  */
 
 import { type RefObject, useEffect, useMemo, useRef } from "react";
-import { usePanelRef } from "react-resizable-panels";
+import {
+	type PanelImperativeHandle,
+	usePanelRef,
+} from "react-resizable-panels";
 import {
 	getShellLayoutPrefs,
 	type RailLimits,
@@ -105,6 +108,43 @@ export function useShellLayout(vaultPath: string | null = null): ShellLayout {
 		/** Pre-reading arrangement, restored when reading is toggled off. */
 		let readingSnapshot: ReadingSnapshot | null = null;
 
+		/** Latest requested rail visibility; frame-deferred resizes check it so a
+		 * fast show → hide toggle cannot reopen a rail after the collapse. */
+		const desiredRail = {
+			leftCollapsed: uiStore.getState().sidebarCollapsed,
+			rightOpen: uiStore.getState().rightSidebarOpen,
+		};
+
+		/**
+		 * Expand a collapsed rail and pin it to `targetPx`.
+		 *
+		 * `expand()` is a no-op when the panel library still believes the panel is
+		 * expanded (it can lag a collapse → show round-trip), which would leave the
+		 * rail at 0 and the separator inert. Re-assert on the next animation frames
+		 * so the final layout is always the requested expanded width.
+		 */
+		const expandAndResize = (
+			panel: PanelImperativeHandle | null,
+			targetPx: number,
+			isStillWanted: () => boolean,
+		) => {
+			if (!panel) return;
+			const apply = () => {
+				if (!isStillWanted()) return;
+				try {
+					if (panel.isCollapsed()) panel.expand();
+					panel.resize(targetPx);
+				} catch {
+					// Panel unmounted mid-frame; the next layout pass re-applies.
+				}
+			};
+			apply();
+			requestAnimationFrame(() => {
+				apply();
+				requestAnimationFrame(apply);
+			});
+		};
+
 		const rememberedWidths = () =>
 			railWidthsForSlot(
 				getShellLayoutPrefs(),
@@ -116,6 +156,7 @@ export function useShellLayout(vaultPath: string | null = null): ShellLayout {
 
 		/** Collapse / expand left file-tree panel without remounting. */
 		const setLeftCollapsed = (collapsed: boolean) => {
+			desiredRail.leftCollapsed = collapsed;
 			const panel = sidebarPanelRef.current;
 			if (panel) {
 				if (collapsed) {
@@ -128,12 +169,7 @@ export function useShellLayout(vaultPath: string | null = null): ShellLayout {
 					const targetPx =
 						rememberedWidths().leftPx ??
 						(leftWidthPxRef.current || SIDEBAR_DEFAULT_PX);
-					try {
-						panel.expand();
-						panel.resize(targetPx);
-					} catch {
-						// ignore
-					}
+					expandAndResize(panel, targetPx, () => !desiredRail.leftCollapsed);
 					// expand() fires onResize synchronously and may overwrite the
 					// remembered width with the library's default expand size.
 					leftWidthPxRef.current = targetPx;
@@ -147,6 +183,7 @@ export function useShellLayout(vaultPath: string | null = null): ShellLayout {
 			collapsed: boolean,
 			_opts?: { focusAgent?: boolean },
 		) => {
+			desiredRail.rightOpen = !collapsed;
 			const panel = rightSidebarPanelRef.current;
 			if (panel) {
 				if (collapsed) {
@@ -159,12 +196,7 @@ export function useShellLayout(vaultPath: string | null = null): ShellLayout {
 					const targetPx =
 						rememberedWidths().rightPx ??
 						(rightWidthPxRef.current || RIGHT_SIDEBAR_DEFAULT_PX);
-					try {
-						panel.expand();
-						panel.resize(targetPx);
-					} catch {
-						// ignore
-					}
+					expandAndResize(panel, targetPx, () => desiredRail.rightOpen);
 					rightWidthPxRef.current = targetPx;
 				}
 			}
@@ -173,14 +205,10 @@ export function useShellLayout(vaultPath: string | null = null): ShellLayout {
 
 		/** Expand + resize the Agent rail to an absolute pixel width. */
 		const setRightPx = (px: number) => {
+			desiredRail.rightOpen = true;
 			const panel = rightSidebarPanelRef.current;
 			if (!panel) return;
-			try {
-				panel.expand();
-				panel.resize(px);
-			} catch {
-				// ignore
-			}
+			expandAndResize(panel, px, () => desiredRail.rightOpen);
 			rightWidthPxRef.current = px;
 			setRightSidebarOpenState(true);
 		};

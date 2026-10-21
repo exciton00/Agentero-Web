@@ -882,7 +882,9 @@ function BibtexMountSection({
 					? t("experimental.bibtexMount.dirs.none")
 					: undefined;
 
-	const mountPath = `/${mount.format}`;
+	// One stable mount path for both bibliography flavours; the selected
+	// format decides the serialized entry style.
+	const mountPath = "/agentero_online.bib";
 	const feedbackText =
 		saveStatus === "saving"
 			? t("experimental.bibtexMount.save.saving")

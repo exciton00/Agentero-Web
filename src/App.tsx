@@ -60,7 +60,12 @@ import {
 import { runSelectionQuickChat } from "@/lib/agent/selection-quick-chat";
 import { pinActiveSelection } from "@/lib/agent/selection-store";
 import { closeTopOverlay } from "@/lib/core/overlay-stack";
-import { hasHostTransport, isMacOS, isTauri, isWebHost } from "@/lib/core/tauri";
+import {
+	hasHostTransport,
+	isMacOS,
+	isTauri,
+	isWebHost,
+} from "@/lib/core/tauri";
 import { doctorSetDirtyPaths } from "@/lib/doctor/api";
 import { openMagicWand } from "@/lib/paper/import-actions";
 import { scheduleLibraryRefresh } from "@/lib/paper/library-store";
@@ -508,11 +513,22 @@ export default function App() {
 									</aside>
 								</ResizablePanel>
 
-								{sidebarCollapsed ? null : (
-									<ResizableHandle
-										onDoubleClick={() => commitRailReset("left")}
-									/>
-								)}
+								{/*
+								  Always mounted: unmounting the separator on collapse used
+								  to leave the rail undraggable after hide → show (the Group
+								  re-registers its children and the remounted separator could
+								  stay inert). A disabled, zero-width separator is the safe
+								  collapse state; `disabled` is re-asserted to false on show.
+								*/}
+								<ResizableHandle
+									disabled={sidebarCollapsed}
+									style={
+										sidebarCollapsed
+											? { width: 0, opacity: 0, pointerEvents: "none" }
+											: undefined
+									}
+									onDoubleClick={() => commitRailReset("left")}
+								/>
 							</Fragment>
 						) : null}
 
@@ -539,10 +555,18 @@ export default function App() {
 							</div>
 						</ResizablePanel>
 
-						{/* Right sidebar: always mounted + collapsible (same as left). */}
-						{rightSidebarOpen ? (
-							<ResizableHandle onDoubleClick={() => commitRailReset("right")} />
-						) : null}
+						{/* Right sidebar: always mounted + collapsible (same as left).
+						    The separator stays mounted while closed for the same reason as
+						    the left rail — hide → show must keep the rail draggable. */}
+						<ResizableHandle
+							disabled={!rightSidebarOpen}
+							style={
+								rightSidebarOpen
+									? undefined
+									: { width: 0, opacity: 0, pointerEvents: "none" }
+							}
+							onDoubleClick={() => commitRailReset("right")}
+						/>
 						<ResizablePanel
 							id="right-sidebar"
 							panelRef={rightSidebarPanelRef}
