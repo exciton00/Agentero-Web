@@ -42,6 +42,7 @@ desktop = [
   "dep:rmcp",
   "dep:schemars",
   "dep:rtex-core",
+  "agentero-core/schemars",
 ]
 
 [build-dependencies]

@@ -29,6 +29,9 @@ async-trait = "0.1.91"
 # `error::ApiResult` and `features::translate` models derive `specta::Type`
 # for the IPC contract; specta is lightweight and pulls in no wry/tao/tauri.
 specta = { version = "2.0.0-rc.22", features = ["derive", "chrono"] }
+# `schemars::JsonSchema` for DTOs reused by the desktop MCP tool layer. Kept
+# optional so the Web host / CLI do not pay for schema generation.
+schemars = { version = "1", optional = true }
 which = "7"
 # Migrated domain features (import asset unpack, feeds body extraction,
 # wiki/vault walks, citation fingerprints, scholar API queries, …).
@@ -73,3 +76,8 @@ liteparse-pdfium = "1.7"
 # target deps do not transfer from the `agentero` crate, so declare it here too.
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
+
+[features]
+default = []
+# Derive `schemars::JsonSchema` for DTOs exposed through the desktop MCP tools.
+schemars = ["dep:schemars"]
