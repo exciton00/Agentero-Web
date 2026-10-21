@@ -1,6 +1,6 @@
 # Headless Web UI（可自部署）
 
-状态：**实施中**（`feat/webui` 分支，基线 `origin/main`）。
+状态：**实施中**（`feat/webui` 分支，基线 `origin/main`）。M0 已跑通：浏览器打开 headless 服务端可以看到真实 Vault 文件树、论文库、PDF 阅读、NOTES 编辑与 Agent 面板。
 
 目标：把 Agentero 变成一个**可自部署的 headless Web 服务**——部署在 NAS/VPS（优先 Docker Compose），浏览器访问完整工作台；数据仍在 Vault 目录（文件 + `catalog.sqlite`），服务端单用户运行。
 
@@ -44,7 +44,8 @@ agentero-core（已有，tauri-free）
 | crate | 说明 |
 |---|---|
 | `crates/agentero-core` | 已有。**本次把 `features::system::{settings,builtin}` 从 `src-tauri` 迁入**（tauri-free，桌面与 Web 共用同一份 `settings.json` 语义） |
-| `crates/agentero-web` | **新增**。axum 服务端二进制 `agentero-web`；只依赖 `agentero-core` + axum/tokio/serde，不依赖 tauri |
+| `crates/agentero-web` | **新增**。axum 服务端二进制 `agentero-web`；只依赖 `agentero-core` + axum/tokio/serde，不依赖 tauri。已实现 60+ 条 RPC（settings/vault/paper/trash/wiki/search/marks/download）+ 文件端点 + WS 事件 + watcher + 任务中心 + 云同步 |
+| `crates/agentero-host` | **新增**。桌面 BYOA/ACP Agent 域的 tauri-free 移植（20.6K LOC，42 文件，0 tauri 依赖），`HostSink`/`Host` 三接缝抽象，`AgentHost` 门面覆盖 29 条命令 + 18 个事件；web 侧 handler 待接入 |
 | `src-tauri` | 桌面壳保持可用（只改 settings/builtin 的 re-export） |
 
 ### 2.2 HTTP / WS 协议
@@ -96,13 +97,20 @@ agentero-core（已有，tauri-free）
 
 | 里程碑 | 内容 | 验收 |
 |---|---|---|
-| **M0 骨架** | `agentero-web` crate：axum 启动、静态托管、RPC 分发器、WS 事件总线、`/api/file`；前端 transport 垫片；`settings_get/set`、`vault_tree_build`、`paper_list` 三条命令 | 浏览器打开服务，渲染应用壳 + 真实 Vault 文件树 + 论文库 |
-| **M1 只读闭环** | vault 文件读写、论文详情、PDF 阅读、笔记查看、搜索、watcher 文件变更事件、多标签 | 浏览器里完成"打开论文 → 读 PDF → 看 NOTES" |
+| **M0 骨架** ✅ | `agentero-web` crate：axum 启动、静态托管、RPC 分发器、WS 事件总线、`/api/file`；前端 transport 垫片；settings / vault 树 / 论文库 | 已完成：浏览器打开服务，渲染应用壳 + 真实 Vault 文件树 + 论文库（截图见 PR 描述） |
+| **M1 只读闭环** ✅（写入联调中） | vault 文件读写、论文详情、PDF 阅读、笔记查看/编辑、搜索、watcher 文件变更事件、多标签 | 已验证：打开论文 → PDF 渲染（9 页/缩放）→ NOTES 编辑 → 论文库 1 行 → Agent 面板；设置页可读 |
 | **M2 写闭环** | 笔记编辑保存、标签/已读/元数据、导入（标识符/PDF）、任务中心与进度、回收站 | 浏览器里完成"导入一篇 arXiv → 写笔记 → 打标签" |
-| **M3 Agent + 同步** | Agent 域移植（ACP 子进程、流式、权限、会话）、云同步、设置项、主题/i18n | 浏览器里与服务器上的 Agent 对话；S3 同步可用 |
+| **M3 Agent + 同步**（进行中） | Agent 域已移植为 `crates/agentero-host`（20.6K LOC，0 tauri 依赖，229+7 测试通过）；云同步 RPC 已接 core（本地 bare git 仓库 e2e 通过）；剩余：32 条 `agent_*` RPC handler + sessionId→label 路由（约 2–3 人日） | 浏览器里与服务器上的 Agent 对话；S3/WebDAV 同步可用 |
 | **M4 部署交付** | Dockerfile / compose、环境变量、健康检查、文档、备份说明 | `docker compose up` 在 NAS 上跑通全流程 |
 
-## 5. 待确认 / 需要产品决策
+## 5. 进度快照（2026-10-21）
+
+- 服务端：`POST /api/rpc` 60+ 条命令、`/api/events` WS（定向路由 + 断连清理）、`/api/file|dir|upload|mkdir|rename`、watcher、任务中心、云同步、静态托管。
+- 前端：16 个传输垫片模块；`isTauri()` 分诊 158 处 → `hasHostTransport()`（保留 144 处真桌面能力）；`pnpm build:web` 产物由服务端托管。
+- Agent：`crates/agentero-host` 完成移植（229 lib + 7 集成测试通过），剩余 web handler 接入。
+- 部署：Dockerfile（三阶段：SPA / Rust / runtime 含 Node + PDFium）、docker-compose、自托管文档。
+
+## 6. 待确认 / 需要产品决策
 
 1. **版面分析（ONNX）**：v1 暂缓是否可接受？（影响 Figures 侧栏、区域批注）
 2. **站点代理/广场**：arXiv、Cool Papers、ModelScope 的网页内嵌阅读是否要保留？（需要服务端反代 + SSRF allowlist）
@@ -110,7 +118,7 @@ agentero-core（已有，tauri-free）
 4. **LaTeX 编译**（rtex）：服务端需装 TeX Live，镜像 +1GB；是否需要？
 5. **Agent 安装方式**：镜像内置 Node + ACP adapters，用户自己装 claude/codex CLI（挂载或登录）——可接受吗？
 
-## 6. 风险
+## 7. 风险
 
 - **Agent 移植**是最大块（22K LOC，WebviewWindow/AppHandle 解耦），也是"产品灵魂"，优先做技术验证。
 - **写并发**：catalog 单写者；多标签同 Vault 写同一文件需靠现有保存冲突检查。
@@ -118,7 +126,7 @@ agentero-core（已有，tauri-free）
 - **部署依赖**：pdfium `.so`（liteparse）、Node 22 + ACP adapters、TeX（可选）、ONNX 模型（若启用）。
 - **上游漂移**：`feat/webui` 需定期 rebase `origin/main`；settings 迁 core 是一次上游友好的重构。
 
-## 7. 开发约定
+## 8. 开发约定
 
 - 命令名 / 参数 / 返回结构**必须**与 `src/lib/core/bindings.ts` 一致；新增命令先改前端契约。
 - 事件名 / payload 必须与 `events_contract.rs` 一致（45 个）。

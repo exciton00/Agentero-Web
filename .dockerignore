@@ -1,0 +1,20 @@
+# Build artifacts / dependencies
+target
+node_modules
+dist
+dist-ssr
+src-tauri/target
+src-tauri/pdfium
+src-tauri/adapters
+src-tauri/gen
+src-tauri/binaries
+# VCS / docs-heavy / local state
+.git
+.github
+docs/assets
+test
+tmp
+vault
+data
+*.log
+.DS_Store

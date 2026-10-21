@@ -1,0 +1,89 @@
+# 自部署 Web 版（headless）
+
+Agentero 的 headless Web 宿主把同一个 Vault 与工作台界面跑在一台**常开的机器**上（NAS / VPS / 小主机），用浏览器访问。
+单用户设计：**不内置登录**，请在前面放一层反向代理做 TLS 与鉴权（Caddy / nginx / Tailscale）。
+
+> 状态：M0/M1 已跑通（Vault 树 / 论文库 / PDF 阅读 / NOTES 编辑 / 设置 / 文件端点 / watcher / 任务中心 / 云同步）。Agent 与部署镜像在收尾。设计见 [docs/development/webui.md](../development/webui.md)。
+
+## 快速开始（Docker Compose）
+
+```bash
+git clone <this repo> agentero && cd agentero
+# 1. 准备目录（NAS 上换成自己的路径）
+mkdir -p vault data
+# 2. 启动
+AGENTERO_VAULT_DIR=$PWD/vault AGENTERO_DATA_DIR=$PWD/data \
+  docker compose up -d --build
+# 3. 打开（默认只绑 loopback，见下面的反向代理）
+open http://127.0.0.1:8787
+```
+
+首次访问会进入欢迎页；在 VAULT 目录里新建/打开一个 Vault 即可（也可以复用已有 Vault：把 `AGENTERO_VAULT_DIR` 指向它）。
+
+## 反向代理（推荐）
+
+Caddy 示例（自动 HTTPS + basic auth）：
+
+```caddyfile
+agentero.example.com {
+    basic_auth {
+        you $2a$14$<bcrypt-hash>
+    }
+    reverse_proxy 127.0.0.1:8787
+}
+```
+
+nginx 示例：
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8787;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;   # WebSocket /api/events
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $host;
+}
+```
+
+WebSocket（`/api/events`）必须支持 Upgrade，否则前端事件（流式输出、文件变更、任务进度）不会工作。
+
+## 环境变量
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `AGENTERO_WEB_ADDR` | `127.0.0.1:8787` | 监听地址；容器内用 `0.0.0.0:8787` |
+| `AGENTERO_WEB_VAULT` | `~/Agentero` | 默认 Vault 根（命令仍以显式 `vaultPath` 为准，此值用于文件端点与首屏） |
+| `AGENTERO_WEB_DIST` | `./dist` | 前端构建产物目录（`pnpm build:web`） |
+| `AGENTERO_WEB_ALLOW_ROOTS` | 空 | 额外允许文件端点读写的根目录，`:` 或 `,` 分隔 |
+| `XDG_CONFIG_HOME` / `XDG_DATA_HOME` / `XDG_CACHE_HOME` | 系统默认 | 设置、使用记录、模型缓存；容器里建议挂到持久卷 |
+| `RUST_LOG` | `info` | 日志级别 |
+
+## 数据布局
+
+| 内容 | 位置 |
+|---|---|
+| 文献与笔记 | `AGENTERO_WEB_VAULT`（标准 Markdown/PDF + `.agentero/catalog.sqlite`） |
+| 设置 | `$XDG_CONFIG_HOME/agentero/settings.json` |
+| 使用记录 / 订阅 | `$XDG_DATA_HOME/agentero/*.sqlite` |
+| 模型 / 缓存 | `$XDG_CACHE_HOME/agentero/` |
+
+备份 = 拷贝 Vault 目录 + `data/`（XDG）目录；Vault 本身可被任何外部编辑器直接读取。
+
+## 裸机运行（systemd）
+
+```bash
+cargo build --release -p agentero-web
+pnpm build:web
+AGENTERO_WEB_ADDR=127.0.0.1:8787 \
+AGENTERO_WEB_VAULT=/srv/agentero/vault \
+AGENTERO_WEB_DIST=$PWD/dist \
+  ./target/release/agentero-web
+```
+
+`systemd` 单元里把这些环境变量写进 `Environment=` 即可；`PDFIUM_LIB_PATH` 指向 PDF 解析所需的 `libpdfium.so` 目录（镜像已内置）。
+
+## 已知边界（当前）
+
+- 单用户、无内置鉴权；不要直接把 8787 暴露到公网。
+- Agent（ACP）尚未接入；之后需要在镜像/服务器上安装 Node 22 与对应 CLI（claude / codex），凭据存服务器。
+- 版面分析（ONNX）、Zotero Connector、远程 Vault（SSH）、自动更新在 Web 版不可用或不移植。
