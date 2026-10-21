@@ -106,6 +106,18 @@ AGENTERO_WEB_DIST=$PWD/dist \
 - **git**：`gitRemote` 指向 NAS 上的 bare repo（如 `/srv/git/agentero-vault.git`）或 `ssh://nas/...`，凭据走系统 credential helper / SSH agent；无需对象存储即可多设备同步。
 - S3/WebDAV 凭据同样只存在服务器 XDG `sync.json`。
 
+## 按标签浏览文献
+
+服务端自动维护 `<vault>/.agentero/tag-index.json`（隐藏缓存，可随时删除重建）。侧边栏「论文库」下的「按标签展开」列出 vault 全部标签，点选一个或多个按 OR 过滤 Library；不选标签时 Library 只显示无标签文献（便于批量整理）。
+
+## BibTeX / BibLaTeX 网络挂载
+
+设置 → 实验功能 → 「BibTeX / BibLaTeX 文献网络挂载」：总开关打开后，按所选类型通过 `http(s)://<host>/bibtex` 或 `/biblatex` 实时提供当前 vault 的文献列表；挂载范围可用标签（OR）与目录（`papers` 或其子目录）组合过滤。序列化在服务端本地完成，不会把元数据发给第三方 translation-server。
+
+## 云同步自动运行
+
+设置 → 同步 配置后开启「自动同步」，服务端会按所选间隔在后台执行（`sync_get_status` 返回 `autoSyncNextRunAt`/`lastOutcome`/`lastError`，刷新页面不丢）；手动「立即同步」与自动任务互斥。
+
 ## 接入 Agent（服务器上跑 CLI）
 
 Agent 运行在服务器上（BYOA/ACP），浏览器只发指令、看流式输出、答权限弹窗：

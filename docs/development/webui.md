@@ -127,6 +127,20 @@ agentero-core（已有，tauri-free）
 - **renderer 任务协议**：`job_import_enqueue` 等改为 `job:offer`（定向标签）→ 浏览器执行 → `job_report`；WS 实测 offer→report→`job:changed`/`job:completed` 全链路；前端 Import 执行器与 layout 执行器已接入。
 - **LaTeX / Zotero / 站点代理**：均按决策隐藏或返回 unsupported（`detect_latex_engines=[]`、`zotero_scan` business error、Plaza 区块在 web 隐藏）。
 
+### 第二轮修复（2026-10-22）
+
+| # | 问题 | 修复 |
+|---|---|---|
+| 1 | 设置里 Plaza / Zotero Connector 仍可打开 | web 下强制关闭并标注「Web 版不可用」；connector 状态不再发 RPC |
+| 2 | 页面约 3 秒周期闪烁 | 根因：web 下自写文件事件回声（autosave PUT → watcher 广播回同标签 → 全量 refreshTree/读盘）。在 `file-change-gate` 丢弃本标签自写回声（TTL 2.5s），`plugin-fs` 写后登记路径；同场景全量树重建 51→1 |
+| 3 | 设置页没有返回工作台 | 设置 shell 顶部加「← 返回工作台」 |
+| 4 | 云同步面板不完整 | 三后端配置/状态卡/结果/冲突/范围字节+文件数；后端持久化 `lastOutcome`/`lastError`、`autoSyncNextRunAt`，并新增**服务端自动同步调度器**（autoSync + interval，与手动 sync 互斥） |
+| 5 | MinerU 保存后绿灯不亮 | `probeLayoutProvider` / `runProbe` 的 `isTauri()` 早退改为 `hasHostTransport()`，且 self-hosted（无 key）也探测；实测绿灯 `可用` |
+| 6 | 右键「在文件管理器中显示」 | web 下文件树/Library 菜单隐藏 Finder 项（终端项一并隐藏），快捷键面板同步隐藏 |
+| 7 | Library 单击直接打开 | 单击=选中（Paper Info 跟随）、双击/Enter=打开、↑↓ 移动；右键新增「添加标签」「上传/覆盖 PDF」（上传后 `paper_rescan` 刷新；rescan 现会清 caps 缓存，`has_pdf` 即时更新） |
+| 8 | 侧边栏按目录显示不直观 | 新增隐藏缓存 `<vault>/.agentero/tag-index.json`（懒重建+写路径刷新）与 RPC `tags_index_read`；`papers/` 下虚拟节点「按标签展开」列出全部 tag（色点+计数，多选）；Library 按选中 tag OR 过滤，未选 tag 时仅显示无 tag 文献（用户指定语义），顶部 chips 可清除 |
+| 9 | 需要 bibtex/biblatex 网络挂载 | 设置→实验功能新增挂载开关/类型/范围（tag OR + 目录前缀，AND 组合）；开启后 `GET /bibtex` 或 `GET /biblatex` 实时输出（本地序列化，**不经云端 translation-server**），`GET /api/bibtex/status` 供 UI 显示 |
+
 ### 尚未完成 / 下一轮
 
 - **魔棒入库的 renderer 任务**：桌面把 Import/LayoutAnalyze/CitingScan/LibraryIo/MetadataRefresh 通过 `job:offer` 交给前端执行；web 服务端目前只有 look-up 版本，导致浏览器魔法棒「按标识符导入」走 `job_import_enqueue` 后拿不到候选 picker。下一步在 TaskCenter 实现 `job:offer` → 浏览器 `job_report` 的 offer/claim/report 协议（前端执行器已存在），一次性打通魔棒、版面分析、引用扫描等 renderer 类任务。
