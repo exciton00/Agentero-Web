@@ -1,5 +1,5 @@
 [workspace]
-members = ["src-tauri", "cli", "crates/agentero-core"]
+members = ["src-tauri", "cli", "crates/agentero-core", "crates/agentero-web"]
 resolver = "2"
 
 # Shared dependencies declared once for both members (src-tauri / cli).

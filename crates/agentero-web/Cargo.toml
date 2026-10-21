@@ -1,0 +1,42 @@
+[package]
+name = "agentero-web"
+version = "0.12.0"
+edition = "2021"
+description = "Headless web host for Agentero (axum + agentero-core)"
+authors = ["you"]
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "agentero-web"
+path = "src/main.rs"
+
+[dependencies]
+# Tauri-free domain services shared with the desktop Host and the CLI.
+agentero-core = { path = "../agentero-core" }
+axum = { version = "0.8", default-features = false, features = [
+  "http1",
+  "json",
+  "query",
+  "tokio",
+  "ws",
+] }
+tokio = { workspace = true, features = [
+  "rt-multi-thread",
+  "macros",
+  "signal",
+  "net",
+  "fs",
+  "sync",
+  "time",
+  "io-util",
+  "process",
+] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+env_logger = "0.11"
+mime_guess = "2"
+dirs = { workspace = true }
+futures-util = { version = "0.3", features = ["sink"] }
+notify-debouncer-full = "0.3"
