@@ -5,6 +5,7 @@
 //! `target` (the issuing browser tab label) so per-window events such as
 //! `agent:*` and `vault:file-changed` can be routed instead of fanned out.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -25,16 +26,68 @@ pub struct EventFrame {
     pub payload: Value,
 }
 
+/// Tracks server-side Vault write bursts (task runner or a synchronous import /
+/// skill handler) so the filesystem watcher can hold its refresh frames until
+/// the burst settles.
+///
+/// A task materializes files in stages. Emitting one `vault:file-changed` frame
+/// per debounced batch made the renderer run its full refresh chain (disk
+/// re-read + tree list + catalog rescan + wiki rebuild) several times per task —
+/// the "auto refresh" users see during imports / asset downloads. The watcher
+/// reads [`is_active`](Self::is_active) and defers frames; when the last guard
+/// drops, the deferred paths are emitted as one merged payload.
+///
+/// Cheap to clone (one `Arc`); shared through the [`EventBus`].
+#[derive(Clone, Default)]
+pub struct WriteBurstTracker {
+    depth: Arc<AtomicUsize>,
+}
+
+impl WriteBurstTracker {
+    /// Mark a Vault write burst as in flight for the guard's lifetime.
+    pub fn guard(&self) -> WriteBurstGuard {
+        self.depth.fetch_add(1, Ordering::SeqCst);
+        WriteBurstGuard {
+            tracker: self.clone(),
+        }
+    }
+
+    /// True while at least one server-side write burst is in flight.
+    pub fn is_active(&self) -> bool {
+        self.depth.load(Ordering::SeqCst) > 0
+    }
+}
+
+/// RAII marker for one in-flight server-side Vault write burst.
+pub struct WriteBurstGuard {
+    tracker: WriteBurstTracker,
+}
+
+impl Drop for WriteBurstGuard {
+    fn drop(&mut self) {
+        self.tracker.depth.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// Fan-out bus for Host events. Cheap to clone (one broadcast sender).
 #[derive(Clone)]
 pub struct EventBus {
     tx: broadcast::Sender<EventFrame>,
+    write_burst: WriteBurstTracker,
 }
 
 impl EventBus {
     pub fn new() -> Self {
         let (tx, _rx) = broadcast::channel(4096);
-        Self { tx }
+        Self {
+            tx,
+            write_burst: WriteBurstTracker::default(),
+        }
+    }
+
+    /// Server-side Vault write burst tracker (see [`WriteBurstTracker`]).
+    pub fn write_burst(&self) -> &WriteBurstTracker {
+        &self.write_burst
     }
 
     pub fn emit<T: Serialize>(&self, event: &str, payload: &T) {

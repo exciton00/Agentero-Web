@@ -387,15 +387,25 @@ pub struct LayoutSettings {
     /// `openaiCompatible` | `agentero` (built-in).
     #[serde(default = "default_parser_backend")]
     pub parser_backend: String,
+    /// Page cap for remote layout analysis: PDFs with more pages are skipped
+    /// before upload. `0` = no limit. Settings → Layout edits this; the Web
+    /// host enforces it server-side so non-browser clients cannot bypass it.
+    #[serde(default)]
+    pub max_pages: u32,
     #[serde(default)]
     pub provider_configs: HashMap<String, LayoutProviderConfig>,
 }
+
+/// Upper bound accepted for [`LayoutSettings::max_pages`]; a hand-edited
+/// `settings.json` is clamped here instead of failing to load.
+const MAX_LAYOUT_MAX_PAGES: u32 = 10_000;
 
 impl Default for LayoutSettings {
     fn default() -> Self {
         Self {
             backend: default_layout_backend(),
             parser_backend: default_parser_backend(),
+            max_pages: 0,
             provider_configs: HashMap::new(),
         }
     }
@@ -969,6 +979,18 @@ impl AppSettingsStore {
             .unwrap_or(false)
     }
 
+    /// Remote layout-analysis page cap (`0` = unlimited).
+    ///
+    /// Clamped defensively: the accessor is also used before a hand-edited
+    /// `settings.json` has gone through [`normalize`].
+    pub fn layout_max_pages(&self) -> u32 {
+        self.inner
+            .lock()
+            .ok()
+            .map(|guard| guard.layout.max_pages.min(MAX_LAYOUT_MAX_PAGES))
+            .unwrap_or(0)
+    }
+
     /// Whether [`Self::embedding_config`] resolves to the built-in gateway.
     /// Callers that accept endpoint overrides must ignore them in this case:
     /// the key is shared rather than the user's own, so honouring an override
@@ -1509,6 +1531,9 @@ fn normalize(s: &mut AppSettings) {
         // fresh install.
         s.layout.parser_backend = "local".to_string();
     }
+    // Clamp rather than reset: an oversized hand-edited value would otherwise
+    // silently remove the guard the user asked for.
+    s.layout.max_pages = s.layout.max_pages.min(MAX_LAYOUT_MAX_PAGES);
     normalize_layout_provider_configs(&mut s.layout.provider_configs);
     s.dismissed_reminders =
         normalize_dismissed_reminders(std::mem::take(&mut s.dismissed_reminders));
@@ -1918,6 +1943,42 @@ mod tests {
         assert_eq!(
             s.layout.provider_configs.get("mineru").unwrap().language,
             "ch"
+        );
+    }
+
+    #[test]
+    fn normalize_layout_max_pages_clamps_and_keeps_old_config_unlimited() {
+        // Old settings.json without `layout.maxPages` decodes as unlimited.
+        let old: AppSettings =
+            serde_json::from_str(r#"{"layout":{"backend":"paddle"}}"#).expect("deserialize");
+        assert_eq!(old.layout.max_pages, 0);
+        let explicit: AppSettings =
+            serde_json::from_str(r#"{"layout":{"maxPages":12}}"#).expect("deserialize");
+        assert_eq!(explicit.layout.max_pages, 12);
+
+        let mut s = AppSettings::default();
+        assert_eq!(s.layout.max_pages, 0);
+        normalize(&mut s);
+        assert_eq!(s.layout.max_pages, 0, "default stays unlimited");
+
+        s.layout.max_pages = 42;
+        normalize(&mut s);
+        assert_eq!(s.layout.max_pages, 42);
+
+        // Hand-edited oversized values clamp instead of resetting the guard.
+        s.layout.max_pages = MAX_LAYOUT_MAX_PAGES + 1;
+        normalize(&mut s);
+        assert_eq!(s.layout.max_pages, MAX_LAYOUT_MAX_PAGES);
+
+        let store = AppSettingsStore::for_tests(s);
+        assert_eq!(store.layout_max_pages(), MAX_LAYOUT_MAX_PAGES);
+        let mut raw = AppSettings::default();
+        raw.layout.max_pages = MAX_LAYOUT_MAX_PAGES + 500;
+        let store = AppSettingsStore::for_tests(raw);
+        assert_eq!(
+            store.layout_max_pages(),
+            MAX_LAYOUT_MAX_PAGES,
+            "accessor clamps before normalize"
         );
     }
 

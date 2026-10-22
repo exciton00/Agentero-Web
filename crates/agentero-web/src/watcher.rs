@@ -15,11 +15,21 @@
 //! * atomic-write temps (`.agentero-rename-*`) count as content modifies;
 //! * internal state (`.agentero/`), VCS metadata (`.git/`), dependencies
 //!   (`node_modules/`) and mirrored sync-store artifacts are ignored.
+//!
+//! Headless difference: one debounced batch is emitted as **one** payload for
+//! all non-rename events (every touched path in `paths`), not one payload per
+//! OS event. A server task materializing a paper (PDF + TeX sources + NOTES +
+//! layout + marks …) writes dozens of files per batch; per-event frames made
+//! the renderer run its whole refresh chain once per file. Verified rename
+//! pairs stay separate payloads because the renderer repairs internal links
+//! from a single `{from,to}` pair.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use notify_debouncer_full::notify::event::{ModifyKind, RenameMode};
 use notify_debouncer_full::notify::{EventKind, RecursiveMode, Watcher};
@@ -32,8 +42,20 @@ use agentero_core::features::paper::capabilities::CapsCache;
 
 use crate::events::EventBus;
 
-/// Trailing quiet window before a batch of FS events is emitted to the UI.
+/// Trailing quiet window before a batch of FS events is collected.
 const DEBOUNCE: Duration = Duration::from_millis(300);
+
+/// Quiet window after the last collected batch before deferred frames are
+/// emitted. Together with [`DEBOUNCE`] this merges the staged writes of one
+/// task into a single renderer refresh.
+const DEFERRED_SETTLE: Duration = Duration::from_millis(150);
+
+/// While a server-side write burst keeps running, emit held frames at least
+/// this often so a long download never freezes the UI until it ends.
+const DEFERRED_MAX_HOLD: Duration = Duration::from_millis(2500);
+
+/// Poll interval of the per-watcher deferred-frame flusher thread.
+const DEFERRED_TICK: Duration = Duration::from_millis(50);
 
 /// Event name, unchanged from the desktop Host.
 pub const EVENT_FILE_CHANGED: &str = "vault:file-changed";
@@ -67,6 +89,11 @@ struct WatchEntry {
     labels: HashSet<String>,
     /// Dropped (and its thread joined) when the last label stops watching.
     debouncer: Option<WatchDebouncer>,
+    /// Frames held until the current write burst settles (shared with the
+    /// flusher thread).
+    deferred: Arc<Mutex<DeferredFrames>>,
+    /// Set when the entry is retired so the flusher thread exits.
+    flush_stop: Arc<AtomicBool>,
 }
 
 #[derive(Default)]
@@ -75,6 +102,97 @@ struct Watchers {
     by_root: HashMap<PathBuf, WatchEntry>,
     /// Tab label → canonical Vault root it is watching (one Vault per tab).
     by_label: HashMap<String, PathBuf>,
+}
+
+/// Frames of one watcher root waiting for the write burst to settle.
+///
+/// A server task writes its files in stages. Each 300 ms debounce batch used to
+/// reach the renderer immediately, which then ran a full refresh per stage — the
+/// "auto refresh" storm while importing or downloading assets. Frames are held
+/// while a [`crate::events::WriteBurstTracker`] burst is in flight and for a
+/// short quiet window after the last batch, then emitted as one merged payload.
+#[derive(Default)]
+struct DeferredFrames {
+    payloads: Vec<FileChangedPayload>,
+    /// Arrival time of the newest held batch (settle-window anchor).
+    last_event_at: Option<Instant>,
+    /// Arrival time of the oldest held batch (max-hold anchor).
+    first_event_at: Option<Instant>,
+}
+
+impl DeferredFrames {
+    fn push(&mut self, payloads: Vec<FileChangedPayload>, now: Instant) {
+        if payloads.is_empty() {
+            return;
+        }
+        self.first_event_at.get_or_insert(now);
+        self.last_event_at = Some(now);
+        self.payloads.extend(payloads);
+    }
+
+    fn is_empty(&self) -> bool {
+        self.payloads.is_empty()
+    }
+
+    /// True when the held frames should be emitted now: the write burst is
+    /// over and the filesystem went quiet, or the max-hold cap tripped.
+    fn ready(&self, write_burst_active: bool, now: Instant) -> bool {
+        let Some(last) = self.last_event_at else {
+            return false;
+        };
+        let max_held = self
+            .first_event_at
+            .is_some_and(|first| now.duration_since(first) >= DEFERRED_MAX_HOLD);
+        max_held || (!write_burst_active && now.duration_since(last) >= DEFERRED_SETTLE)
+    }
+
+    fn take_merged(&mut self) -> Vec<FileChangedPayload> {
+        self.last_event_at = None;
+        self.first_event_at = None;
+        merge_payloads(std::mem::take(&mut self.payloads))
+    }
+}
+
+/// Merge several already-batched payloads into the fewest equivalent frames.
+/// Verified renames keep their own payload (one `{from,to}` pair each); every
+/// other path merges into one payload, deduped, and a mixed-kind batch becomes
+/// `"other"` so the renderer still treats it as structural.
+fn merge_payloads(payloads: Vec<FileChangedPayload>) -> Vec<FileChangedPayload> {
+    let mut renames: Vec<FileChangedPayload> = Vec::new();
+    let mut paths: Vec<String> = Vec::new();
+    let mut seen_paths: HashSet<String> = HashSet::new();
+    let mut kinds: HashSet<String> = HashSet::new();
+
+    for payload in payloads {
+        if payload.rename.is_some() {
+            renames.push(payload);
+            continue;
+        }
+        kinds.insert(payload.kind);
+        for path in payload.paths {
+            if seen_paths.insert(path.clone()) {
+                paths.push(path);
+            }
+        }
+    }
+
+    let mut out = renames;
+    if !paths.is_empty() {
+        let kind = if kinds.len() == 1 {
+            kinds
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| "other".to_string())
+        } else {
+            "other".to_string()
+        };
+        out.push(FileChangedPayload {
+            paths,
+            kind,
+            rename: None,
+        });
+    }
+    out
 }
 
 /// Process-wide multi-tab Vault watcher registry.
@@ -124,17 +242,22 @@ impl FsWatchService {
             }
         }
 
-        let mut debouncer = Some(self.spawn_watcher(&key)?);
+        let (debouncer, deferred, flush_stop) = self.spawn_watcher(&key)?;
+        let mut debouncer = Some(debouncer);
         let mut watchers = self.lock()?;
         if let Some(entry) = watchers.by_root.get_mut(&key) {
-            // Lost a creation race with another request; reuse its watcher.
+            // Lost a creation race with another request; reuse its watcher and
+            // retire the one we just spawned (its flusher thread included).
             entry.labels.insert(label.to_string());
+            flush_stop.store(true, Ordering::Relaxed);
         } else {
             watchers.by_root.insert(
                 key.clone(),
                 WatchEntry {
                     labels: HashSet::from([label.to_string()]),
                     debouncer: debouncer.take(),
+                    deferred,
+                    flush_stop,
                 },
             );
         }
@@ -166,6 +289,9 @@ impl FsWatchService {
             };
             if empty {
                 if let Some(entry) = watchers.by_root.remove(&root) {
+                    // Stop the deferred-frame flusher before dropping the
+                    // debouncer (whose thread callback locks this registry).
+                    entry.flush_stop.store(true, Ordering::Relaxed);
                     to_drop = entry.debouncer;
                 }
             }
@@ -196,12 +322,25 @@ impl FsWatchService {
             .map_err(|_| "fs watch state lock poisoned".to_string())
     }
 
-    fn spawn_watcher(&self, root: &Path) -> Result<WatchDebouncer, String> {
+    /// Create the OS watcher plus its deferred-frame flusher.
+    ///
+    /// The debouncer callback only *collects* frames (and invalidates cached
+    /// paper capabilities); the flusher thread emits them once the current
+    /// server-side write burst settles, so one task costs one renderer refresh
+    /// instead of one per debounced batch.
+    #[allow(clippy::type_complexity)]
+    fn spawn_watcher(
+        &self,
+        root: &Path,
+    ) -> Result<(WatchDebouncer, Arc<Mutex<DeferredFrames>>, Arc<AtomicBool>), String> {
         let bus = self.bus.clone();
         let caps = self.caps.clone();
         let inner = self.inner.clone();
         let watched_root = root.to_path_buf();
+        let deferred = Arc::new(Mutex::new(DeferredFrames::default()));
 
+        let callback_deferred = deferred.clone();
+        let callback_root = watched_root.clone();
         let callback = move |result: DebounceEventResult| {
             let events = match result {
                 Ok(events) => events,
@@ -209,7 +348,7 @@ impl FsWatchService {
                     for error in errors {
                         log::warn!(
                             "vault watcher error root={}: {error}",
-                            watched_root.display()
+                            callback_root.display()
                         );
                     }
                     return;
@@ -219,22 +358,13 @@ impl FsWatchService {
             if payloads.is_empty() {
                 return;
             }
-            let labels: Vec<String> = match inner.lock() {
-                Ok(watchers) => watchers
-                    .by_root
-                    .get(&watched_root)
-                    .map(|entry| entry.labels.iter().cloned().collect())
-                    .unwrap_or_default(),
-                Err(_) => return,
-            };
-            if labels.is_empty() {
-                return;
-            }
+            // Capability invalidation is cheap and must track real disk state
+            // even while the UI refresh itself is deferred.
             for payload in &payloads {
-                invalidate_caps(&caps, &watched_root, &payload.paths);
-                for label in &labels {
-                    bus.emit_to(label, EVENT_FILE_CHANGED, payload);
-                }
+                invalidate_caps(&caps, &callback_root, &payload.paths);
+            }
+            if let Ok(mut pending) = callback_deferred.lock() {
+                pending.push(payloads, Instant::now());
             }
         };
 
@@ -247,7 +377,54 @@ impl FsWatchService {
         // File-id cache powers rename stitching on backends without rename
         // cookies (FSEvents / Windows) — same setup as notify-debouncer-full.
         debouncer.cache().add_root(root, RecursiveMode::Recursive);
-        Ok(debouncer)
+
+        // Flusher: emits the held frames as one payload once the active write
+        // burst (task runner / import handler) has settled.
+        let flush_stop = Arc::new(AtomicBool::new(false));
+        let flusher_stop = flush_stop.clone();
+        let flusher_deferred = deferred.clone();
+        let flusher_bus = bus.clone();
+        let flusher_inner = inner.clone();
+        let flusher_root = watched_root.clone();
+        thread::Builder::new()
+            .name("vault-watch-flusher".to_string())
+            .spawn(move || {
+                while !flusher_stop.load(Ordering::Relaxed) {
+                    thread::sleep(DEFERRED_TICK);
+                    let busy = flusher_bus.write_burst().is_active();
+                    let frames = match flusher_deferred.lock() {
+                        Ok(mut pending) => {
+                            if pending.is_empty() || !pending.ready(busy, Instant::now()) {
+                                continue;
+                            }
+                            pending.take_merged()
+                        }
+                        Err(_) => continue,
+                    };
+                    if frames.is_empty() {
+                        continue;
+                    }
+                    let labels: Vec<String> = match flusher_inner.lock() {
+                        Ok(watchers) => watchers
+                            .by_root
+                            .get(&flusher_root)
+                            .map(|entry| entry.labels.iter().cloned().collect())
+                            .unwrap_or_default(),
+                        Err(_) => continue,
+                    };
+                    if labels.is_empty() {
+                        continue;
+                    }
+                    for payload in &frames {
+                        for label in &labels {
+                            flusher_bus.emit_to(label, EVENT_FILE_CHANGED, payload);
+                        }
+                    }
+                }
+            })
+            .map_err(|error| format!("vault watcher flusher init failed: {error}"))?;
+
+        Ok((debouncer, deferred, flush_stop))
     }
 }
 
@@ -307,10 +484,26 @@ fn verified_rename_pair(kind: &EventKind, paths: &[String]) -> Option<FileRename
     })
 }
 
-/// Convert a debounced notify batch into one payload per event kind, dropping
-/// ignored paths and collapsing atomic-write temp churn into a modify.
+/// Convert a debounced notify batch into renderer payloads, dropping ignored
+/// paths and collapsing atomic-write temp churn into a modify.
+///
+/// All non-rename events in the batch merge into a single payload: a task that
+/// materializes a paper folder writes dozens of files, and one frame per file
+/// made the renderer re-read disk / re-list the tree / rescan the catalog once
+/// per file. Duplicate paths are collapsed, and the merged `kind` is the
+/// single shared kind when every merged event agrees, `"other"` when the batch
+/// mixes structural kinds (the renderer treats anything but `"modify"` as
+/// structural).
+///
+/// A trustworthy rename pair keeps its own payload: internal-link repair needs
+/// the one `{from,to}` pair, and a batch can contain several unrelated renames.
 fn payloads_from_events(events: Vec<DebouncedEvent>) -> Vec<FileChangedPayload> {
-    let mut out: Vec<FileChangedPayload> = Vec::new();
+    let mut renames: Vec<FileChangedPayload> = Vec::new();
+    let mut merged_paths: Vec<String> = Vec::new();
+    let mut seen_paths: HashSet<String> = HashSet::new();
+    // Kinds of the merged (non-rename) events in this batch.
+    let mut merged_kinds: HashSet<&'static str> = HashSet::new();
+
     for debounced in events {
         let event = debounced.event;
         let raw_paths: Vec<String> = event
@@ -331,20 +524,44 @@ fn payloads_from_events(events: Vec<DebouncedEvent>) -> Vec<FileChangedPayload> 
         if paths.is_empty() {
             continue;
         }
+        if !from_atomic_write {
+            if let Some(rename) = verified_rename_pair(&event.kind, &paths) {
+                renames.push(FileChangedPayload {
+                    paths,
+                    kind: "rename".to_string(),
+                    rename: Some(rename),
+                });
+                continue;
+            }
+        }
         let kind = if from_atomic_write {
             "modify"
         } else {
             kind_label(&event.kind)
         };
-        let rename = if from_atomic_write {
-            None
-        } else {
-            verified_rename_pair(&event.kind, &paths)
+        merged_kinds.insert(kind);
+        for path in paths {
+            if seen_paths.insert(path.clone()) {
+                merged_paths.push(path);
+            }
+        }
+    }
+
+    let mut out = renames;
+    if !merged_paths.is_empty() {
+        let kind = match merged_kinds.len() {
+            1 => merged_kinds
+                .iter()
+                .next()
+                .copied()
+                .unwrap_or("other")
+                .to_string(),
+            _ => "other".to_string(),
         };
         out.push(FileChangedPayload {
-            paths,
-            kind: kind.to_string(),
-            rename,
+            paths: merged_paths,
+            kind,
+            rename: None,
         });
     }
     out
@@ -383,6 +600,7 @@ fn invalidate_caps(caps: &CapsCache, vault_root: &Path, paths: &[String]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use notify_debouncer_full::notify::event::{CreateKind, DataChange};
     use notify_debouncer_full::notify::Event;
 
     fn debounced(kind: EventKind, paths: &[&str]) -> DebouncedEvent {
@@ -450,6 +668,192 @@ mod tests {
         let rename = payloads[0].rename.as_ref().expect("rename pair");
         assert_eq!(rename.from, "/vault/a.md");
         assert_eq!(rename.to, "/vault/b.md");
+    }
+
+    #[test]
+    fn one_batch_of_writes_emits_one_payload_with_every_path() {
+        // A task materializing a paper folder writes many files in one batch:
+        // the renderer must run its refresh chain once, not once per file.
+        let events = vec![
+            debounced(
+                EventKind::Create(CreateKind::File),
+                &["/vault/papers/p/PAPER.md"],
+            ),
+            debounced(
+                EventKind::Create(CreateKind::File),
+                &["/vault/papers/p/NOTES.md"],
+            ),
+            debounced(
+                EventKind::Create(CreateKind::File),
+                &["/vault/papers/p/source/layout.json"],
+            ),
+        ];
+        let payloads = payloads_from_events(events);
+        assert_eq!(payloads.len(), 1);
+        assert_eq!(payloads[0].kind, "create");
+        assert_eq!(
+            payloads[0].paths,
+            vec![
+                "/vault/papers/p/PAPER.md",
+                "/vault/papers/p/NOTES.md",
+                "/vault/papers/p/source/layout.json"
+            ]
+        );
+    }
+
+    #[test]
+    fn mixed_batch_kinds_merge_into_one_structural_payload() {
+        let events = vec![
+            debounced(
+                EventKind::Create(CreateKind::File),
+                &["/vault/papers/p/PAPER.md"],
+            ),
+            debounced(
+                EventKind::Modify(ModifyKind::Data(DataChange::Content)),
+                &["/vault/papers/p/NOTES.md"],
+            ),
+        ];
+        let payloads = payloads_from_events(events);
+        assert_eq!(payloads.len(), 1);
+        // Mixed kinds must stay structural so the tree refreshes.
+        assert_eq!(payloads[0].kind, "other");
+        assert_eq!(payloads[0].paths.len(), 2);
+    }
+
+    #[test]
+    fn duplicate_paths_in_one_batch_collapse() {
+        let modify = || debounced(EventKind::Modify(ModifyKind::Any), &["/vault/notes/a.md"]);
+        let payloads = payloads_from_events(vec![modify(), modify()]);
+        assert_eq!(payloads.len(), 1);
+        assert_eq!(payloads[0].paths, vec!["/vault/notes/a.md"]);
+        assert_eq!(payloads[0].kind, "modify");
+    }
+
+    #[test]
+    fn verified_renames_stay_separate_from_merged_writes() {
+        let events = vec![
+            debounced(
+                EventKind::Modify(ModifyKind::Name(RenameMode::Both)),
+                &["/vault/notes/old.md", "/vault/notes/new.md"],
+            ),
+            debounced(
+                EventKind::Create(CreateKind::File),
+                &["/vault/papers/p/PAPER.md"],
+            ),
+        ];
+        let payloads = payloads_from_events(events);
+        assert_eq!(payloads.len(), 2);
+        let rename = payloads
+            .iter()
+            .find(|payload| payload.kind == "rename")
+            .expect("rename payload");
+        assert_eq!(rename.paths.len(), 2);
+        assert!(rename.rename.is_some());
+        let merged = payloads
+            .iter()
+            .find(|payload| payload.kind == "create")
+            .expect("merged payload");
+        assert_eq!(merged.paths, vec!["/vault/papers/p/PAPER.md"]);
+    }
+
+    fn payload(kind: &str, paths: &[&str]) -> FileChangedPayload {
+        FileChangedPayload {
+            paths: paths.iter().map(|path| path.to_string()).collect(),
+            kind: kind.to_string(),
+            rename: None,
+        }
+    }
+
+    #[test]
+    fn deferred_frames_wait_for_the_write_burst_to_settle() {
+        let t0 = Instant::now();
+        let mut frames = DeferredFrames::default();
+        frames.push(vec![payload("create", &["/vault/papers/p/PAPER.md"])], t0);
+
+        // A task is still writing: never emit mid-burst.
+        assert!(!frames.ready(true, t0 + DEFERRED_SETTLE));
+        // Burst over, but the trailing settle window has not elapsed yet.
+        assert!(!frames.ready(false, t0 + DEFERRED_SETTLE / 2));
+        assert!(frames.ready(false, t0 + DEFERRED_SETTLE));
+
+        let merged = frames.take_merged();
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].paths, vec!["/vault/papers/p/PAPER.md"]);
+        assert!(frames.is_empty());
+    }
+
+    #[test]
+    fn long_write_burst_still_flushes_at_the_max_hold_cap() {
+        let t0 = Instant::now();
+        let mut frames = DeferredFrames::default();
+        frames.push(vec![payload("create", &["/vault/papers/p/a.pdf"])], t0);
+        frames.push(
+            vec![payload("create", &["/vault/papers/p/b.pdf"])],
+            t0 + DEFERRED_MAX_HOLD,
+        );
+        // Still busy, but the oldest frame has been held for the cap.
+        assert!(frames.ready(true, t0 + DEFERRED_MAX_HOLD));
+    }
+
+    #[test]
+    fn deferred_batches_merge_into_one_payload() {
+        let t0 = Instant::now();
+        let mut frames = DeferredFrames::default();
+        frames.push(
+            vec![
+                payload("create", &["/vault/papers/p/PAPER.md"]),
+                payload("modify", &["/vault/papers/p/NOTES.md"]),
+            ],
+            t0,
+        );
+        frames.push(
+            vec![payload(
+                "create",
+                &[
+                    "/vault/papers/p/PAPER.md",
+                    "/vault/papers/p/source/layout.json",
+                ],
+            )],
+            t0 + DEFERRED_SETTLE / 2,
+        );
+
+        let merged = frames.take_merged();
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].kind, "other");
+        assert_eq!(
+            merged[0].paths,
+            vec![
+                "/vault/papers/p/PAPER.md",
+                "/vault/papers/p/NOTES.md",
+                "/vault/papers/p/source/layout.json"
+            ]
+        );
+    }
+
+    #[test]
+    fn deferred_merge_keeps_verified_renames_separate() {
+        let t0 = Instant::now();
+        let mut frames = DeferredFrames::default();
+        frames.push(
+            vec![FileChangedPayload {
+                paths: vec!["/vault/a.md".to_string(), "/vault/b.md".to_string()],
+                kind: "rename".to_string(),
+                rename: Some(FileRename {
+                    from: "/vault/a.md".to_string(),
+                    to: "/vault/b.md".to_string(),
+                }),
+            }],
+            t0,
+        );
+        frames.push(vec![payload("create", &["/vault/c.md"])], t0);
+
+        let merged = frames.take_merged();
+        assert_eq!(merged.len(), 2);
+        assert!(merged.iter().any(|payload| payload.rename.is_some()));
+        assert!(merged
+            .iter()
+            .any(|payload| payload.kind == "create"
+                && payload.paths == vec!["/vault/c.md".to_string()]));
     }
 
     #[test]

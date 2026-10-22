@@ -26,6 +26,20 @@ pub struct PagesText {
     pub page_count: u32,
 }
 
+/// Number of pages in `pdf`, without extracting any page text.
+///
+/// Opens the document in PDFium (the same cheap metadata pass
+/// [`extract_text`] starts with). Callers that only need a size guard — e.g.
+/// the Web host rejecting a layout-analysis upload above `layout.maxPages` —
+/// should use this instead of a full text/layout pass.
+pub fn page_count(pdf: &[u8]) -> Result<u32, AppError> {
+    let lib = liteparse_pdfium::Library::init();
+    let doc = lib
+        .load_document_from_bytes(pdf, None)
+        .map_err(|e| AppError::message(format!("open pdf: {e:?}")))?;
+    Ok(doc.page_count().max(0) as u32)
+}
+
 /// Extract text for `pages` (1-based, deduplicated in given order) or all
 /// pages when `None`, truncating each page to `max_chars` characters.
 pub fn extract_text(
@@ -150,5 +164,11 @@ mod tests {
         // pages 2 and 9 are out of range (page_count = 1) and drop out;
         // the duplicate 1 collapses to one entry.
         assert_eq!(pages, vec![1], "out-of-range dropped, dedup kept order");
+    }
+
+    #[test]
+    fn page_count_opens_without_extracting_text() {
+        assert_eq!(page_count(&tiny_pdf("x")).expect("count"), 1);
+        assert!(page_count(b"not a pdf").is_err());
     }
 }

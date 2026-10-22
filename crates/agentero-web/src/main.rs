@@ -20,12 +20,107 @@ mod watcher;
 
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{DefaultBodyLimit, State};
+use axum::http::{header, Extensions, HeaderMap, StatusCode, Version};
 use axum::routing::{get, post};
 use axum::Router;
+use tower_http::compression::CompressionLayer;
 
 use crate::config::Config;
 use crate::state::AppState;
+
+/// Environment override for the `/api` request-body cap, in MiB.
+const ENV_MAX_BODY_MB: &str = "AGENTERO_WEB_MAX_BODY_MB";
+/// Match the desktop Host's layout-analysis upload ceiling: a 15-page PDF is
+/// ~10-30 MB once base64-encoded, far above axum's 2 MB default.
+const DEFAULT_MAX_BODY_MB: usize = 64;
+const MIN_MAX_BODY_MB: usize = 8;
+const MAX_MAX_BODY_MB: usize = 512;
+
+/// Resolve the `/api` body cap from `AGENTERO_WEB_MAX_BODY_MB`.
+///
+/// Out-of-range or non-numeric values fall back to the default instead of
+/// failing startup: a typo should not lock the user out of the server.
+fn resolve_max_body_mb(raw: Option<&str>) -> usize {
+    let Some(raw) = raw else {
+        return DEFAULT_MAX_BODY_MB;
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return DEFAULT_MAX_BODY_MB;
+    }
+    match trimmed.parse::<usize>() {
+        Ok(mb) if (MIN_MAX_BODY_MB..=MAX_MAX_BODY_MB).contains(&mb) => mb,
+        _ => DEFAULT_MAX_BODY_MB,
+    }
+}
+
+fn max_body_mb_from_env() -> usize {
+    let raw = std::env::var(ENV_MAX_BODY_MB).ok();
+    let mb = resolve_max_body_mb(raw.as_deref());
+    let valid = raw.as_deref().is_none_or(|raw| {
+        let trimmed = raw.trim();
+        trimmed.is_empty()
+            || trimmed
+                .parse::<usize>()
+                .is_ok_and(|mb| (MIN_MAX_BODY_MB..=MAX_MAX_BODY_MB).contains(&mb))
+    });
+    if !valid {
+        log::warn!(
+            "{ENV_MAX_BODY_MB} is invalid (expected {MIN_MAX_BODY_MB}..={MAX_MAX_BODY_MB} MiB); using {mb} MiB"
+        );
+    }
+    mb
+}
+
+/// Which response MIME types the compression layer may gzip/brotli.
+///
+/// PDFs, images, video and other already-compressed payloads are excluded:
+/// recompressing them burns CPU and removes `Accept-Ranges`, which the PDF
+/// viewer needs for range requests.
+fn compressible(
+    status: StatusCode,
+    _version: Version,
+    headers: &HeaderMap,
+    _extensions: &Extensions,
+) -> bool {
+    if status != StatusCode::OK {
+        return false;
+    }
+    if headers.contains_key(header::CONTENT_ENCODING) || headers.contains_key(header::CONTENT_RANGE)
+    {
+        return false;
+    }
+    let Some(content_type) = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return false;
+    };
+    let mime = content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    if mime == "text/event-stream" {
+        return false;
+    }
+    mime.starts_with("text/")
+        || matches!(
+            mime.as_str(),
+            "application/json"
+                | "application/manifest+json"
+                | "application/ld+json"
+                | "application/javascript"
+                | "application/xml"
+                | "application/xhtml+xml"
+                | "application/rss+xml"
+                | "application/atom+xml"
+                | "application/wasm"
+                | "image/svg+xml"
+        )
+}
 
 fn main() {
     // Domain code re-executes this binary as an isolated PDFium worker
@@ -68,6 +163,13 @@ async fn run() {
     // with the runtime on shutdown.
     state.sync.clone().start_auto_sync();
 
+    // axum caps `Bytes` bodies at 2 MB by default, which a 15-page PDF blows
+    // past once base64-encoded (`layout_remote_analyze_pdf`). The same cap
+    // covers `/upload` and `PUT /api/file` so large editor saves / imports work.
+    let max_body_mb = max_body_mb_from_env();
+    let max_body_bytes = max_body_mb * 1024 * 1024;
+    log::info!("agentero-web max body = {max_body_mb} MB");
+
     let api = Router::new()
         .route("/rpc/{command}", post(rpc::rpc_handler))
         .route("/events", get(events::ws_handler))
@@ -85,7 +187,8 @@ async fn run() {
         .route("/healthz", get(|| async { "ok" }))
         .route("/config", get(config_handler))
         // Experimental bibtex/biblatex network mount status (UI green light).
-        .route("/bibtex/status", get(handlers::bibtex::status_handler));
+        .route("/bibtex/status", get(handlers::bibtex::status_handler))
+        .layer(DefaultBodyLimit::max(max_body_bytes));
 
     let app = Router::new()
         // Experimental BibTeX/BibLaTeX network mount: one stable `.bib` URL for
@@ -97,7 +200,11 @@ async fn run() {
         )
         .nest("/api", api)
         .fallback(static_files::serve)
-        .with_state(state);
+        .with_state(state)
+        // gzip/brotli for JSON, Markdown, HTML and JS/CSS (the WebSocket and
+        // binary responses are skipped by `compressible`). `Router::layer`
+        // applies to the routes and fallback registered above.
+        .layer(CompressionLayer::new().compress_when(compressible));
 
     let listener = match tokio::net::TcpListener::bind(config.addr).await {
         Ok(listener) => listener,
@@ -146,4 +253,99 @@ async fn shutdown_signal() {
         _ = terminate => {},
     }
     log::info!("agentero-web shutting down");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{compressible, resolve_max_body_mb, DEFAULT_MAX_BODY_MB};
+    use axum::http::{header, HeaderMap, HeaderValue, StatusCode, Version};
+
+    #[test]
+    fn max_body_mb_defaults_and_override_range() {
+        assert_eq!(resolve_max_body_mb(None), DEFAULT_MAX_BODY_MB);
+        assert_eq!(resolve_max_body_mb(Some("")), DEFAULT_MAX_BODY_MB);
+        assert_eq!(resolve_max_body_mb(Some("  ")), DEFAULT_MAX_BODY_MB);
+        assert_eq!(resolve_max_body_mb(Some("64")), 64);
+        assert_eq!(resolve_max_body_mb(Some(" 96 ")), 96);
+        assert_eq!(resolve_max_body_mb(Some("8")), 8);
+        assert_eq!(resolve_max_body_mb(Some("512")), 512);
+    }
+
+    #[test]
+    fn max_body_mb_invalid_values_fall_back_to_default() {
+        for raw in ["7", "513", "0", "-8", "abc", "64MB", "1.5"] {
+            assert_eq!(
+                resolve_max_body_mb(Some(raw)),
+                DEFAULT_MAX_BODY_MB,
+                "invalid override {raw:?} must fall back"
+            );
+        }
+    }
+
+    fn headers_with(content_type: &'static str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+        headers
+    }
+
+    #[test]
+    fn compression_skips_binary_media() {
+        let status = StatusCode::OK;
+        let version = Version::HTTP_11;
+        let empty = axum::http::Extensions::new();
+        assert!(compressible(
+            status,
+            version,
+            &headers_with("application/json; charset=utf-8"),
+            &empty
+        ));
+        assert!(compressible(
+            status,
+            version,
+            &headers_with("text/html; charset=utf-8"),
+            &empty
+        ));
+        assert!(compressible(
+            status,
+            version,
+            &headers_with("image/svg+xml"),
+            &empty
+        ));
+        for mime in [
+            "application/pdf",
+            "image/png",
+            "image/jpeg",
+            "video/mp4",
+            "application/octet-stream",
+        ] {
+            assert!(
+                !compressible(status, version, &headers_with(mime), &empty),
+                "{mime} must not be recompressed"
+            );
+        }
+    }
+
+    #[test]
+    fn compression_skips_partial_and_non_ok_responses() {
+        let version = Version::HTTP_11;
+        let empty = axum::http::Extensions::new();
+        assert!(!compressible(
+            StatusCode::PARTIAL_CONTENT,
+            version,
+            &headers_with("application/json"),
+            &empty
+        ));
+        assert!(!compressible(
+            StatusCode::NOT_MODIFIED,
+            version,
+            &headers_with("application/json"),
+            &empty
+        ));
+        let mut range_headers = headers_with("application/json");
+        range_headers.insert(header::CONTENT_RANGE, HeaderValue::from_static("bytes 0-9/10"));
+        assert!(!compressible(StatusCode::OK, version, &range_headers, &empty));
+        let mut encoded = headers_with("application/json");
+        encoded.insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+        assert!(!compressible(StatusCode::OK, version, &encoded, &empty));
+    }
 }

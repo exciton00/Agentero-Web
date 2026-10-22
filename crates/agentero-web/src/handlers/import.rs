@@ -116,6 +116,10 @@ async fn paper_import_local_pdf(ctx: &RpcCtx, args: &Value) -> HandlerResult {
         recognize_sync: _,
         translator_base_url,
     } = args;
+    // Bracket the staged writes (PDF copy, shell, catalog, NOTES) so the
+    // watcher emits one merged `vault:file-changed` at the end instead of one
+    // refresh per written file.
+    let _write_burst = ctx.state.events.write_burst().guard();
 
     // `entries` (dialog metadata) win; picker-style absolute paths are converted
     // to bare entries — same precedence as `import_local_pdfs`.
@@ -319,6 +323,7 @@ async fn paper_import(ctx: &RpcCtx, args: &Value) -> HandlerResult {
         Ok(args) => args,
         Err(error) => return typed_err(error),
     };
+    let _write_burst = ctx.state.events.write_burst().guard();
     let note_mode = note_mode(ctx);
     let app = ctx.state.host_handle();
     match import_catalog_with_mode(args, Some(&app), note_mode).await {
@@ -370,6 +375,7 @@ async fn lookup_import_batch(ctx: &RpcCtx, args: &Value) -> HandlerResult {
         Ok(args) => args,
         Err(error) => return typed_err(error),
     };
+    let _write_burst = ctx.state.events.write_burst().guard();
     let note_mode = note_mode(ctx);
     let app = ctx.state.host_handle();
     let caps = ctx.state.caps.clone();
@@ -425,11 +431,14 @@ struct SkillInstallArgs {
 }
 
 /// `skill_install({vaultPath, discoveryId, selectedNames})` → `ApiResult<Vec<SkillImportResult>>`.
-async fn skill_install(_ctx: &RpcCtx, args: &Value) -> HandlerResult {
+async fn skill_install(ctx: &RpcCtx, args: &Value) -> HandlerResult {
     let args: SkillInstallArgs = match parse_args(args) {
         Ok(args) => args,
         Err(error) => return typed_err(error),
     };
+    // A skill install materializes a whole directory tree; hold refresh frames
+    // until it settles (one merged frame instead of a per-file storm).
+    let _write_burst = ctx.state.events.write_burst().guard();
     let vault = match crate::error::vault_root(&args.vault_path) {
         Ok(vault) => vault,
         Err(error) => return fail_msg(error),

@@ -46,3 +46,10 @@ notify-debouncer-full = "0.3"
 tokio-util = { version = "0.7", default-features = false }
 # Sync scope-size walk (same walker the core sync engine uses).
 walkdir = "2"
+# Response compression for API/SPA payloads (gzip + brotli negotiated via
+# Accept-Encoding). Applied in main.rs with a media-aware predicate.
+tower-http = { version = "0.6", features = ["compression-gzip", "compression-br"] }
+# HTTP-date parsing/formatting for `Last-Modified` / `If-Modified-Since`.
+httpdate = "1"
+# Base64 decode for the layout page-count guard (same crate the core engines use).
+base64 = "0.22"

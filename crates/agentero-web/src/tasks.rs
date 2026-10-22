@@ -729,6 +729,12 @@ impl TaskCenter {
             return;
         }
         self.mark_running(&id);
+        // Hold watcher-driven refresh frames for the whole job: a task writes
+        // its files in stages, and one renderer refresh per stage is the
+        // "auto refresh" storm seen while importing / downloading assets. The
+        // watcher flushes every deferred path in one payload once this burst
+        // closes (see `events::WriteBurstTracker`).
+        let _write_burst = self.inner.bus.write_burst().guard();
         let handle = JobHandle {
             id: id.clone(),
             cancel: cancel.clone(),
