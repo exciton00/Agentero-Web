@@ -148,7 +148,7 @@
 		"heatmapTooltip": "{{total}} events · {{highlights}} highlights · {{asks}} asks · {{translates}} translations",
 		"resizeColumn": "Resize {{column}}",
 		"sortBy": "Sort by {{column}}",
-		"copyHint": "Double-click to copy {{label}}",
+		"copyHint": "Press and hold to copy {{label}}",
 		"copied": "Copied {{label}}",
 		"copyFailed": "Could not copy to clipboard",
 		"count": "{{formatted}} papers",

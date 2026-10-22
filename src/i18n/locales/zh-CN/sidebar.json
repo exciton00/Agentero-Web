@@ -148,7 +148,7 @@
 		"heatmapTooltip": "{{total}} 次 · 高亮 {{highlights}} · 对话 {{asks}} · 翻译 {{translates}}",
 		"resizeColumn": "调整{{column}}列宽",
 		"sortBy": "按{{column}}排序",
-		"copyHint": "双击复制{{label}}",
+		"copyHint": "长按复制{{label}}",
 		"copied": "已复制{{label}}",
 		"copyFailed": "无法复制到剪贴板",
 		"count": "共 {{formatted}} 篇",

@@ -5,10 +5,12 @@ import type {
 	LayoutAnalysisScope,
 	LayoutTask,
 } from "@embedpdf/plugin-layout-analysis";
+import i18n from "@/i18n";
 import { events } from "@/lib/core/bindings";
 import { errorText } from "@/lib/core/error";
 
 import { logger } from "@/lib/core/logger";
+import { notifyWarning } from "@/lib/core/notify";
 import { isTauri } from "@/lib/core/tauri";
 import { findCanonicalPaperPdfPath, localFileToArrayBuffer } from "@/lib/paper";
 import {
@@ -36,6 +38,7 @@ import {
 	layoutProviderFor,
 	type RemoteLayoutProviderDescriptor,
 } from "@/lib/pdf/layout/providers";
+import { layoutMaxPages } from "@/lib/pdf/layout/settings";
 import {
 	setLayoutAnalysisUi,
 	setLayoutDocumentResult,
@@ -447,6 +450,25 @@ export async function runDocumentLayoutAnalysis(
 				throw error;
 			}
 		}
+	}
+
+	// Page limit (Settings → Layout): when the viewer already knows the page
+	// count, skip before model prep / remote upload. The Host enforces the same
+	// cap as a fallback when the count is unknown here.
+	const maxPages = layoutMaxPages(loadSettings().layout);
+	const knownPages =
+		typeof options.totalPages === "number" && options.totalPages > 0
+			? Math.floor(options.totalPages)
+			: null;
+	if (maxPages > 0 && knownPages !== null && knownPages > maxPages) {
+		const message = i18n.t("settings:layout.maxPages.skipped", {
+			pages: knownPages,
+			limit: maxPages,
+		});
+		notifyWarning(message, { id: "layout-page-limit-skipped" });
+		setUi({ stage: "done", message, total: 0 }, true);
+		options.onDone?.(message, 0);
+		return null;
 	}
 
 	const analyzingMessage = options.paperLabel?.trim() || "Analyzing layout…";

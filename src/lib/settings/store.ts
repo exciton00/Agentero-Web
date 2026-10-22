@@ -19,6 +19,7 @@ import {
 	isMineruLanguage,
 	isParserBackend,
 	type LayoutSettings,
+	layoutMaxPages,
 } from "@/lib/pdf/layout/settings";
 import {
 	clampEditorLineHeight,
@@ -774,6 +775,8 @@ function normalizeLayoutSettings(
 	if (isParserBackend(raw.parserBackend)) {
 		base.parserBackend = raw.parserBackend;
 	}
+	// 0 / invalid / absent all mean "no page limit".
+	base.maxPages = layoutMaxPages(raw);
 	base.providerConfigs = normalizeLayoutProviderConfigs(
 		(raw as { providerConfigs?: unknown }).providerConfigs,
 	);

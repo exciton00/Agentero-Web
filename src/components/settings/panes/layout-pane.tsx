@@ -121,6 +121,24 @@ export function LayoutPane({
 	const [scope, setScope] = useState<ParseResultScope>("all");
 	const [busy, setBusy] = useState(false);
 	const [otherProvidersOpen, setOtherProvidersOpen] = useState(false);
+	// Page limit: empty input means "no limit" (0). Kept as a string draft so
+	// a cleared field does not snap back to 0 while the user retypes.
+	const storedMaxPages = layout.maxPages ?? 0;
+	const [maxPagesDraft, setMaxPagesDraft] = useState(() =>
+		storedMaxPages > 0 ? String(storedMaxPages) : "",
+	);
+	useEffect(() => {
+		setMaxPagesDraft(storedMaxPages > 0 ? String(storedMaxPages) : "");
+	}, [storedMaxPages]);
+	const commitMaxPages = useCallback(() => {
+		const parsed = Number.parseInt(maxPagesDraft.trim(), 10);
+		const next =
+			Number.isFinite(parsed) && parsed > 0 ? Math.min(10_000, parsed) : 0;
+		setMaxPagesDraft(next > 0 ? String(next) : "");
+		if (next !== storedMaxPages) {
+			patch({ layout: { ...layout, maxPages: next } });
+		}
+	}, [layout, maxPagesDraft, patch, storedMaxPages]);
 	const isProviderConfigured = (id: LayoutProviderId) =>
 		(layout.providerConfigs[id]?.apiKey ?? "").trim().length > 0;
 	// All remote providers are listed for configuration, like the translate
@@ -273,6 +291,31 @@ export function LayoutPane({
 							))}
 						</SelectContent>
 					</Select>
+				</SettingsRow>
+				<SettingsRow
+					label={t("layout.maxPages.label")}
+					htmlFor="layout-max-pages"
+					description={t("layout.maxPages.help")}
+				>
+					<Input
+						id="layout-max-pages"
+						type="number"
+						min={0}
+						max={10_000}
+						step={1}
+						inputMode="numeric"
+						value={maxPagesDraft}
+						placeholder={t("layout.maxPages.placeholder")}
+						className="h-8 w-28"
+						onChange={(e) => setMaxPagesDraft(e.target.value)}
+						onBlur={commitMaxPages}
+						onKeyDown={(e) => {
+							if (e.key !== "Enter") return;
+							e.preventDefault();
+							commitMaxPages();
+							e.currentTarget.blur();
+						}}
+					/>
 				</SettingsRow>
 			</SettingsGroup>
 

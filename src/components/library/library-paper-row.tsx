@@ -4,7 +4,8 @@
  * row context menu.
  *
  * Interactions: single click selects (modifiers extend the selection —
- * Cmd/Ctrl toggles, Shift selects a range), double click opens the paper.
+ * Cmd/Ctrl toggles, Shift selects a range), double click opens the paper,
+ * long-pressing a copyable cell copies that field (see use-cell-copy.ts).
  *
  * The context menu switches to batch actions when more than one row is
  * selected (batch add tags / re-run layout / delete PDF / delete layout /

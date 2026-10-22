@@ -2,8 +2,8 @@
  * Vault library: table of all papers from catalog.sqlite (display only).
  * Click column headers to sort ascending / descending.
  * Title-header inline search + tags-header filter (no separate toolbar).
- * Single-click a row to open the paper (deferred so double-click can cancel);
- * double-click a cell to copy that field.
+ * Single-click selects a row, double-click opens the paper; a long press
+ * (~550ms) on a copyable cell copies that field instead.
  * Reading heat: title text background as a left→right spine (doc start→end).
  */
 import { useVirtualizer } from "@tanstack/react-virtual";

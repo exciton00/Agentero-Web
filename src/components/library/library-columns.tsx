@@ -5,6 +5,7 @@
  */
 import { ArrowDown, ArrowUp, ArrowUpDown, FileWarning } from "lucide-react";
 import type { ReactNode } from "react";
+import { useCellLongPress } from "@/components/library/hooks/use-cell-copy";
 import { LibraryPaperTag } from "@/components/library/library-paper-tag";
 import {
 	addedDate,
@@ -34,7 +35,7 @@ import { type VenueStatus, venueInfo } from "@/lib/paper/venue-info";
 const COPY_CELL_BASE =
 	"cursor-pointer select-text rounded-sm hover:bg-muted/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
-/** Double-click-to-copy cell control shared by library columns. */
+/** Press-and-hold-to-copy cell control shared by library columns. */
 function CopyCellButton({
 	copyText,
 	labelKey,
@@ -51,13 +52,20 @@ function CopyCellButton({
 	const label = ctx.t(labelKey);
 	const copyHint = ctx.t("papersLibrary.copyHint", { label });
 	const canCopy = Boolean(copyText?.trim());
+	// Long press (≈550ms) copies; a quick click still selects the row and a
+	// double-click still opens the paper. See use-cell-copy.ts.
+	const longPress = useCellLongPress({
+		copyText,
+		label,
+		onCopy: ctx.onCellCopy,
+	});
 	return (
 		<button
 			type="button"
 			className={cn(COPY_CELL_BASE, className)}
 			title={canCopy ? copyHint : undefined}
 			aria-label={copyHint}
-			onDoubleClick={() => ctx.onCellCopy(copyText, label)}
+			{...longPress}
 		>
 			{children}
 		</button>

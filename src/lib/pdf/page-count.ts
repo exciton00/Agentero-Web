@@ -1,15 +1,11 @@
 /**
  * Get PDF page count without full layout analysis.
- * Uses headless @embedpdf stack to read page count on demand.
+ * Reads the PDF off the shared headless engine, then counts pages in a
+ * throwaway document-manager registry (see buffer-page-count.ts).
  */
 
-import { PluginRegistry } from "@embedpdf/core";
-import type { DocumentManagerCapability } from "@embedpdf/plugin-document-manager";
-import { DocumentManagerPluginPackage } from "@embedpdf/plugin-document-manager";
-import { RenderPluginPackage } from "@embedpdf/plugin-render";
-import { nanoid } from "nanoid";
-
 import { findLocalPdfPath, localFileToArrayBuffer } from "@/lib/paper";
+import { getPdfPageCountFromBuffer } from "@/lib/pdf/buffer-page-count";
 import { getHeadlessPdfEngine } from "@/lib/pdf/layout/headless-analyze";
 
 /**
@@ -27,48 +23,7 @@ export async function getPdfPageCount(
 		if (!buffer) return null;
 
 		const engine = await getHeadlessPdfEngine();
-		const documentId = `page-count-${nanoid()}`;
-		const registry = new PluginRegistry(engine);
-		let docCap: DocumentManagerCapability | null = null;
-		try {
-			registry.registerPlugin(DocumentManagerPluginPackage, {});
-			registry.registerPlugin(RenderPluginPackage);
-
-			await registry.initialize();
-			await registry.pluginsReady();
-
-			const docPlugin = registry.getPlugin("document-manager");
-			if (!docPlugin) return null;
-
-			docCap = (
-				docPlugin as unknown as { provides: () => DocumentManagerCapability }
-			).provides();
-
-			const openRes = await docCap
-				.openDocumentBuffer({
-					buffer,
-					documentId,
-					name: "page-count",
-					autoActivate: true,
-				})
-				.toPromise();
-			const doc = await openRes.task.toPromise();
-			const pageCount = doc.pageCount ?? 0;
-
-			return pageCount > 0 ? pageCount : null;
-		} finally {
-			// Release this probe's document, never the shared headless engine.
-			try {
-				if (docCap) await docCap.closeDocument(documentId).toPromise();
-			} catch {
-				// Registry teardown retries closing documents still in its store.
-			}
-			try {
-				await registry.destroy();
-			} catch {
-				// Cleanup must not replace a page count or the null failure result.
-			}
-		}
+		return await getPdfPageCountFromBuffer(engine, buffer);
 	} catch {
 		return null;
 	}

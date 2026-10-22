@@ -96,13 +96,30 @@ export type LayoutSettings = {
 	backend: LayoutBackend;
 	parserBackend: ParserBackend;
 	providerConfigs: Partial<Record<LayoutProviderId, LayoutProviderConfig>>;
+	/**
+	 * Skip layout analysis for PDFs with more pages than this (0 / absent =
+	 * no limit). The renderer skips before sending a large PDF to a remote
+	 * provider; the Host applies the same limit as a fallback.
+	 */
+	maxPages?: number;
 };
 
 export const DEFAULT_LAYOUT_SETTINGS: LayoutSettings = {
 	backend: "local",
 	parserBackend: "local",
 	providerConfigs: {},
+	maxPages: 0,
 };
+
+/** Effective page limit (0 = unlimited) for a stored layout settings object. */
+export function layoutMaxPages(
+	layout: Pick<LayoutSettings, "maxPages"> | null | undefined,
+): number {
+	const value = layout?.maxPages;
+	return typeof value === "number" && Number.isFinite(value) && value > 0
+		? Math.floor(value)
+		: 0;
+}
 
 /** Docs / console pages for obtaining keys (settings UI external link). */
 export const LAYOUT_PROVIDER_DOCS_URLS: Record<LayoutProviderId, string> = {

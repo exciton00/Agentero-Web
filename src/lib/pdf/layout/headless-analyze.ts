@@ -14,9 +14,12 @@ import {
 	LayoutAnalysisPluginPackage,
 } from "@embedpdf/plugin-layout-analysis";
 import { RenderPluginPackage } from "@embedpdf/plugin-render";
+import i18n from "@/i18n";
 import { errorText } from "@/lib/core/error";
+import { notifyWarning } from "@/lib/core/notify";
 
 import { findCanonicalPaperPdfPath, localFileToArrayBuffer } from "@/lib/paper";
+import { getPdfPageCountFromBuffer } from "@/lib/pdf/buffer-page-count";
 import { createPdfEngine } from "@/lib/pdf/engine";
 import { getPdfAiRuntime } from "@/lib/pdf/layout/ai-runtime";
 import {
@@ -29,12 +32,16 @@ import {
 	invokeLayoutRemoteAnalyzePdf,
 	paddlePageToRegions,
 } from "@/lib/pdf/layout/paddle";
-import { isRemoteLayoutProvider, layoutProviderFor } from "@/lib/pdf/layout/providers";
-import type { PdfLayoutRegion } from "@/lib/pdf/layout/types";
-import { loadSettings } from "@/lib/settings/store";
+import {
+	isRemoteLayoutProvider,
+	layoutProviderFor,
+} from "@/lib/pdf/layout/providers";
 import type { LayoutTaskLike } from "@/lib/pdf/layout/run-analysis";
 import { runDocumentLayoutAnalysis } from "@/lib/pdf/layout/run-analysis";
+import { layoutMaxPages } from "@/lib/pdf/layout/settings";
 import { clearLayoutDocumentResult } from "@/lib/pdf/layout/store";
+import type { PdfLayoutRegion } from "@/lib/pdf/layout/types";
+import { loadSettings } from "@/lib/settings/store";
 
 let analysisEngine: PdfEngine | null = null;
 let analysisEnginePromise: Promise<PdfEngine> | null = null;
@@ -121,11 +128,41 @@ export async function analyzePaperLayoutHeadless(opts: {
 	}
 	if (opts.signal?.aborted) throw new Error("cancelled");
 
+	const maxPages = layoutMaxPages(loadSettings().layout);
+	/**
+	 * Soft skip: a PDF above the configured page cap succeeds without regions
+	 * (no error) and tells the user why. The Host enforces the same cap.
+	 */
+	const skipOverPageLimit = (pages: number): HeadlessLayoutResult => {
+		notifyWarning(
+			i18n.t("settings:layout.maxPages.skipped", {
+				pages,
+				limit: maxPages,
+			}),
+			{ id: "layout-page-limit-skipped" },
+		);
+		return {
+			fromCache: false,
+			summary: `skipped: ${pages} pages > limit ${maxPages}`,
+			regionCount: 0,
+		};
+	};
+
 	// Remote layout backend (Settings → Layout): the Host owns the API key and
 	// talks to MinerU / Paddle, so the browser does not need the ONNX model.
 	// Falls through to local ONNX when no remote provider is configured.
 	const layoutProvider = layoutProviderFor(loadSettings().layout.backend);
 	if (layoutProvider && isRemoteLayoutProvider(layoutProvider)) {
+		// The remote run uploads the whole PDF: count pages first so an
+		// oversized paper is skipped locally instead of being transferred.
+		if (maxPages > 0) {
+			const engine = await getHeadlessPdfEngine();
+			const bufferPages = await getPdfPageCountFromBuffer(engine, buffer);
+			if (opts.signal?.aborted) throw new Error("cancelled");
+			if (bufferPages != null && bufferPages > maxPages) {
+				return skipOverPageLimit(bufferPages);
+			}
+		}
 		const requestId = `headless-layout-${Date.now().toString(36)}`;
 		const result = await invokeLayoutRemoteAnalyzePdf({
 			provider: layoutProvider.id,
@@ -202,6 +239,9 @@ export async function analyzePaperLayoutHeadless(opts: {
 		const doc = await openRes.task.toPromise();
 		const pageCount = doc.pageCount ?? 0;
 		if (opts.signal?.aborted) throw new Error("cancelled");
+		if (maxPages > 0 && pageCount > maxPages) {
+			return skipOverPageLimit(pageCount);
+		}
 
 		const scope = layoutCap.forDocument(documentId);
 		const summary = await new Promise<string>((resolve, reject) => {

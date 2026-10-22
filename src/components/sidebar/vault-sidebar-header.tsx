@@ -50,6 +50,7 @@ import {
 import { useImeGuard } from "@/hooks/use-ime-guard";
 import { errorText } from "@/lib/core/error";
 import { displayPath } from "@/lib/core/path";
+import { isWebHost } from "@/lib/core/tauri";
 import { formatShortcutById } from "@/lib/shell/shortcuts";
 import { vaultDisplayName } from "@/lib/vault";
 import {
@@ -123,6 +124,10 @@ export const VaultSidebarHeader = memo(function VaultSidebarHeader({
 	onSyncZotero,
 }: VaultSidebarHeaderProps) {
 	const { t } = useTranslation(["sidebar", "shortcuts", "app"]);
+	// The headless web host has no native vault picker / SSH remote vault /
+	// Zotero migration, so the dropdown only keeps the recent-vault switching
+	// items there (see docs/development/webui.md).
+	const webHost = isWebHost();
 	const [wandOpen, setWandOpen] = useState(false);
 	const [lookupText, setLookupText] = useState("");
 	const [lookupBusy, setLookupBusy] = useState(false);
@@ -555,54 +560,58 @@ export const VaultSidebarHeader = memo(function VaultSidebarHeader({
 									</button>
 								</DropdownMenuItem>
 							))}
-							<DropdownMenuSeparator />
-							<DropdownMenuItem onSelect={onOpenVault}>
-								<FolderOpen className="size-3.5" />
-								{t("app:vault.openVaultButton")}
-							</DropdownMenuItem>
-							{onOpenRemoteVault ? (
-								<DropdownMenuItem
-									onSelect={() => {
-										// Defer so the dropdown can close before the dialog opens.
-										requestAnimationFrame(() => setRemoteDialogOpen(true));
-									}}
-								>
-									<Server className="size-3.5" />
-									{t("app:vault.openRemoteVaultButton")}
-								</DropdownMenuItem>
-							) : null}
-							<DropdownMenuItem onSelect={onCreateVault}>
-								<FolderPlus className="size-3.5" />
-								{t("app:vault.createVaultButton")}
-							</DropdownMenuItem>
-							{onMigrateZotero || onSyncZotero ? (
-								<DropdownMenuSeparator />
-							) : null}
-							{onMigrateZotero ? (
-								<DropdownMenuItem
-									disabled={actionsDisabled}
-									onSelect={() => {
-										requestAnimationFrame(() => onMigrateZotero());
-									}}
-								>
-									<SiZotero className="size-3.5 text-[#CC2936]" />
-									{t("zoteroMigrate.button")}
-								</DropdownMenuItem>
-							) : null}
-							{onSyncZotero ? (
-								<DropdownMenuItem
-									disabled={actionsDisabled}
-									onSelect={() => {
-										requestAnimationFrame(() => onSyncZotero());
-									}}
-								>
-									<RefreshCw className="size-3.5" />
-									{t("zoteroSync.button")}
-								</DropdownMenuItem>
-							) : null}
+							{webHost ? null : (
+								<>
+									<DropdownMenuSeparator />
+									<DropdownMenuItem onSelect={onOpenVault}>
+										<FolderOpen className="size-3.5" />
+										{t("app:vault.openVaultButton")}
+									</DropdownMenuItem>
+									{onOpenRemoteVault ? (
+										<DropdownMenuItem
+											onSelect={() => {
+												// Defer so the dropdown can close before the dialog opens.
+												requestAnimationFrame(() => setRemoteDialogOpen(true));
+											}}
+										>
+											<Server className="size-3.5" />
+											{t("app:vault.openRemoteVaultButton")}
+										</DropdownMenuItem>
+									) : null}
+									<DropdownMenuItem onSelect={onCreateVault}>
+										<FolderPlus className="size-3.5" />
+										{t("app:vault.createVaultButton")}
+									</DropdownMenuItem>
+									{onMigrateZotero || onSyncZotero ? (
+										<DropdownMenuSeparator />
+									) : null}
+									{onMigrateZotero ? (
+										<DropdownMenuItem
+											disabled={actionsDisabled}
+											onSelect={() => {
+												requestAnimationFrame(() => onMigrateZotero());
+											}}
+										>
+											<SiZotero className="size-3.5 text-[#CC2936]" />
+											{t("zoteroMigrate.button")}
+										</DropdownMenuItem>
+									) : null}
+									{onSyncZotero ? (
+										<DropdownMenuItem
+											disabled={actionsDisabled}
+											onSelect={() => {
+												requestAnimationFrame(() => onSyncZotero());
+											}}
+										>
+											<RefreshCw className="size-3.5" />
+											{t("zoteroSync.button")}
+										</DropdownMenuItem>
+									) : null}
+								</>
+							)}
 						</DropdownMenuContent>
 					</DropdownMenu>
-					{onOpenRemoteVault ? (
+					{!webHost && onOpenRemoteVault ? (
 						<RemoteVaultDialog
 							open={remoteDialogOpen}
 							onOpenChange={setRemoteDialogOpen}

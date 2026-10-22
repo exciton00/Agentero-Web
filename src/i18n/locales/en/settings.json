@@ -553,6 +553,12 @@
 			"mineru": "MinerU",
 			"openaiCompatible": "OpenAI-compatible"
 		},
+		"maxPages": {
+			"label": "Max pages to analyze",
+			"placeholder": "0 = no limit",
+			"help": "PDFs with more pages are skipped by layout analysis.",
+			"skipped": "Skipped layout analysis: {{pages}} pages exceed the limit of {{limit}}."
+		},
 		"providerConfig": {
 			"section": "Provider settings",
 			"sectionHint": "Paddle or MinerU is recommended. Other OpenAI-compatible services are collapsed under Other below.",

@@ -553,6 +553,12 @@
 			"mineru": "MinerU",
 			"openaiCompatible": "OpenAI 兼容"
 		},
+		"maxPages": {
+			"label": "版面解析页数上限",
+			"placeholder": "0 = 不限制",
+			"help": "超过该页数的 PDF 自动跳过版面解析。",
+			"skipped": "已跳过版面解析：{{pages}} 页超过上限 {{limit}} 页。"
+		},
 		"providerConfig": {
 			"section": "服务商配置",
 			"sectionHint": "推荐优先配置 Paddle 或 MinerU；其他 OpenAI 兼容服务见下方「其他」。",
