@@ -85,7 +85,9 @@ export function useVaultFileEvents({
 
 	useEffect(() => {
 		// Buffer while the window is hidden/unfocused; flush on return so refresh
-		// work does not run against an invisible shell.
+		// work does not run against an invisible shell. The gate also merges the
+		// frames of one watcher burst into a single payload, so a task writing
+		// dozens of files runs the refresh chain below once, not once per file.
 		return listenVaultFileChangedGated(async (payload) => {
 			const h = handlersRef.current;
 			if (h.shouldIgnoreEvent?.(payload)) return;
@@ -97,7 +99,12 @@ export function useVaultFileEvents({
 			} else if (payload.kind === "rename") {
 				h.onUnverifiedRename?.(payload);
 			}
+			// One merged payload can repeat a path (write + chmod); reload each
+			// editor at most once per delivery.
+			const seen = new Set<string>();
 			for (const p of payload.paths) {
+				if (seen.has(p)) continue;
+				seen.add(p);
 				invalidateSeedCache(p);
 				h.onDiskChange(p);
 				h.onWikiChange?.(p);

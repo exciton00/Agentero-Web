@@ -7,6 +7,7 @@
 
 import { createStore } from "zustand/vanilla";
 import type { VaultFileChangedPayload } from "@/lib/vault/fs-watch";
+import { refreshDelayMs } from "@/lib/vault/refresh-burst";
 import { watchRefreshDelayMs } from "@/lib/vault/shell-activity";
 import { getVaultPath } from "@/lib/vault/store";
 import { rebuildWikiIndex, type WikiExternalRenamePreview } from "@/lib/wiki";
@@ -110,7 +111,7 @@ export function scheduleWikiRebuild(absPath: string): void {
 		void rebuildWikiAndNotify(vault).finally(() =>
 			notifyWikiEmbedTargets([...changedPaths, ...echoPaths]),
 		);
-	}, watchRefreshDelayMs("wiki"));
+	}, refreshDelayMs(watchRefreshDelayMs("wiki")));
 }
 
 /** Paths this app just wrote to disk; their watcher echoes skip the rebuild. */

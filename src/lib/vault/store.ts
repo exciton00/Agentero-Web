@@ -24,6 +24,7 @@ import {
 	removeTreeNode,
 	replaceTreeNodeChildren,
 } from "@/lib/vault";
+import { refreshDelayMs } from "@/lib/vault/refresh-burst";
 import { watchRefreshDelayMs } from "@/lib/vault/shell-activity";
 import { toVaultRelative } from "@/lib/wiki";
 
@@ -349,5 +350,5 @@ export function scheduleTreeRefresh(changedAbsPaths?: string[]): void {
 					// best-effort background refresh
 				});
 		});
-	}, watchRefreshDelayMs("tree"));
+	}, refreshDelayMs(watchRefreshDelayMs("tree")));
 }

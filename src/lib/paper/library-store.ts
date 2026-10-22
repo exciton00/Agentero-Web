@@ -11,6 +11,7 @@ import { listPapers, rescanPapers, setPaperTags } from "@/lib/paper/api";
 import type { LocalPdfImportEntry } from "@/lib/paper/lookup";
 import type { CitingScanResult } from "@/lib/paper/refs";
 import type { PaperTagInput } from "@/lib/paper/tags";
+import { refreshDelayMs } from "@/lib/vault/refresh-burst";
 import { watchRefreshDelayMs } from "@/lib/vault/shell-activity";
 import { getVaultPath } from "@/lib/vault/store";
 
@@ -212,7 +213,7 @@ export function scheduleLibraryRefresh(): void {
 	if (libraryRefreshTimer) clearTimeout(libraryRefreshTimer);
 	libraryRefreshTimer = setTimeout(
 		runLibraryRefresh,
-		watchRefreshDelayMs("library"),
+		refreshDelayMs(watchRefreshDelayMs("library")),
 	);
 }
 
