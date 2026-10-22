@@ -26,10 +26,10 @@
 | 列 | 表头右键选列 / 拖拽排序；拖动表头右边缘调整列宽，聚焦边缘后左右方向键每次调整 `1rem`，Esc 取消拖动；首次调整将当前可见列的宽度固定并以 `widthRem`（`5–120rem`）随设置保存，松手时才写入 Host，重启后保留；未调整的布局及后启用的无宽度列按权重自适应，窄窗口横向滚动；右键「重置列」恢复默认宽度、顺序和显隐；顺序+显隐经 Tauri Host 持久化 `libraryColumns`（前后端列集合与默认显隐保持一致）；标题列不可隐藏；添加日期列默认隐藏，可在表头右键菜单启用，按本地时区显示 `YYYY-MM-DD`、悬停显示完整时间；升级保留原有列的顺序与显隐；标题单元格对 `$...$` / `\\(...\\)` 做 KaTeX 内联渲染（复制仍为原始 TeX）。日期列显示 `YYYY` / `YYYY-MM` / `YYYY-MM-DD`（精度随元数据），无 `date` 时回退 `year`；旧设置里的 `year` 列键在加载时原地改名为 `date` |
 | 滚动 | 横向 + 纵向；滚动中表头控件瞬间隐藏为纯列名（搜索框与刷新/筛选等图标，固定 `h-9` 行高与占位不变；当前排序列仍保留方向箭头；有标签筛选时 Tags 列名旁留小圆点），停滚约 450ms 后淡入恢复（入 300ms） |
 | tags | 只展示用户标签（染色 chip）；搜索框仍匹配全部可见标签与 publication。`@zotero:` / `@arxiv:` 内部标签不显示；`#submitted:` / `#easyscholar:` 是 Host 写入的投影，不在 Tags 列展示，由「发表 / 投稿」列消费 |
-| 发表 / 投稿 | 原 Publication 列。单元格由 `publication`、`#submitted:` 和 `#easyscholar:` 聚合：真实 publication → 「已发表」+ venue 名 + 指标；仅有 `#submitted:` → 「投稿」+ 目标 + 「模板推断」；仓库类 publication（arXiv/bioRxiv 等）→ 「预印本」+ 仓库短名。支持双击复制完整值 |
+| 发表 / 投稿 | 原 Publication 列。单元格由 `publication`、`#submitted:` 和 `#easyscholar:` 聚合：真实 publication → 「已发表」+ venue 名 + 指标；仅有 `#submitted:` → 「投稿」+ 目标 + 「模板推断」；仓库类 publication（arXiv/bioRxiv 等）→ 「预印本」+ 仓库短名。支持长按复制完整值 |
 | 阅读热力 | 标题列左侧显示该论文阅读进度热力条；基于 `marks/` 中逐页标注与阅读位置聚合。激活 Library 时经 `paper_reading_activity_batch` 一次批量 IPC 刷新全部活动点（缓存保温，不再逐论文 3 次 IPC）；PDF 页数走 catalog `pdf_page_counts` 缓存，缺缓存时仅对可视行懒加载并回写 |
 | Rescan | `paper_rescan`：盘上有、catalog 无则补齐 |
-| 行右键 | 打开 / 编辑元数据（远程 Vault 隐藏编辑项）/ 添加到对话 / 在 Finder 中显示（仅本地）/ 删除→回收站；单击打开、双击复制 |
+| 行右键 | 打开 / 编辑元数据（远程 Vault 隐藏编辑项）/ 添加到对话 / 在 Finder 中显示（仅本地）/ 删除→回收站；单击选中、双击打开、长按可复制单元格 |
 | Download | 库内任一篇缺资源时批量补下 |
 | 导入/导出 | Library 工具栏；导出 BibTeX 亦可在 `papers/` 论文库节点右键 |
 | 发现引用 | `papers/` 论文库节点右键「发现引用我的新论文」→ 后台扫描全库反向引用 → 候选清单勾选入库；见 [../backend/citation-parsing.md](../backend/citation-parsing.md) §7 |

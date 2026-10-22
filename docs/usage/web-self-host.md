@@ -69,8 +69,21 @@ WebSocket（`/api/events`）必须支持 Upgrade，否则前端事件（流式�
 | `AGENTERO_WEB_VAULT` | `~/Agentero` | 默认 Vault 根（命令仍以显式 `vaultPath` 为准，此值用于文件端点与首屏） |
 | `AGENTERO_WEB_DIST` | `./dist` | 前端构建产物目录（`pnpm build:web`） |
 | `AGENTERO_WEB_ALLOW_ROOTS` | 空 | 额外允许文件端点读写的根目录，`:` 或 `,` 分隔 |
+| `AGENTERO_WEB_MAX_BODY_MB` | `64` | `/api` 请求体上限（MiB，8–512，非法值回落 64）。版面解析会把整份 PDF 以 base64 放进 RPC body，大论文 / 大图上传也走同一上限 |
 | `XDG_CONFIG_HOME` / `XDG_DATA_HOME` / `XDG_CACHE_HOME` | 系统默认 | 设置、使用记录、模型缓存；容器里建议挂到持久卷 |
 | `RUST_LOG` | `info` | 日志级别 |
+
+## 网络流量与客户端缓存
+
+浏览器重复打开同一篇论文时不会反复下载整份 PDF：
+
+- `GET /api/file` 返回 `ETag`（mtime+size）与 `Last-Modified`，带 `If-None-Match` / `If-Modified-Since` 的条件请求得到 **304**（无 body）；编辑器写入后 mtime/size 变化，缓存自然失效。
+- `Cache-Control`：PDF / 图片 / 视频等媒体 `private, max-age=3600`（一小时内直接复用）；`layout.json`、`agentero-cite.json`、Markdown、TeX 等可编辑 sidecar 为 `private, no-cache`（每次必须 revalidate，避免读到旧内容）。
+- `GET /api/file` 支持单区间 `Range` → **206**（PDF 阅读器跳页只取所需字节），不可满足的区间返回 416。
+- 响应压缩：API JSON、Markdown、HTML、JS/CSS 等文本走 **gzip / brotli**（由 `Accept-Encoding` 协商）；PDF / 图片 / 视频等已压缩二进制不重复压缩，`/assets/*` 带 hash 的构建产物为 `public, max-age=31536000, immutable`。
+
+反向代理若再做一层 gzip，建议直接放行上游的 `Content-Encoding`（或关掉代理压缩），避免二次压缩浪费 CPU。
+
 
 ## 数据布局
 
@@ -117,6 +130,12 @@ AGENTERO_WEB_DIST=$PWD/dist \
 ## 云同步自动运行
 
 设置 → 同步 配置后开启「自动同步」，服务端会按所选间隔在后台执行（`sync_get_status` 返回 `autoSyncNextRunAt`/`lastOutcome`/`lastError`，刷新页面不丢）；手动「立即同步」与自动任务互斥。
+
+## 大文件与流量
+
+- RPC 请求体上限默认 64MB（`AGENTERO_WEB_MAX_BODY_MB=8..512` 可调）；PDF 直接走文件接口，不经过 RPC。
+- 设置 → 版面解析 → 「版面解析页数上限」：超过该页数的 PDF 自动跳过版面解析（0 = 不限制），避免大文件上传/解析；后端也会兜底拒绝超限请求。
+- 客户端缓存：`/api/file` 支持 ETag/304 与单区间 Range；PDF/图片 `private, max-age=3600`，JSON/文本 sidecar `no-cache`；静态 hashed 资源 `immutable`。重复打开 PDF 通常只需一次 304 校验，不重复下载。
 
 ## 接入 Agent（服务器上跑 CLI）
 

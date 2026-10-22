@@ -57,6 +57,9 @@ agentero-core（已有，tauri-free）
 - `GET /api/events`：WS。服务端 → 客户端 `{"event":"<name>","payload":…,"target":"<windowLabel|null>"}`。
   - 客户端 → 服务端：`{"type":"hello","windowLabel":"…"}`、`{"type":"emit","event":"…","payload":…}`（跨标签广播）。
 - `GET /api/file?path=…&vault=…`：Vault 内文件字节（Range 支持），给 PDF/图片/附件用；前端 plugin-fs 垫片也可走它。
+- 请求体上限：`/api` 路由统一用 `DefaultBodyLimit` 覆盖 axum 默认 2MB（默认 64MB，`AGENTERO_WEB_MAX_BODY_MB` 8–512 可调，非法回落 64）；`layout_remote_analyze_pdf` 的整份 base64 PDF、`POST /api/upload`、`PUT /api/file` 共用该上限。来源是 15 页 PDF 版面解析报 `length limit exceeded`。
+- 缓存：`GET /api/file` 返回 `ETag` + `Last-Modified`，支持 `If-None-Match` / `If-Modified-Since` → 304；媒体 `private, max-age=3600`，JSON/Markdown 等 sidecar `private, no-cache`（必须 revalidate）；单区间 `Range` → 206。压缩：`tower-http` 的 gzip/br 只压文本/JSON/JS/CSS，PDF/图片等二进制不压（保留 `Accept-Ranges`）；`/assets/*` 带 hash 产物 `immutable`。
+- 版面解析页数上限：`settings.layout.maxPages`（camelCase，默认 0 = 不限制，normalize clamp 0–10000）。前端在打开 PDF 后提前跳过超限文件；Web 后端 `layout_remote_analyze_pdf` 在解析 base64 后、上传前用 PDFium 页数兜底校验（PDFium 失败时退回 `/Type /Page` 计数），超限返回业务错误 `PDF has N pages, above the layout analysis limit of M (Settings → Layout)`。
 - `POST /api/upload`：multipart 上传（本地 PDF 导入、图片粘贴）。
 - 静态：`/` → `dist/index.html`，`/assets/*` → 构建产物；SPA fallback。
 
@@ -153,6 +156,16 @@ agentero-core（已有，tauri-free）
 | 6 | `#` 开头保留 tag 出现在筛选 | `is_internal_tag_name` 视 `#…` 为内部 tag；`TAG_INDEX_VERSION` 1→2 强制重建缓存；前端再过滤一次 |
 | 7 | 设置「返回工作台」新开一个工作台 | 改为 `window.close()` 关闭设置标签；仅当无法关闭（手动打开的标签）才回退导航到 `/` |
 | 8 | 挂载路径变化 | BibTeX/BibLaTeX 统一挂载到 `GET /agentero_online.bib`（内容按挂载类型）；设置提示与 `/api/bibtex/status.path` 同步 |
+
+### 第四轮修复（2026-10-22）
+
+| # | 问题 | 修复 |
+|---|---|---|
+| 1 | 仍存在自动刷新 | 根因三层：服务端 watcher 对每个 OS 事件各发一帧（一次导入 96 帧）→ 前端逐帧刷新；任务阶段写盘无 burst 概念，阶段间静默期让三个 debounce 各自到期 → 3 波刷新；watcher/`paper:imported`/`paper:assets-ready`/`job:completed` 多来源互不合并。修复：watcher 同批合并为 1 帧 + WriteBurst 期间暂存、结束后合并（2.5s 兜底）；前端跨帧合并（`file-change-gate` 180ms/1.2s）+ 共享刷新协调器（`refresh-burst.ts`，三 store 统一延迟 flush）。实测一次导入 `vault:file-changed` 96→2-3 帧、刷新 3 波→2 波；外部单文件修改仍 1 帧/1 刷（~0.4s） |
+| 2 | Vault 菜单不可用项 | web 下移除 打开知识库/打开远程/创建知识库/从 Zotero 迁移/与 Zotero 同步 及分隔线，保留最近 vault 列表 |
+| 3 | 版面解析 body 超限 | `/api` 默认 body limit 2MB → 64MB（`AGENTERO_WEB_MAX_BODY_MB` 8..512）；新增 Layout 设置「版面解析页数上限」`layout.maxPages`（0=不限，clamp 0..10000），前端执行器超限直接跳过（job 成功 + 警告），后端兜底业务错误；实测 15 页 PDF 经 MinerU 解析成功（15 页/190 boxes） |
+| 4 | 双击复制与打开冲突 | Library 单元格复制由双击改为**长按 ~550ms**（移动/离开/滚动取消，触发后吞掉 click，不选中不开论文；保留键盘/菜单复制）；双击行仍打开论文 |
+| 5 | 流量与客户端缓存 | `/api/file` 增加 ETag/Last-Modified/If-None-Match/If-Modified-Since（304）、单区间 Range（206/416）、`Accept-Ranges`；媒体 `private,max-age=3600`，JSON/文本 `private,no-cache`；API/静态加 gzip/br 压缩；hashed 资源 immutable。实测首屏 ~252KB（br），重复打开 PDF 304（0B），layout.json 129KB→24KB（br） |
 
 ### 尚未完成 / 下一轮
 

@@ -134,6 +134,8 @@ LayoutAnalysisPluginPackage: {
 
 **`agentero` 刻意不在这张表里**：内置 provider 只是**正文解析**（`parserBackend`）后端，不是版面分析后端。版面分析继续跑上表的 `local`（随包 PP-DocLayoutV3 ONNX，首次使用下载到 XDG cache，经 `agentero-model://` 喂给 webview）——已经免费且离线，切到云端网关只会让每个 PDF 都产生费用而无收益。Host 侧 `LAYOUT_BACKENDS` 白名单不含它，`default_layout_backend()` 无条件返回 `local`；把它写进 `backend` 会在下次保存时被重置。理由与实现见 [../backend/builtin-provider.md](../backend/builtin-provider.md) §版面分析不走内置。
 
+**版面解析页数上限**（`settings.layout.maxPages`，0 = 不限制，默认 0）：设置 → 版面解析的数字输入（空 = 0，上限 10000），下方提示「超过该页数的 PDF 自动跳过版面解析」。前端在两处提前跳过：查看器手动 / 自动分析（`run-analysis.ts`，`totalPages` 已知且超限时 toast + 不启动任务）；headless 执行（`headless-analyze.ts`，远程后端在上传前用 `getPdfPageCountFromBuffer` 取页数，本地 ONNX 打开文档后取 `pageCount`，超限返回 `skipped: N pages > limit M` 让 job 成功结束）。Web 后端 `layout_remote_analyze_pdf` 在解析 base64 后、上传前用 PDFium 页数兜底校验并返回业务错误，详细见 [../development/webui.md](../development/webui.md)。
+
 每个 provider 描述符带 `kind` / `requiresApiKey` / `supportsBaseUrl` / `sidecarMode`（MinerU 另有 `supportsLanguage` / `supportsOcr`）：设置面板与 Onboarding 据此显隐 API Key / Base URL / 语言 / 强制 OCR 输入（保存 / 掩码 / 连通性测试逻辑共用 `provider-config.ts`）；`run-analysis.ts` 用 `layoutProviderFor(backend)` + `isRemoteLayoutProvider` 判定走远程分支（`startRemoteLayoutAnalysis`，按 `provider.id` 分发到 Host engine 注册表）。内置 provider 的描述符只在 `PARSER_PROVIDERS` 里（`LAYOUT_PROVIDERS` 不含它），且 `requiresApiKey` / `supportsBaseUrl` / `supportsModel` / `supportsPrompt` / `supportsLanguage` / `supportsOcr` **全为 false**——VLM 引擎只读 model 与 prompt，而这两项都由构建期凭证给出，所以面板不为它渲染任何凭证输入或连通性测试。
 
 远程 provider 共用流程（`src/lib/pdf/layout/paddle.ts` IPC 封装 + `run-analysis.ts`）：
