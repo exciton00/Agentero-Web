@@ -70,8 +70,20 @@ WebSocket（`/api/events`）必须支持 Upgrade，否则前端事件（流式�
 | `AGENTERO_WEB_DIST` | `./dist` | 前端构建产物目录（`pnpm build:web`） |
 | `AGENTERO_WEB_ALLOW_ROOTS` | 空 | 额外允许文件端点读写的根目录，`:` 或 `,` 分隔 |
 | `AGENTERO_WEB_MAX_BODY_MB` | `64` | `/api` 请求体上限（MiB，8–512，非法值回落 64）。版面解析会把整份 PDF 以 base64 放进 RPC body，大论文 / 大图上传也走同一上限 |
+| `AGENTERO_MCP_ENABLED` | 空 | `1`/`true` 强制启动 MCP listener（无视 `settings.mcpEnabled`，容器里固定开启用） |
+| `AGENTERO_MCP_BIND` | 空 | MCP 监听地址 `host:port`，如 `0.0.0.0:8765`；覆盖 settings 中的端口（设置后 `mcp_set_port` 不再改端口） |
+| `AGENTERO_MCP_ALLOWED_HOSTS` | 空 | MCP 额外允许的 `Host` 头（逗号分隔），反代域名必须列在这里；loopback/bind 主机自动允许 |
 | `XDG_CONFIG_HOME` / `XDG_DATA_HOME` / `XDG_CACHE_HOME` | 系统默认 | 设置、使用记录、模型缓存；容器里建议挂到持久卷 |
 | `RUST_LOG` | `info` | 日志级别 |
+
+## MCP 客户端接入
+
+设置 → 通用 → **MCP server** 打开后，服务端在独立端口（默认 `127.0.0.1:8765`）提供 Streamable HTTP MCP，端点 `http://127.0.0.1:8765/mcp`；开关与端口写回共享 `settings.json`，重启后保持。工具清单 / resources / 安全边界见 [后端 MCP 文档](../backend/mcp.md)。
+
+- 本机客户端（Codex、Inspector、Claude Desktop 等）直接连 `http://127.0.0.1:8765/mcp`。
+- 容器 / 远程：`AGENTERO_MCP_BIND=0.0.0.0:8765` 发布端口，`AGENTERO_MCP_ALLOWED_HOSTS=<外部域名>` 放行 `Host` 头，并由反向代理加鉴权（MCP 本身无鉴权，不要裸暴露公网）。
+- Web v1 不含 ChatGPT Secure MCP Tunnel；需要外网时用反代暴露 `/mcp`。
+- `paper_text_get` 默认关闭；设置 → 通用 → 「对外暴露论文正文」打开后才返回 PDF 文本（opt-in，正文会发给 MCP 客户端）。
 
 ## 网络流量与客户端缓存
 

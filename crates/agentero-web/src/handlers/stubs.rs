@@ -25,17 +25,6 @@ fn disabled_connector_status() -> Value {
     })
 }
 
-fn disabled_mcp_status() -> Value {
-    json!({
-        "enabled": false,
-        "listening": false,
-        "port": 8765,
-        "url": null,
-        "lastError": null,
-        "vaultPath": null,
-    })
-}
-
 fn empty_layout_model_status() -> Value {
     json!({
         "ready": false,
@@ -107,9 +96,6 @@ pub async fn dispatch(_ctx: &RpcCtx, command: &str, _args: &Value) -> HandlerRes
         "connector_set_vault" => ok(Value::Null),
         "connector_set_enabled" => typed_ok(disabled_connector_status()),
         "connector_status" => ok(disabled_connector_status()),
-        "mcp_set_vault" => ok(Value::Null),
-        "mcp_set_enabled" => typed_ok(disabled_mcp_status()),
-        "mcp_status" => ok(disabled_mcp_status()),
         "bridge_status" => ok(json!({ "enabled": false })),
 
         // ---- LaTeX: server image support lands with the deployment milestone ----

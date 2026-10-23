@@ -13,7 +13,8 @@ path = "src/main.rs"
 
 [dependencies]
 # Tauri-free domain services shared with the desktop Host and the CLI.
-agentero-core = { path = "../agentero-core" }
+# `schemars` enables the JsonSchema derives MCP tool outputs need.
+agentero-core = { path = "../agentero-core", features = ["schemars"] }
 # Tauri-free BYOA/ACP runtime shared with the desktop Host.
 agentero-host = { path = "../agentero-host" }
 axum = { version = "0.8", default-features = false, features = [
@@ -53,3 +54,24 @@ tower-http = { version = "0.6", features = ["compression-gzip", "compression-br"
 httpdate = "1"
 # Base64 decode for the layout page-count guard (same crate the core engines use).
 base64 = "0.22"
+# Streamable HTTP MCP server (headless port of `src-tauri/src/integration/mcp`):
+# JSON-schema tool macros + the axum transport on the dedicated MCP listener.
+rmcp = { version = "3.1", default-features = false, features = [
+  "server",
+  "macros",
+  "schemars",
+  "transport-streamable-http-server",
+] }
+# Derive `JsonSchema` for MCP tool argument/output DTOs.
+schemars = "1"
+
+[dev-dependencies]
+# In-memory MCP protocol tests (client side over a duplex pipe).
+rmcp = { version = "3.1", default-features = false, features = [
+  "client",
+  "server",
+  "macros",
+  "schemars",
+  "transport-io",
+] }
+tempfile = { workspace = true }

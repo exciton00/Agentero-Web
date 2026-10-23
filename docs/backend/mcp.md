@@ -27,6 +27,35 @@ Host commands：`mcp_get_status` / `mcp_set_enabled` / `mcp_set_port` / `mcp_set
 
 无鉴权。不要把端口绑到非 loopback。
 
+## Headless Web host（`agentero-web`）
+
+Web 版把同一套 Streamable HTTP MCP 移植到 `crates/agentero-web/src/mcp/`（桌面 `src-tauri/src/integration/mcp/` 的实现不动），工具面、`initialize` instructions / icons、resources 与桌面一致；差异只在宿主接缝与隧道。
+
+- **端点**：独立监听端口上的 `/mcp`（`POST` 与 Streamable HTTP `GET`），不复用 Web 主端口的 `/api` 路由。监听地址默认 `127.0.0.1:{settings.mcpPort}`（默认 8765），启动时按 `settings.mcpEnabled` 自动启停；开关/端口变化即时生效（重启 listener）。
+- **环境变量**（容器 / 反代部署）：
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `AGENTERO_MCP_ENABLED` | 空 | `1`/`true` 时无视 `settings.mcpEnabled` 强制启动 listener（容器里固定开启用） |
+| `AGENTERO_MCP_BIND` | 空 | `host:port`，覆盖 bind 地址与端口（如 `0.0.0.0:8765`）。一旦设置，端口由 env 固定，`mcp_set_port` 返回 `lastError` 而不重启 |
+| `AGENTERO_MCP_ALLOWED_HOSTS` | 空 | 额外允许的 `Host` 头（逗号分隔，如 `mcp.example.com`）。loopback 与 bind 主机自动允许；其它 Host 返回 403（DNS rebinding 防护） |
+
+- **鉴权**：Web 版 MCP 同样**无鉴权**。绑定非 loopback 时启动日志会打 WARN；公网暴露必须由反向代理做鉴权（Caddy/nginx/Tailscale），并把外部域名加进 `AGENTERO_MCP_ALLOWED_HOSTS`。
+- **状态**：`mcp_get_status` / `mcp:status` 的 payload 与桌面 `McpStatus` 一致：`{enabled, listening, port, url, lastError, vaultPath}`。`url` 仅在 listening 时给值；bind 为 `0.0.0.0`/`::` 时展示 `127.0.0.1`（wildcard 不可连接）。`mcp_set_enabled` / `mcp_set_port` 还会把 `mcpEnabled` / `mcpPort` 写回共享 `settings.json` 并广播 `settings:changed`，重启后保持。
+- **Vault 作用域**：服务端单 Vault（`AGENTERO_WEB_VAULT`，或前端通过 `mcp_set_vault` 选择的本地 Vault）。`vault_list` 返回该 Vault（`open=true`）+ `mcp_set_known_vaults` 同步的已知 Vault；其它工具的 `vault` 参数只能命中这些路径。
+- **工具差异**：`import_id` 用进程内 `CapsCache` + Web host 的 `AppHandle` 发进度事件；`file_move` 用本地 WikiIndex 做链接重写（无渲染进程共享索引）；`file_delete` 无桌面 JobCenter 可取消（删除语义不变，仍默认回收站）；`paper_text_get` 每次调用读取实时 `settings.mcpExposePaperText`（opt-in 关闭时报错）。`layout_list` / `layout_get` / `page_read` 依赖 `source/layout.json|layout-index.json`，没有 sidecar 时返回 `layout_index_missing` 业务错误。
+- **隧道**：Web v1 不含 ChatGPT Secure MCP Tunnel。`mcp_tunnel_status` 返回 `phase: "binaryMissing"` / `running: false` / `lastError` 说明；`mcp_tunnel_start` / `mcp_tunnel_stop` 返回业务错误。需要外网时由部署方用反向代理暴露 MCP 端点。
+
+```bash
+# 容器示例：Web 主端口 8787，MCP 独立端口 8765 对外发布（反代负责鉴权）
+AGENTERO_WEB_ADDR=0.0.0.0:8787 \
+AGENTERO_WEB_VAULT=/srv/agentero/vault \
+AGENTERO_MCP_ENABLED=1 \
+AGENTERO_MCP_BIND=0.0.0.0:8765 \
+AGENTERO_MCP_ALLOWED_HOSTS=mcp.example.com \
+  ./agentero-web
+```
+
 ## ChatGPT Secure MCP Tunnel
 
 App 开着且 MCP 开关打开后，设置区按界面顺序填写：先 **Runtime API key**，再 **Tunnel ID**，装好 `tunnel-client` 后点 **Start**。Agentero 随即 spawn 并持有 `tunnel-client run`。按钮旁绿点表示隧道已连通控制平面；**注意 `/readyz` 返回 200 不代表认证成功**，真正的 ready 信号是 `tunnel-client health --require-control-plane-poll` 的 `control_plane_poll.ok=true`。

@@ -8,7 +8,7 @@
 use serde_json::Value;
 
 use crate::error::HandlerResult;
-use crate::handlers::{agent, layout, markdown, paper, search, tags, vault};
+use crate::handlers::{agent, layout, markdown, mcp, paper, search, tags, vault};
 use crate::rpc::RpcCtx;
 
 pub async fn dispatch(ctx: &RpcCtx, command: &str, args: &Value) -> Option<HandlerResult> {
@@ -18,6 +18,17 @@ pub async fn dispatch(ctx: &RpcCtx, command: &str, args: &Value) -> Option<Handl
         return Some(result);
     }
     let result = match command {
+        // ---- MCP server control (headless Streamable HTTP service) ----
+        "mcp_get_status" | "mcp_status" => mcp::get_status(ctx).await,
+        "mcp_set_enabled" => mcp::set_enabled(ctx, args).await,
+        "mcp_set_port" => mcp::set_port(ctx, args).await,
+        "mcp_set_vault" => mcp::set_vault(ctx, args).await,
+        "mcp_set_known_vaults" => mcp::set_known_vaults(ctx, args).await,
+        "mcp_set_parent_dir" => mcp::set_parent_dir(ctx, args).await,
+        "mcp_tunnel_status" => mcp::tunnel_status(ctx).await,
+        "mcp_tunnel_start" => mcp::tunnel_start(ctx).await,
+        "mcp_tunnel_stop" => mcp::tunnel_stop(ctx).await,
+
         // ---- Vault file search ----
         "vault_search" => search::vault_search(ctx, args).await,
 

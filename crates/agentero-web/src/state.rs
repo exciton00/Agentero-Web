@@ -9,6 +9,7 @@ use agentero_core::features::system::settings::AppSettingsStore;
 use crate::agent_runtime::build_agent_host;
 use crate::config::Config;
 use crate::events::{EventBus, WebHostHooks};
+use crate::mcp::McpController;
 use crate::handlers::runtime::sync::SyncService;
 use crate::tasks::TaskCenter;
 use crate::watcher::FsWatchService;
@@ -30,6 +31,8 @@ pub struct AppState {
     connections: Mutex<HashMap<String, usize>>,
     /// BYOA/ACP agent runtime (tauri-free port; emits through the WebSocket bus).
     pub agents: Arc<agentero_host::service::AgentHost>,
+    /// Headless Streamable HTTP MCP server (Settings → MCP server).
+    pub mcp: Arc<McpController>,
 }
 
 impl AppState {
@@ -41,6 +44,12 @@ impl AppState {
         let tasks = TaskCenter::new(events.clone());
         let sync = Arc::new(SyncService::new(events.clone()));
         let agents = build_agent_host(events.clone());
+        let mcp = Arc::new(McpController::new(
+            settings.clone(),
+            events.clone(),
+            caps.clone(),
+            config.vault_root.clone(),
+        ));
         Self {
             config,
             settings,
@@ -51,6 +60,7 @@ impl AppState {
             sync,
             connections: Mutex::new(HashMap::new()),
             agents,
+            mcp,
         }
     }
 

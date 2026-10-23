@@ -6,6 +6,7 @@ pub mod domain;
 pub mod files;
 pub mod layout;
 pub mod markdown;
+pub mod mcp;
 pub mod paper;
 pub mod runtime;
 pub mod search;

@@ -12,6 +12,7 @@ mod config;
 mod error;
 mod events;
 mod handlers;
+mod mcp;
 mod rpc;
 mod state;
 mod static_files;
@@ -162,6 +163,11 @@ async fn run() {
     // seconds over the configured vaults (autoSync + intervalMinutes). It stops
     // with the runtime on shutdown.
     state.sync.clone().start_auto_sync();
+
+    // MCP server: starts when settings.mcpEnabled (or AGENTERO_MCP_ENABLED=1)
+    // asks for it; a bind failure is surfaced through `mcp_get_status` /
+    // `mcp:status` instead of aborting startup.
+    state.mcp.clone().start_if_configured().await;
 
     // axum caps `Bytes` bodies at 2 MB by default, which a 15-page PDF blows
     // past once base64-encoded (`layout_remote_analyze_pdf`). The same cap
