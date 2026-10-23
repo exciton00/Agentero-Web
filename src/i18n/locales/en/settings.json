@@ -182,6 +182,13 @@
 			"invalidPort": "Port must be between 1 and 65535.",
 			"copyUrl": "Copy MCP URL",
 			"copied": "Copied",
+			"web": {
+				"enabled": "Enabled",
+				"disabled": "Disabled",
+				"error": "Error",
+				"urlHint": "MCP URL: {{url}}. It is loopback-only by default; to expose it on the network set AGENTERO_MCP_BIND (e.g. 0.0.0.0:{{port}}) and put an authenticating reverse proxy in front.",
+				"tunnelUnavailable": "Not available on web — the server exposes /mcp directly; use a reverse proxy for external access."
+			},
 			"tunnel": {
 				"tunnelIdLabel": "Tunnel ID",
 				"apiKeyLabel": "Runtime API key",

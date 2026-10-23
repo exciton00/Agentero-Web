@@ -5,7 +5,7 @@
 
 import { commands } from "@/lib/core/bindings";
 import { callApi, callApiResult } from "@/lib/core/ipc";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 
 export const DEFAULT_MCP_PORT = 8765;
 
@@ -28,33 +28,33 @@ const idle = (port = DEFAULT_MCP_PORT): McpStatus => ({
 });
 
 export async function mcpGetStatus(): Promise<McpStatus> {
-	if (!isTauri()) return idle();
+	if (!hasHostTransport()) return idle();
 	return callApi(() => commands.mcpGetStatus());
 }
 
 export async function mcpSetEnabled(enabled: boolean): Promise<McpStatus> {
-	if (!isTauri()) return idle();
+	if (!hasHostTransport()) return idle();
 	return callApiResult(() => commands.mcpSetEnabled({ enabled }));
 }
 
 export async function mcpSetPort(port: number): Promise<McpStatus> {
-	if (!isTauri()) return idle(port);
+	if (!hasHostTransport()) return idle(port);
 	return callApiResult(() => commands.mcpSetPort({ port }));
 }
 
 export async function mcpSetVault(vaultPath: string | null): Promise<void> {
-	if (!isTauri()) return;
+	if (!hasHostTransport()) return;
 	await callApi(() => commands.mcpSetVault({ vaultPath }));
 }
 
 /** Sync recent local vaults so MCP `vault_list` can target any of them. */
 export async function mcpSetKnownVaults(vaults: string[]): Promise<void> {
-	if (!isTauri()) return;
+	if (!hasHostTransport()) return;
 	await callApi(() => commands.mcpSetKnownVaults({ vaults }));
 }
 
 export async function mcpSetParentDir(parentDir: string): Promise<void> {
-	if (!isTauri()) return;
+	if (!hasHostTransport()) return;
 	const dir = parentDir
 		.trim()
 		.replace(/\\/g, "/")

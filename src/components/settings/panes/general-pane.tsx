@@ -38,7 +38,7 @@ import { errorText } from "@/lib/core/error";
 import { callApi } from "@/lib/core/ipc";
 import { notifyError, notifySuccess } from "@/lib/core/notify";
 import { openExternalUrl } from "@/lib/core/open-external";
-import { isTauri, isWebHost } from "@/lib/core/tauri";
+import { hasHostTransport, isTauri, isWebHost } from "@/lib/core/tauri";
 import {
 	type EasyScholarProbeStatus,
 	hasEasyScholarKey,
@@ -906,16 +906,23 @@ function McpSettingsBlock({
 	disabled: boolean;
 }) {
 	const { t } = useTranslation(["settings", "common"]);
+	const webHost = isWebHost();
 	const [status, setStatus] = useState<McpStatus | null>(null);
 	const [busy, setBusy] = useState(false);
 	const [copied, setCopied] = useState(false);
+	const [portDraft, setPortDraft] = useState(String(settings.mcpPort));
+
+	useEffect(() => {
+		setPortDraft(String(settings.mcpPort));
+	}, [settings.mcpPort]);
 
 	const refresh = useCallback(async () => {
-		if (!isTauri()) return;
+		if (!hasHostTransport()) return;
 		try {
 			setStatus(await mcpGetStatus());
 		} catch {
-			// ignore probe failures in settings
+			// Probe failures stay silent: the headless host may predate the MCP
+			// listener, and the switches still persist through settings.
 		}
 	}, []);
 
@@ -923,13 +930,20 @@ function McpSettingsBlock({
 		void refresh();
 	}, [refresh]);
 
+	// Re-read after enabling: the listener may take a moment to bind.
+	useEffect(() => {
+		if (!settings.mcpEnabled) return;
+		const id = window.setTimeout(() => void refresh(), 700);
+		return () => window.clearTimeout(id);
+	}, [settings.mcpEnabled, refresh]);
+
 	useTauriEvent(events.mcpStatus, (payload) => {
 		setStatus(payload);
 	});
 
 	const onToggle = async (enabled: boolean) => {
 		patch({ mcpEnabled: enabled });
-		if (!isTauri()) return;
+		if (!hasHostTransport()) return;
 		setBusy(true);
 		try {
 			const next = await mcpSetEnabled(enabled);
@@ -949,28 +963,72 @@ function McpSettingsBlock({
 		const port = Number.parseInt(value, 10);
 		if (!Number.isInteger(port) || port < 1 || port > 65535) {
 			notifyError(t("general.mcp.invalidPort"));
+			setPortDraft(String(settings.mcpPort));
 			return;
 		}
+		setPortDraft(String(port));
 		patch({ mcpPort: port });
-		if (!isTauri()) return;
+		if (!hasHostTransport()) return;
 		try {
-			setStatus(await mcpSetPort(port));
+			const next = await mcpSetPort(port);
+			setStatus(next);
+			// Bind failures (port in use, wildcard denied) come back as status
+			// fields rather than transport errors.
+			if (next.lastError) notifyError(next.lastError);
 		} catch (e) {
 			notifyError(errorText(e));
 		}
 	};
 
-	const url = status?.url ?? null;
+	const statusPort = status?.port ?? settings.mcpPort;
+	/**
+	 * Headless web: the listener runs on the server, not in this browser tab.
+	 * Advertise the address another machine can use — the current origin host
+	 * with the MCP port (loopback when the UI itself was opened on
+	 * 127.0.0.1 / localhost). Desktop keeps the Host-reported URL and only
+	 * shows it while the listener is up.
+	 */
+	const originHost =
+		typeof window !== "undefined" && window.location.hostname
+			? window.location.hostname
+			: "127.0.0.1";
+	const url =
+		status?.url ?? (webHost ? `http://${originHost}:${statusPort}/mcp` : null);
+	const enabledLabel = status?.lastError?.trim()
+		? t("general.mcp.web.error")
+		: status?.enabled
+			? t("general.mcp.web.enabled")
+			: t("general.mcp.web.disabled");
 
 	return (
 		<SettingsGroup>
-			<SettingsRow label={t("general.mcp.label")} htmlFor="mcp-enabled">
-				<Switch
-					id="mcp-enabled"
-					checked={settings.mcpEnabled}
-					disabled={busy || disabled}
-					onCheckedChange={(v) => void onToggle(v)}
-				/>
+			<SettingsRow
+				label={t("general.mcp.label")}
+				description={
+					webHost && status?.lastError?.trim() ? status.lastError : undefined
+				}
+				htmlFor="mcp-enabled"
+			>
+				<div className="flex items-center gap-2">
+					{webHost && status ? (
+						<StatusDot
+							tone={
+								status.lastError?.trim()
+									? "err"
+									: status.enabled
+										? "ok"
+										: "idle"
+							}
+							label={enabledLabel}
+						/>
+					) : null}
+					<Switch
+						id="mcp-enabled"
+						checked={settings.mcpEnabled}
+						disabled={busy || disabled}
+						onCheckedChange={(v) => void onToggle(v)}
+					/>
+				</div>
 			</SettingsRow>
 			<SettingsRow
 				label={t("general.mcp.exposeText.label")}
@@ -997,6 +1055,14 @@ function McpSettingsBlock({
 						) : null}
 					</>
 				}
+				description={
+					webHost && url
+						? t("general.mcp.web.urlHint", {
+								url,
+								port: statusPort,
+							})
+						: undefined
+				}
 				htmlFor="mcp-port"
 			>
 				<div className="flex items-center gap-2">
@@ -1006,8 +1072,14 @@ function McpSettingsBlock({
 						min={1}
 						max={65535}
 						className="h-8 w-28"
-						defaultValue={settings.mcpPort}
+						value={portDraft}
+						onChange={(e) => setPortDraft(e.currentTarget.value)}
 						onBlur={(e) => void onPortBlur(e.currentTarget.value)}
+						onKeyDown={(e) => {
+							if (e.key !== "Enter") return;
+							e.preventDefault();
+							e.currentTarget.blur();
+						}}
 						disabled={busy || disabled}
 					/>
 					{url ? (
@@ -1037,15 +1109,24 @@ function McpSettingsBlock({
 					) : null}
 				</div>
 			</SettingsRow>
-			{settings.mcpEnabled && (
-				<McpTunnelRows
-					settings={settings}
-					patch={patch}
-					disabled={disabled || busy}
-					mcpListening={status?.listening ?? false}
-					mcpUrl={url}
-				/>
-			)}
+			{settings.mcpEnabled ? (
+				webHost ? (
+					<SettingsRow
+						label={t("general.mcp.tunnel.label")}
+						description={t("general.mcp.web.tunnelUnavailable")}
+					>
+						<span />
+					</SettingsRow>
+				) : (
+					<McpTunnelRows
+						settings={settings}
+						patch={patch}
+						disabled={disabled || busy}
+						mcpListening={status?.listening ?? false}
+						mcpUrl={url}
+					/>
+				)
+			) : null}
 		</SettingsGroup>
 	);
 }

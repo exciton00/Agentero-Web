@@ -11,7 +11,7 @@ import {
 } from "@/hooks/use-app-stores";
 import { errorText } from "@/lib/core/error";
 import { notifyError } from "@/lib/core/notify";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import {
 	mcpSetEnabled,
 	mcpSetKnownVaults,
@@ -28,7 +28,7 @@ export function useMcpSync(): void {
 	const mcpEnabled = useSettings((s) => s.mcpEnabled);
 
 	useEffect(() => {
-		if (!isTauri()) return;
+		if (!hasHostTransport()) return;
 		const local =
 			vaultPath && !isRemoteVaultHandle(vaultPath) ? vaultPath : null;
 		void mcpSetVault(local).catch((e) => {
@@ -37,14 +37,14 @@ export function useMcpSync(): void {
 	}, [vaultPath]);
 
 	useEffect(() => {
-		if (!isTauri()) return;
+		if (!hasHostTransport()) return;
 		void mcpSetKnownVaults(recentVaults).catch((e) => {
 			console.warn("[mcp] setKnownVaults failed", e);
 		});
 	}, [recentVaults]);
 
 	useEffect(() => {
-		if (!isTauri() || !mcpEnabled) return;
+		if (!hasHostTransport() || !mcpEnabled) return;
 		const scope = libraryScopePath
 			?.replace(/\\/g, "/")
 			.replace(/^\/+|\/+$/g, "");
@@ -58,7 +58,7 @@ export function useMcpSync(): void {
 	}, [libraryScopePath, mcpEnabled]);
 
 	useEffect(() => {
-		if (!isTauri()) return;
+		if (!hasHostTransport()) return;
 		void mcpSetEnabled(mcpEnabled)
 			.then(async (st) => {
 				if (mcpEnabled && st.lastError) {
