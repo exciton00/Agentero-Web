@@ -42,6 +42,7 @@ Web 版把同一套 Streamable HTTP MCP 移植到 `crates/agentero-web/src/mcp/`
 
 - **鉴权**：Web 版 MCP 同样**无鉴权**。绑定非 loopback 时启动日志会打 WARN；公网暴露必须由反向代理做鉴权（Caddy/nginx/Tailscale），并把外部域名加进 `AGENTERO_MCP_ALLOWED_HOSTS`。
 - **状态**：`mcp_get_status` / `mcp:status` 的 payload 与桌面 `McpStatus` 一致：`{enabled, listening, port, url, lastError, vaultPath}`。`url` 仅在 listening 时给值；bind 为 `0.0.0.0`/`::` 时展示 `127.0.0.1`（wildcard 不可连接）。`mcp_set_enabled` / `mcp_set_port` 还会把 `mcpEnabled` / `mcpPort` 写回共享 `settings.json` 并广播 `settings:changed`，重启后保持。
+- **端口切换**：换端口会先彻底关闭旧 listener（等待 serve 任务退出 + `SO_REUSEADDR`）再绑定新端口；目标端口被占用时返回 `lastError`（listener 保持停止），立即改回原端口或重试可一次成功，不会残留 `Address already in use`。端口由 `AGENTERO_MCP_BIND` 固定时 `mcp_set_port` 只回报错误、不改监听。
 - **Vault 作用域**：服务端单 Vault（`AGENTERO_WEB_VAULT`，或前端通过 `mcp_set_vault` 选择的本地 Vault）。`vault_list` 返回该 Vault（`open=true`）+ `mcp_set_known_vaults` 同步的已知 Vault；其它工具的 `vault` 参数只能命中这些路径。
 - **工具差异**：`import_id` 用进程内 `CapsCache` + Web host 的 `AppHandle` 发进度事件；`file_move` 用本地 WikiIndex 做链接重写（无渲染进程共享索引）；`file_delete` 无桌面 JobCenter 可取消（删除语义不变，仍默认回收站）；`paper_text_get` 每次调用读取实时 `settings.mcpExposePaperText`（opt-in 关闭时报错）。`layout_list` / `layout_get` / `page_read` 依赖 `source/layout.json|layout-index.json`，没有 sidecar 时返回 `layout_index_missing` 业务错误。
 - **隧道**：Web v1 不含 ChatGPT Secure MCP Tunnel。`mcp_tunnel_status` 返回 `phase: "binaryMissing"` / `running: false` / `lastError` 说明；`mcp_tunnel_start` / `mcp_tunnel_stop` 返回业务错误。需要外网时由部署方用反向代理暴露 MCP 端点。

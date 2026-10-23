@@ -99,6 +99,11 @@ struct Inner {
 pub struct McpController {
     inner: Mutex<Inner>,
     running: AtomicBool,
+    /// Serializes enable/disable/port mutations. Two overlapping
+    /// `mcp_set_port` RPCs must not interleave their stop/bind steps: the loser
+    /// of the race would otherwise overwrite the winner's `listening` /
+    /// `last_error` state with a stale bind failure.
+    lifecycle: tokio::sync::Mutex<()>,
     settings: Arc<AppSettingsStore>,
     events: EventBus,
     caps: CapsCache,
@@ -155,6 +160,7 @@ impl McpController {
                 serve_task: None,
             }),
             running: AtomicBool::new(false),
+            lifecycle: tokio::sync::Mutex::new(()),
             settings,
             events,
             caps,
@@ -285,6 +291,7 @@ impl McpController {
     /// Start when settings/env ask for it. Called by `main` after `AppState`
     /// is built; a bind failure is reported through `last_error` (not fatal).
     pub async fn start_if_configured(self: &Arc<Self>) {
+        let _lifecycle = self.lifecycle.lock().await;
         let desired = self.is_enabled();
         let bind = self.bind_addr();
         if desired {
@@ -304,6 +311,7 @@ impl McpController {
     }
 
     pub async fn set_enabled(self: &Arc<Self>, enabled: bool) -> McpStatus {
+        let _lifecycle = self.lifecycle.lock().await;
         if !enabled {
             self.stop_listener().await;
             if let Ok(mut inner) = self.inner.lock() {
@@ -334,6 +342,7 @@ impl McpController {
     }
 
     pub async fn set_port(self: &Arc<Self>, port: u16) -> McpStatus {
+        let _lifecycle = self.lifecycle.lock().await;
         if port == 0 {
             if let Ok(mut inner) = self.inner.lock() {
                 inner.last_error = Some("MCP port must be between 1 and 65535".into());
@@ -851,6 +860,108 @@ mod tests {
         assert!(!status.listening);
         assert!(!status.enabled);
         assert_eq!(status.url, None);
+    }
+
+    /// Regression for the frontend report: a failed port change (target port
+    /// occupied) followed by an immediate revert to the previous port must bind
+    /// on the first try, not report the old port as still in use.
+    #[tokio::test]
+    async fn failed_port_change_can_immediately_revert() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctrl = controller(dir.path());
+        let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port_a = probe.local_addr().unwrap().port();
+        drop(probe);
+        ctrl.set_port(port_a).await;
+        let status = ctrl.set_enabled(true).await;
+        assert!(status.listening, "{status:?}");
+
+        // Occupy another port so changing to it fails at bind time.
+        let occupied = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port_b = occupied.local_addr().unwrap().port();
+        let status = ctrl.set_port(port_b).await;
+        assert!(!status.listening, "{status:?}");
+        assert!(
+            status
+                .last_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Failed to bind"),
+            "{status:?}"
+        );
+
+        // The old listener must be fully gone: revert binds immediately.
+        let status = ctrl.set_port(port_a).await;
+        assert!(
+            status.listening,
+            "revert to the previous port must bind immediately: {status:?}"
+        );
+        assert_eq!(status.port, port_a);
+        ctrl.set_enabled(false).await;
+    }
+
+    /// Toggling off/on must not race the previous listener either.
+    #[tokio::test]
+    async fn disable_then_enable_rebinds_the_same_port_immediately() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctrl = controller(dir.path());
+        let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+        ctrl.set_port(port).await;
+        assert!(ctrl.set_enabled(true).await.listening);
+        assert!(!ctrl.set_enabled(false).await.listening);
+        let status = ctrl.set_enabled(true).await;
+        assert!(
+            status.listening,
+            "re-enable must rebind the same port immediately: {status:?}"
+        );
+        ctrl.set_enabled(false).await;
+    }
+
+    /// Overlapping port RPCs must serialize. Frontend observed a stale
+    /// `lastError` + `listening=false` when a second change was submitted while
+    /// the first (~250ms bind retry window) was still in flight: the failing
+    /// call must not overwrite the successful one's state.
+    #[tokio::test]
+    async fn concurrent_port_changes_serialize_without_stale_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctrl = controller(dir.path());
+        let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port_a = probe.local_addr().unwrap().port();
+        drop(probe);
+        ctrl.set_port(port_a).await;
+        assert!(ctrl.set_enabled(true).await.listening);
+
+        // A port that is guaranteed to fail the bind.
+        let occupied = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port_b = occupied.local_addr().unwrap().port();
+
+        let failing = {
+            let ctrl = ctrl.clone();
+            tokio::spawn(async move { ctrl.set_port(port_b).await })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        let revert = {
+            let ctrl = ctrl.clone();
+            tokio::spawn(async move { ctrl.set_port(port_a).await })
+        };
+        let failing_status = failing.await.unwrap();
+        let revert_status = revert.await.unwrap();
+        assert!(!failing_status.listening, "{failing_status:?}");
+        assert!(revert_status.listening, "{revert_status:?}");
+
+        let final_status = ctrl.status();
+        assert!(
+            final_status.listening,
+            "final state must be the reverted listener: {final_status:?}"
+        );
+        assert_eq!(final_status.port, port_a);
+        assert_eq!(
+            final_status.last_error, None,
+            "a superseded bind failure must not leak into the final state"
+        );
+        ctrl.set_enabled(false).await;
     }
 
     #[tokio::test]

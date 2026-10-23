@@ -14,6 +14,12 @@ use agentero_core::features::system::settings::AppSettings;
 use crate::error::{blocking, fail_msg, ok, parse_args, typed_err, typed_ok, HandlerResult};
 use crate::rpc::RpcCtx;
 
+/// Serializes `mcp_set_enabled` / `mcp_set_port` RPCs end-to-end (controller
+/// mutation **and** the settings write-back). The controller already serializes
+/// its listener mutations; this guard also keeps the persisted `mcpPort`
+/// consistent with the final listener when two admin calls overlap.
+static MCP_CONTROL_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SetEnabledArgs {
@@ -84,6 +90,7 @@ pub async fn set_enabled(ctx: &RpcCtx, args: &Value) -> HandlerResult {
         Ok(args) => args,
         Err(error) => return fail_msg(error),
     };
+    let _control = MCP_CONTROL_LOCK.lock().await;
     let controller = ctx.state.mcp.clone();
     let status = controller.set_enabled(args.enabled).await;
     if let Err(error) = persist_settings(ctx, move |settings| {
@@ -109,6 +116,7 @@ pub async fn set_port(ctx: &RpcCtx, args: &Value) -> HandlerResult {
         Ok(args) => args,
         Err(error) => return fail_msg(error),
     };
+    let _control = MCP_CONTROL_LOCK.lock().await;
     let controller = ctx.state.mcp.clone();
     let status = controller.set_port(args.port).await;
     let accepted = args.port != 0 && status.port == args.port;
