@@ -82,6 +82,8 @@ WebSocket（`/api/events`）必须支持 Upgrade，否则前端事件（流式�
 
 - 本机客户端（Codex、Inspector、Claude Desktop 等）直接连 `http://127.0.0.1:8765/mcp`。
 - 容器 / 远程：`AGENTERO_MCP_BIND=0.0.0.0:8765` 发布端口，`AGENTERO_MCP_ALLOWED_HOSTS=<外部域名>` 放行 `Host` 头，并由反向代理加鉴权（MCP 本身无鉴权，不要裸暴露公网）。
+- 设置页开启 MCP 后即可用 MCP Inspector / Codex / 任何 Streamable HTTP 客户端连接 `http://<host>:<port>/mcp`；ChatGPT 等需要公网可达的客户端请走反向代理（web v1 不提供 Secure MCP Tunnel）。
+- compose 示例（`docker-compose.yml` 注释）：`AGENTERO_MCP_ENABLED=1` + `AGENTERO_MCP_BIND=0.0.0.0:8765` + 发布 `8765`，并把外部域名加入 `AGENTERO_MCP_ALLOWED_HOSTS`。
 - Web v1 不含 ChatGPT Secure MCP Tunnel；需要外网时用反代暴露 `/mcp`。
 - `paper_text_get` 默认关闭；设置 → 通用 → 「对外暴露论文正文」打开后才返回 PDF 文本（opt-in，正文会发给 MCP 客户端）。
 

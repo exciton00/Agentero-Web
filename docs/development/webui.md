@@ -167,6 +167,14 @@ agentero-core（已有，tauri-free）
 | 4 | 双击复制与打开冲突 | Library 单元格复制由双击改为**长按 ~550ms**（移动/离开/滚动取消，触发后吞掉 click，不选中不开论文；保留键盘/菜单复制）；双击行仍打开论文 |
 | 5 | 流量与客户端缓存 | `/api/file` 增加 ETag/Last-Modified/If-None-Match/If-Modified-Since（304）、单区间 Range（206/416）、`Accept-Ranges`；媒体 `private,max-age=3600`，JSON/文本 `private,no-cache`；API/静态加 gzip/br 压缩；hashed 资源 immutable。实测首屏 ~252KB（br），重复打开 PDF 304（0B），layout.json 129KB→24KB（br） |
 
+### 第五轮：MCP（2026-10-24）
+
+- 桌面版内嵌的 Streamable HTTP MCP 服务（`src-tauri/src/integration/mcp/`，24 tools + resources）已移植到 web host：`crates/agentero-web/src/mcp/`（桌面版本保持不变），`POST /mcp` 由独立 listener 提供（默认 `127.0.0.1:{settings.mcpPort}`=8765）。
+- 生命周期：启动时按 settings `mcpEnabled` 自动监听；`mcp_get_status/set_enabled/set_port/set_vault/set_known_vaults/set_parent_dir`（替换 stubs）持久化 mcpEnabled/mcpPort 并广播 `mcp:status`；端口热改即时重启 listener。
+- 部署：`AGENTERO_MCP_ENABLED=1` 强制启用、`AGENTERO_MCP_BIND=0.0.0.0:8765` 容器/反代暴露、`AGENTERO_MCP_ALLOWED_HOSTS` 放行 Host 头；非 loopback 绑定打无鉴权 WARN（公网必须挂反代鉴权）；compose/Caddy 有注释示例。
+- 工具宿主接缝：`import_id` 用 web CapsCache+EventBus；`paper_text_get` 实时读 settings opt-in；`file_move` 本地 WikiIndex；`file_delete` 保留 trash/permanent；`vault_list` 单 server vault（可同步 known vaults）；tunnel（OpenAI Secure MCP Tunnel）web v1 不可用。
+- 协议 E2E（curl/Python 客户端）：initialize（SSE+session）/initialized/tools/list（24 工具全带 outputSchema）/tools/call（paper_list、paper_get、paper_notes_get、paper_tag_*、vault_search、file_list/read/write/delete、layout_list/get、page_read、paper_text_get 开关语义、resources/list+read）；layout tools 用真实 MinerU 生成的 sidecar 验证（15 figures、page_read 22 regions）。
+
 ### 尚未完成 / 下一轮
 
 - **魔棒入库的 renderer 任务**：桌面把 Import/LayoutAnalyze/CitingScan/LibraryIo/MetadataRefresh 通过 `job:offer` 交给前端执行；web 服务端目前只有 look-up 版本，导致浏览器魔法棒「按标识符导入」走 `job_import_enqueue` 后拿不到候选 picker。下一步在 TaskCenter 实现 `job:offer` → 浏览器 `job_report` 的 offer/claim/report 协议（前端执行器已存在），一次性打通魔棒、版面分析、引用扫描等 renderer 类任务。
