@@ -12,6 +12,9 @@ services:
     ports:
       # Bind to loopback by default; flip the bind address only behind a proxy.
       - "${AGENTERO_WEB_BIND:-127.0.0.1}:${AGENTERO_WEB_PORT:-8787}:8787"
+      # Optional MCP endpoint (Streamable HTTP, no auth): uncomment together
+      # with AGENTERO_MCP_BIND below to publish it; keep it behind a proxy.
+      # - "${AGENTERO_MCP_PORT:-8765}:${AGENTERO_MCP_PORT:-8765}"
     environment:
       AGENTERO_WEB_ADDR: 0.0.0.0:8787
       AGENTERO_WEB_VAULT: /vault
@@ -22,6 +25,12 @@ services:
       # Optional: cloud-sync credentials (XDG sync.json otherwise).
       # AGENTERO_SYNC_ACCESS_KEY: ""
       # AGENTERO_SYNC_SECRET_KEY: ""
+      # Optional: MCP endpoint. `AGENTERO_MCP_ENABLED=1` starts it even when the
+      # Settings toggle is off; bind 0.0.0.0 inside the container and list the
+      # public Host name so the Host header check passes (no built-in auth).
+      # AGENTERO_MCP_ENABLED: "1"
+      # AGENTERO_MCP_BIND: 0.0.0.0:${AGENTERO_MCP_PORT:-8765}
+      # AGENTERO_MCP_ALLOWED_HOSTS: agentero.example.com
     volumes:
       - ${AGENTERO_VAULT_DIR:-./vault}:/vault
       - ${AGENTERO_DATA_DIR:-./data}:/data

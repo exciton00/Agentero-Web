@@ -26,3 +26,12 @@ agentero.example.com {
 		max_size 512MB
 	}
 }
+
+# Optional MCP route (uncomment together with the prod compose env/expose above):
+# the MCP endpoint has no auth of its own, so it sits behind the same basic auth.
+# mcp.example.com {
+# 	basic_auth {
+# 		# <user> <bcrypt-hash>
+# 	}
+# 	reverse_proxy agentero-web:8765
+# }

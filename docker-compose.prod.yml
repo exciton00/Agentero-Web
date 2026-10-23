@@ -19,6 +19,9 @@ services:
     # No host port: only reachable through the Caddy network.
     expose:
       - "8787"
+      # Optional MCP endpoint; uncomment with the env block below to route it
+      # through Caddy (no auth of its own — Caddy basic auth protects it).
+      # - "8765"
     environment:
       AGENTERO_WEB_ADDR: 0.0.0.0:8787
       AGENTERO_WEB_VAULT: /vault
@@ -30,6 +33,10 @@ services:
       # the CLI (claude/codex/dsh) inside the image and set the API keys here.
       # DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       # ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Optional MCP endpoint (see docker-compose.yml notes).
+      # AGENTERO_MCP_ENABLED: "1"
+      # AGENTERO_MCP_BIND: 0.0.0.0:8765
+      # AGENTERO_MCP_ALLOWED_HOSTS: agentero.example.com
     volumes:
       - ${AGENTERO_VAULT_DIR:-./vault}:/vault
       - ${AGENTERO_DATA_DIR:-./data}:/data
