@@ -112,6 +112,11 @@ AGENTERO_VAULT_DIR=$PWD/vault AGENTERO_DATA_DIR=$PWD/data \
 # open http://127.0.0.1:8787
 ```
 
+`vault/` and `data/` hold local runtime data (Vault + XDG settings/records); both directories are
+**listed in `.gitignore`**, so they will not be committed by accident. You can also point
+`AGENTERO_VAULT_DIR` / `AGENTERO_DATA_DIR` at absolute paths outside the repository (recommended in
+production).
+
 Production (Caddy TLS + basic auth; app port is not published):
 
 ```bash

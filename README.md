@@ -176,6 +176,10 @@ AGENTERO_VAULT_DIR=$PWD/vault AGENTERO_DATA_DIR=$PWD/data \
 # 打开 http://127.0.0.1:8787
 ```
 
+`vault/` 与 `data/` 是本地运行数据（Vault 与 XDG 设置/记录），仓库根目录下这两个目录
+**已加入 `.gitignore`，不会被误提交**；也可以把 `AGENTERO_VAULT_DIR` / `AGENTERO_DATA_DIR`
+指向仓库外的绝对路径（生产环境建议这样做）。
+
 生产（Caddy TLS + basic auth，应用端口不直接发布）：
 
 ```bash

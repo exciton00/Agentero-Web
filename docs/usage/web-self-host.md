@@ -20,6 +20,9 @@ open http://127.0.0.1:8787
 
 首次访问会进入欢迎页；在 VAULT 目录里新建/打开一个 Vault 即可（也可以复用已有 Vault：把 `AGENTERO_VAULT_DIR` 指向它）。
 
+> `vault/` 与 `data/` 是本地运行数据目录，仓库根目录下的这两个目录已加入 `.gitignore`，不会被误提交；
+> 生产环境建议把 `AGENTERO_VAULT_DIR` / `AGENTERO_DATA_DIR` 指向仓库外的绝对路径。
+
 ## 生产部署（Caddy 反向代理 + 鉴权）
 
 仓库内置了生产编排：`docker-compose.prod.yml` + `deploy/Caddyfile`。应用端口不再发布到宿主机，只由 Caddy 反代并通过 basic auth 保护：

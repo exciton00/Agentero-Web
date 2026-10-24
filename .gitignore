@@ -45,6 +45,10 @@ src-tauri/target/
 # Local scratch / demo vaults
 /tmp/
 
+# Local runtime data created by the docker-compose quickstart
+/vault/
+/data/
+
 # Brainstorming visual-companion scratch
 .superpowers/
 
