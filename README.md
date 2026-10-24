@@ -66,7 +66,7 @@ git merge upstream/main   # 或 rebase；Web 改动较多，冲突需自行解�
   `pnpm build:web`；`isTauri()` 分诊逐步改为 `hasHostTransport()`；服务端 Vault 在 web 启动时权威生效。
 - 服务端 PDF 导入 / 标识符导入 / BibTeX 导入 / `PAPER.md` 正文解析 / 引用解析；PDFium worker
   提前到 tokio 启动前 dispatch。
-- 单用户设计：**无内置鉴权**，请放在 TLS + 鉴权的反向代理之后。
+- 单用户设计：**无内置鉴权**；如需远程访问，请自行负责 TLS/鉴权/反向代理。
 
 ### 2.2 Agent（ACP，服务端运行）
 
@@ -140,8 +140,7 @@ git merge upstream/main   # 或 rebase；Web 改动较多，冲突需自行解�
 
 - `Dockerfile` 三阶段构建（Node 22 + PDFium + tesseract 预置，镜像内 `agentero-web` +
   `dist` + PDFium），非 root runtime、healthcheck。
-- `docker-compose.yml`（普通与 `prod` profile 共用）+ `deploy/Caddyfile`
-  （Caddy TLS + basic auth、不直接发布应用端口）。
+- `docker-compose.yml`（单服务）+ `.env.example`；不包含反向代理/鉴权方案。
 - 源码部署支持（Rust + pnpm）；环境变量、数据目录、备份与 MCP/RAG 配置说明见文档。
 
 ---
@@ -165,9 +164,9 @@ git merge upstream/main   # 或 rebase；Web 改动较多，冲突需自行解�
 
 ## 5. 部署
 
-### 5.1 Docker Compose（普通与生产用同一个文件）
+### 5.1 Docker Compose（单文件，不含反代/生产编排）
 
-前置：Linux/macOS + Docker Compose 插件（Windows 走 Docker Desktop 也可）。
+前置：Linux + Docker Compose 插件。
 
 仓库只提交两个模板：`docker-compose.yml.example` 和 `.env.example`；复制出来的实际文件被
 `.gitignore` 忽略。**只有一个 compose 文件，没有单独的 prod/host-agent 文件。**
@@ -181,37 +180,34 @@ cp .env.example .env
 # 编辑 .env：Vault/数据路径、端口、可选 MCP 等
 mkdir -p vault data
 
-# 拉取 GHCR 镜像并启动（镜像包含前端、PDFium、Node 22 和测试过的 Dsh）
+# 拉取 GHCR 镜像并启动（镜像含前端、PDFium、Node 22，不含 Agent CLI）
 docker compose pull
 docker compose up -d
 
 # 打开 http://127.0.0.1:8787
 ```
 
-**Dsh Agent**：镜像已内置测试过的 `@deepseek-ai/dsh@0.2.1-rc.2`；compose 默认把宿主机
-`~/.dsh`（凭据 + profile）挂到 `/data/home/.dsh`，Web host 启动时自动注册为正常的
-`Dsh` catalog 行。宿主机只需要有一个已登录的 `~/.dsh`，不需要在容器里装 Dsh，也不需要
-host-agent 覆盖文件。Windows/自定义 Dsh 目录可在 `.env` 设置：
+**Dsh Agent（宿主机安装，挂载进容器）**：镜像**不包含** Dsh。compose 把宿主机的 Dsh 包和
+`~/.dsh` 挂进容器，Web host 启动时用镜像内 Node 22 执行挂载的 `lib/bin.js`，自动注册为正常的
+`Dsh` catalog 行。以本机（root + system npm）为例，`.env` 默认值：
 
 ```dotenv
-AGENTERO_DSH_HOME=C:/Users/you/.dsh
+AGENTERO_HOST_DSH_ROOT=/usr/lib/node_modules/@deepseek-ai
+AGENTERO_DSH_HOME=/root/.dsh
 ```
+
+对应 compose 挂载：
+
+```yaml
+- ${AGENTERO_HOST_DSH_ROOT}:/opt/host-agent/@deepseek-ai:ro
+- ${AGENTERO_DSH_HOME}:/data/home/.dsh
+```
+
+若 `dsh` 通过 nvm/volta 安装，用 `readlink -f "$(command -v dsh)"`，把结果去掉
+`/dsh/lib/bin.js` 后填入 `AGENTERO_HOST_DSH_ROOT`；`~/.dsh` 的路径填入 `AGENTERO_DSH_HOME`。
+不需要挂载 `/usr/bin/dsh` 符号链接。
 
 源码/裸机运行 Web host 时同理：`dsh` 在 PATH 且 `~/.dsh` 存在就会自动注册。
-
-**生产（同一 compose 文件）**：生产专属的 Caddy 服务放在 `prod` profile 里，默认不启动：
-
-```bash
-# 在 .env 设置：
-# AGENTERO_DOMAIN=agentero.example.com
-# AGENTERO_BASIC_AUTH_USER=you
-# AGENTERO_BASIC_AUTH_HASH='...'   # docker run --rm caddy:2 caddy hash-password --plaintext '...'
-docker compose --profile prod pull
-docker compose --profile prod up -d
-```
-
-Caddy 会接管 80/443，应用端口仍只绑 loopback。`deploy/Caddyfile` 无需手改，域名和 basic auth
-由 `.env` 注入；反向代理必须支持 WebSocket（`/api/events` Upgrade）。
 
 **Vault 路径对齐**：容器内默认 `/vault`。如果宿主工具需要和宿主机完全一致的绝对路径，在
 `.env` 同时设：
@@ -230,7 +226,7 @@ AGENTERO_VAULT_CONTAINER_PATH=/srv/agentero/vault
   或先 `docker login ghcr.io`。
 - 需要公网 MCP 时：`.env` 设 `AGENTERO_MCP_ENABLED=1`、`AGENTERO_MCP_BIND=0.0.0.0:8765`，
   取消 compose 里 MCP 端口映射注释并发布 8765；把外部域名加入 `AGENTERO_MCP_ALLOWED_HOSTS`，
-  并由反代加鉴权（MCP 本身无鉴权）。
+  并自行处理鉴权（MCP 本身无鉴权）。
 
 ### 5.2 源码部署
 
@@ -280,7 +276,6 @@ Docker Compose 的所有用户配置统一放在 `.env`（从 `.env.example` 复
 | `AGENTERO_WEB_MAX_BODY_MB` | `64` | `/api` body 上限（8–512 MiB） |
 | `AGENTERO_WEB_ALLOW_ROOTS` | 空 | 文件端点额外根目录（`:`/`,` 分隔） |
 | `AGENTERO_MCP_ENABLED` / `AGENTERO_MCP_BIND` / `AGENTERO_MCP_ALLOWED_HOSTS` | 空 | MCP 强制开启 / 绑定地址 / Host 白名单 |
-| `AGENTERO_DOMAIN` / `AGENTERO_BASIC_AUTH_USER` / `AGENTERO_BASIC_AUTH_HASH` | 仅生产 | Caddy 域名与 basic auth（hash 用单引号，防止 `$` 插值） |
 | `AGENTERO_DSH_HOME` | `${HOME}/.dsh` | 宿主机 Dsh 凭据/profile 目录，挂载到 `/data/home/.dsh` |
 | `DEEPSEEK_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | 空 | 可选，服务端 Agent CLI 凭据 |
 | `RUST_LOG` | `info` | 日志级别 |
@@ -319,7 +314,7 @@ Docker Compose 的所有用户配置统一放在 `.env`（从 `.env.example` 复
 | **MCP 客户端** | 自带 Python Streamable HTTP 测试客户端（initialize/tools/list/tools/call） | ChatGPT、Claude Desktop、MCP Inspector、Codex 等第三方客户端；Secure MCP Tunnel（Web v1 不提供） |
 | **OS / 容器** | Linux x86_64（Debian 13），Docker 29.7.2 / Docker Compose；开发机 Node 24（镜像 Node 22） | Windows、macOS、ARM、其他 Linux 发行版 |
 | **浏览器** | Chromium（自动化测试）；桌面宽度视口 | Firefox、Safari、移动端浏览器、极端分辨率 |
-| **反向代理** | 开发 compose 直连 8787；生产 Caddy 编排已提供 | Caddy 生产部署未做完整公网验收；nginx/Tailscale/Frp 等未测试 |
+| **反向代理** | 未提供 | 本项目不包含反向代理/鉴权；如需公网访问请自行配置并测试 |
 | **数据/规模** | 6 篇测试 Vault、单 Vault、单知识库 | 大规模 Vault（数百/数千篇）、多用户、多 Vault 并发、跨设备同时写 |
 
 > 如果你启用未测试的 Agent/解析引擎/RAG，请先小范围试跑；错误/兼容性问题自行承担。

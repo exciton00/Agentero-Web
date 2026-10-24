@@ -40,7 +40,7 @@ Web 版把同一套 Streamable HTTP MCP 移植到 `crates/agentero-web/src/mcp/`
 | `AGENTERO_MCP_BIND` | 空 | `host:port`，覆盖 bind 地址与端口（如 `0.0.0.0:8765`）。一旦设置，端口由 env 固定，`mcp_set_port` 返回 `lastError` 而不重启 |
 | `AGENTERO_MCP_ALLOWED_HOSTS` | 空 | 额外允许的 `Host` 头（逗号分隔，如 `mcp.example.com`）。loopback 与 bind 主机自动允许；其它 Host 返回 403（DNS rebinding 防护） |
 
-- **鉴权**：Web 版 MCP 同样**无鉴权**。绑定非 loopback 时启动日志会打 WARN；公网暴露必须由反向代理做鉴权（Caddy/nginx/Tailscale），并把外部域名加进 `AGENTERO_MCP_ALLOWED_HOSTS`。
+- **鉴权**：Web 版 MCP 同样**无鉴权**。绑定非 loopback 时启动日志会打 WARN；公网暴露必须由用户自己的反向代理做鉴权，并把外部域名加进 `AGENTERO_MCP_ALLOWED_HOSTS`。
 - **状态**：`mcp_get_status` / `mcp:status` 的 payload 与桌面 `McpStatus` 一致：`{enabled, listening, port, url, lastError, vaultPath}`。`url` 仅在 listening 时给值；bind 为 `0.0.0.0`/`::` 时展示 `127.0.0.1`（wildcard 不可连接）。`mcp_set_enabled` / `mcp_set_port` 还会把 `mcpEnabled` / `mcpPort` 写回共享 `settings.json` 并广播 `settings:changed`，重启后保持。
 - **端口切换**：换端口会先彻底关闭旧 listener（等待 serve 任务退出 + `SO_REUSEADDR`）再绑定新端口；目标端口被占用时返回 `lastError`（listener 保持停止），立即改回原端口或重试可一次成功，不会残留 `Address already in use`。端口由 `AGENTERO_MCP_BIND` 固定时 `mcp_set_port` 只回报错误、不改监听。
 - **Vault 作用域**：服务端单 Vault（`AGENTERO_WEB_VAULT`，或前端通过 `mcp_set_vault` 选择的本地 Vault）。`vault_list` 返回该 Vault（`open=true`）+ `mcp_set_known_vaults` 同步的已知 Vault；其它工具的 `vault` 参数只能命中这些路径。

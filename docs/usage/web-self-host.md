@@ -1,7 +1,7 @@
 # 自部署 Web 版（headless）
 
 Agentero 的 headless Web 宿主把同一个 Vault 与工作台界面跑在一台**常开的机器**上（NAS / VPS / 小主机），用浏览器访问。
-单用户设计：**不内置登录**，请在前面放一层反向代理做 TLS 与鉴权（Caddy / nginx / Tailscale）。
+单用户设计：**不内置登录**；如需远程访问，请自行负责 TLS/鉴权/反向代理（本项目不提供方案）。
 
 > 状态：核心链路已跑通并在浏览器验证：Vault 树 / 论文库 / PDF 阅读 / NOTES 编辑 / 设置 / 文件端点 / 多标签 watcher / 服务端任务中心 / 云同步 / 本地 PDF 与标识符导入 / Agent 对话（ACP，需在服务器安装 CLI）。Docker 镜像与 compose 已实测。设计见 [docs/development/webui.md](../development/webui.md)。
 
@@ -24,24 +24,14 @@ open http://127.0.0.1:8787
 
 关键点：
 
-- 镜像已内置测试过的 Dsh CLI；compose 默认挂载宿主机 `~/.dsh` 到 `/data/home/.dsh`，启动时
-  自动注册为 Dsh catalog 行。Windows/自定义 Dsh 目录在 `.env` 设置 `AGENTERO_DSH_HOME`。
+- 镜像不含 Agent CLI；compose 把宿主机 Dsh 包和 `~/.dsh` 挂进容器，Web host 用镜像内 Node 22
+  执行挂载的 `lib/bin.js`，启动时自动注册 Dsh catalog 行。系统 npm 安装默认挂载：
+  `${AGENTERO_HOST_DSH_ROOT}:/opt/host-agent/@deepseek-ai:ro` 和
+  `${AGENTERO_DSH_HOME}:/data/home/.dsh`；对应 `.env` 见 `.env.example`。
 - `vault/` 与 `data/` 是本地运行数据，已加入 `.gitignore`；生产建议把
   `AGENTERO_VAULT_DIR` / `AGENTERO_DATA_DIR` 指向仓库外绝对路径。
 - 想用源码构建镜像：`.env` 设 `AGENTERO_IMAGE=agentero-web:local`，执行
   `docker compose up -d --build`。GHCR 包默认可能是 private：设 public 或先 `docker login ghcr.io`。
-
-**生产（同一个 compose 文件）**：Caddy 放在 `prod` profile，不默认启动：
-
-```bash
-# .env 设置 AGENTERO_DOMAIN / AGENTERO_BASIC_AUTH_USER / AGENTERO_BASIC_AUTH_HASH
-docker run --rm caddy:2 caddy hash-password --plaintext 'your-password'
-docker compose --profile prod pull
-docker compose --profile prod up -d
-```
-
-Caddy 接管 80/443；应用端口仍只绑 loopback。`deploy/Caddyfile` 无需手改，域名和 basic auth
-由 `.env` 注入。反向代理必须支持 WebSocket（`/api/events` Upgrade）。
 
 ## 镜像构建（GitHub Actions → GHCR）
 
@@ -53,33 +43,6 @@ Caddy 接管 80/443；应用端口仍只绑 loopback。`deploy/Caddyfile` 无需
 部署时 `.env` 的 `AGENTERO_IMAGE` 指向该镜像，`docker compose pull && docker compose up -d --no-build`
 即可；本地构建/调试用 `docker build -t agentero-web:local .`，并在 `.env` 设
 `AGENTERO_IMAGE=agentero-web:local`。
-
-## 反向代理（手工配置）
-
-Caddy 示例（自动 HTTPS + basic auth）：
-
-```caddyfile
-agentero.example.com {
-    basic_auth {
-        you $2a$14$<bcrypt-hash>
-    }
-    reverse_proxy 127.0.0.1:8787
-}
-```
-
-nginx 示例：
-
-```nginx
-location / {
-    proxy_pass http://127.0.0.1:8787;
-    proxy_http_version 1.1;
-    proxy_set_header Upgrade $http_upgrade;   # WebSocket /api/events
-    proxy_set_header Connection "upgrade";
-    proxy_set_header Host $host;
-}
-```
-
-WebSocket（`/api/events`）必须支持 Upgrade，否则前端事件（流式输出、文件变更、任务进度）不会工作。
 
 ## 环境变量（`.env`）
 
@@ -100,7 +63,6 @@ Docker Compose 的用户配置统一放在 `.env`（由 `.env.example` 复制）
 | `AGENTERO_MCP_ENABLED` | 空 | `1`/`true` 强制启动 MCP listener（无视 `settings.mcpEnabled`） |
 | `AGENTERO_MCP_BIND` | 空 | MCP 监听地址 `host:port`，如 `0.0.0.0:8765` |
 | `AGENTERO_MCP_ALLOWED_HOSTS` | 空 | MCP 额外允许的 `Host` 头（逗号分隔），反代域名必须列在这里 |
-| `AGENTERO_DOMAIN` / `AGENTERO_BASIC_AUTH_USER` / `AGENTERO_BASIC_AUTH_HASH` | 仅生产 | Caddy 域名与 basic auth；hash 在 `.env` 中用单引号 |
 | `AGENTERO_DSH_HOME` | `${HOME}/.dsh` | 宿主机 Dsh 凭据/profile 目录，挂载到 `/data/home/.dsh` |
 | `DEEPSEEK_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | 空 | 可选，服务端 Agent CLI 凭据 |
 | `XDG_CONFIG_HOME` / `XDG_DATA_HOME` / `XDG_CACHE_HOME` | 系统默认 | 设置、使用记录、模型缓存；容器里已由 `/data` 挂载持久化 |
@@ -222,6 +184,6 @@ AGENTERO_VAULT_CONTAINER_PATH=/srv/agentero/vault
 ## 已知边界（当前）
 
 - 单用户、无内置鉴权；不要直接把 8787 暴露到公网。
-- Agent（ACP）镜像已内置 Dsh；其他 ACP Agent 需自行安装/配置，未测试。
-- Docker 使用宿主机 `~/.dsh` 配置 + 镜像内置 Dsh；Windows/custom home 通过 `AGENTERO_DSH_HOME` 指定。
+- Agent（ACP）需宿主机安装 Dsh 并挂载进容器；其他 ACP Agent 需自行安装/配置，未测试。
+- Docker 使用宿主机的 Dsh 包 + `~/.dsh`（Linux）；自定义安装路径通过 `AGENTERO_HOST_DSH_ROOT` / `AGENTERO_DSH_HOME` 指定。
 - 版面分析（ONNX）、Zotero Connector、远程 Vault（SSH）、自动更新在 Web 版不可用或不移植。

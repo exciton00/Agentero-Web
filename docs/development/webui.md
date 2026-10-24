@@ -9,7 +9,7 @@
 | # | 决策 | 含义 |
 |---|---|---|
 | 1 | 部署到 NAS/VPS，优先 Docker Compose | 单一 Linux 二进制 + 镜像；也提供裸机/systemd 方式 |
-| 2 | **单用户，不做内置鉴权** | 信任边界交给反向代理（Caddy/nginx/Tailscale）；服务默认可绑 127.0.0.1 或由 `AGENTERO_WEB_TRUST_PROXY` 说明 |
+| 2 | **单用户，不做内置鉴权** | 信任边界交给用户自己的反向代理；服务默认可绑 127.0.0.1 |
 | 3 | **多标签必须**，**Vault 云同步必须** | 浏览器多标签页各自是独立工作区；S3/WebDAV 同步保留（`agentero-core::features::sync`） |
 | 4 | Zotero Connector、远程 Vault（SSH）**不做** | 不移植 `integration/connector`、`integration/remote` |
 | 5 | Agent 跑在服务器上（CLI + API key） | 保留 ACP/BYOA：服务端探测/安装/拉起 claude/codex，凭据存服务器 |
@@ -171,7 +171,7 @@ agentero-core（已有，tauri-free）
 
 - 桌面版内嵌的 Streamable HTTP MCP 服务（`src-tauri/src/integration/mcp/`，24 tools + resources）已移植到 web host：`crates/agentero-web/src/mcp/`（桌面版本保持不变），`POST /mcp` 由独立 listener 提供（默认 `127.0.0.1:{settings.mcpPort}`=8765）。
 - 生命周期：启动时按 settings `mcpEnabled` 自动监听；`mcp_get_status/set_enabled/set_port/set_vault/set_known_vaults/set_parent_dir`（替换 stubs）持久化 mcpEnabled/mcpPort 并广播 `mcp:status`；端口热改即时重启 listener。
-- 部署：`AGENTERO_MCP_ENABLED=1` 强制启用、`AGENTERO_MCP_BIND=0.0.0.0:8765` 容器/反代暴露、`AGENTERO_MCP_ALLOWED_HOSTS` 放行 Host 头；非 loopback 绑定打无鉴权 WARN（公网必须挂反代鉴权）；compose/Caddy 有注释示例。
+- 部署：`AGENTERO_MCP_ENABLED=1` 强制启用、`AGENTERO_MCP_BIND=0.0.0.0:8765` 容器/反代暴露、`AGENTERO_MCP_ALLOWED_HOSTS` 放行 Host 头；非 loopback 绑定打无鉴权 WARN（公网访问由用户自行加反代/鉴权）；本项目不提供代理方案。
 - 工具宿主接缝：`import_id` 用 web CapsCache+EventBus；`paper_text_get` 实时读 settings opt-in；`file_move` 本地 WikiIndex；`file_delete` 保留 trash/permanent；`vault_list` 单 server vault（可同步 known vaults）；tunnel（OpenAI Secure MCP Tunnel）web v1 不可用。
 - 协议 E2E（curl/Python 客户端）：initialize（SSE+session）/initialized/tools/list（24 工具全带 outputSchema）/tools/call（paper_list、paper_get、paper_notes_get、paper_tag_*、vault_search、file_list/read/write/delete、layout_list/get、page_read、paper_text_get 开关语义、resources/list+read）；layout tools 用真实 MinerU 生成的 sidecar 验证（15 figures、page_read 22 regions）。
 

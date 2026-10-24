@@ -76,7 +76,7 @@ See [`docs/development/webui.md`](docs/development/webui.md) for the detailed ro
   `/agentero_online.bib` mount; write-burst batching (auto-refresh fix); ETag/304, Range, gzip/br,
   immutable hashed assets; MCP listener port-change/concurrency fixes; sidebar/settings fixes.
 - **Deployment**: three-stage `Dockerfile` (Node 22 + PDFium + tesseract), `docker-compose.yml`,
-  `docker-compose.yml` with the `prod` profile (Caddy TLS + basic auth); source deployment supported.
+  `docker-compose.yml` (single service) + `.env.example`; no reverse-proxy/auth solution included.
 
 ---
 
@@ -102,7 +102,7 @@ under its original copyright/license (see [LICENSE](LICENSE)).
 
 ## 5. Deployment
 
-### 5.1 Docker Compose (one file for local and production)
+### 5.1 Docker Compose (single file, no proxy/managed deployment)
 
 Only two templates are committed: `docker-compose.yml.example` and `.env.example`. The copied
 working files are git-ignored. **There is one compose file — no separate prod or host-agent file.**
@@ -121,28 +121,27 @@ docker compose up -d
 # open http://127.0.0.1:8787
 ```
 
-**Dsh agent**: the image bundles the tested `@deepseek-ai/dsh@0.2.1-rc.2`; compose mounts the host
-`~/.dsh` (credentials + profiles) at `/data/home/.dsh`, and the web host auto-registers it as the
-normal `Dsh` catalog row. The host does not need to run Dsh inside the container, and no host-agent
-compose file is needed. On Windows/custom homes set:
+**Dsh agent (installed on the Linux host, mounted into the container)**: the image does **not**
+bundle Dsh. Compose mounts the host's Dsh package and `~/.dsh`; the Web host runs the mounted
+`lib/bin.js` with its Node 22 and auto-registers the normal `Dsh` catalog row. For this host
+(root + system npm) the `.env` defaults are:
 
 ```dotenv
-AGENTERO_DSH_HOME=C:/Users/you/.dsh
+AGENTERO_HOST_DSH_ROOT=/usr/lib/node_modules/@deepseek-ai
+AGENTERO_DSH_HOME=/root/.dsh
 ```
+
+The corresponding compose mounts are:
+
+```yaml
+- ${AGENTERO_HOST_DSH_ROOT}:/opt/host-agent/@deepseek-ai:ro
+- ${AGENTERO_DSH_HOME}:/data/home/.dsh
+```
+
+For nvm/volta/custom installs run `readlink -f "$(command -v dsh)"`, strip `/dsh/lib/bin.js`,
+and use that as `AGENTERO_HOST_DSH_ROOT`. Do not mount the `/usr/bin/dsh` symlink itself.
 
 For source/bare-metal runs, a `dsh` on PATH plus `~/.dsh` is auto-registered at startup too.
-
-**Production (same file)**: Caddy lives behind the `prod` profile and is not started by default.
-Set the domain/basic-auth values in `.env`, then:
-
-```bash
-docker compose --profile prod pull
-docker compose --profile prod up -d
-```
-
-Caddy owns 80/443; the app port stays loopback. `deploy/Caddyfile` is generic; domain and basic auth
-come from `.env` (`{$AGENTERO_DOMAIN}` / `{$AGENTERO_BASIC_AUTH_*}`). The reverse proxy must support
-WebSocket (`/api/events` Upgrade).
 
 **Vault path parity**: if host tools need exactly the same absolute Vault path, set both:
 
@@ -203,7 +202,6 @@ automatically; `.env` and the real compose files are git-ignored.
 | `AGENTERO_WEB_MAX_BODY_MB` | `64` | `/api` body limit (8–512 MiB) |
 | `AGENTERO_WEB_ALLOW_ROOTS` | empty | extra file-API roots |
 | `AGENTERO_MCP_ENABLED` / `AGENTERO_MCP_BIND` / `AGENTERO_MCP_ALLOWED_HOSTS` | empty | optional MCP listener / bind / Host allow-list |
-| `AGENTERO_DOMAIN` / `AGENTERO_BASIC_AUTH_USER` / `AGENTERO_BASIC_AUTH_HASH` | production only | Caddy domain and basic auth (quote the hash to protect `$`) |
 | `AGENTERO_DSH_HOME` | `${HOME}/.dsh` | host Dsh credentials/profile dir mounted at `/data/home/.dsh` |
 | `DEEPSEEK_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | empty | optional server-side agent CLI credentials |
 | `RUST_LOG` | `info` | log level |
@@ -242,7 +240,7 @@ Only the following combinations were actually exercised. Everything else is **un
 | **MCP clients** | Built-in Python Streamable HTTP test client (initialize/tools/list/tools/call) | ChatGPT, Claude Desktop, Inspector, Codex and other clients; Secure MCP Tunnel (not in Web v1) |
 | **OS/container** | Linux x86_64 (Debian 13), Docker 29.7.2 / Compose; dev Node 24 (image Node 22) | Windows, macOS, ARM, other distros |
 | **Browser** | Chromium (automation), desktop viewport | Firefox, Safari, mobile browsers, extreme viewports |
-| **Reverse proxy** | Dev compose direct; production Caddy files provided | No full public Caddy validation; nginx/Tailscale/Frp untested |
+| **Reverse proxy** | Not provided | This project does not include a reverse proxy/auth solution; bring your own if exposing it |
 | **Scale** | 6-paper test Vault, single Vault, single KB | Large Vaults, multi-user, concurrent Vaults/devices |
 
 ---
