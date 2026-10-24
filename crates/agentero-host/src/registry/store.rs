@@ -236,6 +236,20 @@ impl AgentRegistry {
                 a.template.as_str() == template_id
                     || (a.command == info.command && a.args == info.args)
             }) {
+                // Host-mounted ACP descriptors (e.g. Docker Dsh via the image's
+                // Node + mounted bin.js) intentionally differ from the catalog
+                // launcher. Never rewrite them; the registry owns that command.
+                if existing
+                    .env
+                    .get("AGENTERO_HOST_AGENT")
+                    .is_some_and(|value| value == "1")
+                {
+                    if set_default {
+                        self.set_default(Some(existing.id.clone()))?;
+                        return self.get(&existing.id);
+                    }
+                    return Ok(existing.clone());
+                }
                 let needs_refresh = existing.command != info.command || existing.args != info.args;
                 // Fill missing catalog env keys (e.g. OPENCODE_ENABLE_QUESTION_TOOL)
                 // without overwriting user values.
@@ -419,7 +433,19 @@ impl AgentRegistry {
                     local_command_availability(&info.command, &info.id, &environment, || {
                         bundled::bundled_spawn(&info.id, &environment).is_some()
                     });
-                let acp_command_available = availability.is_ok();
+                // A registered catalog template can override the catalog command
+                // (the Docker host-agent registers Dsh with the image's Node and
+                // the mounted bin.js, so `dsh` itself is not on PATH). Treat the
+                // registered descriptor's command as the ACP entrypoint so the
+                // normal Dsh row stays usable and the host agent is not rendered
+                // as a second custom row.
+                let registered_command_available = registered
+                    .and_then(|agent| {
+                        resolve_command_in_agent_env(&agent.command, &environment)
+                    })
+                    .is_some();
+                let acp_command_available = availability.is_ok() || registered_command_available;
+                let binary_available = binary_available || registered_command_available;
 
                 let (acp_status, acp_agent_name, last_probe_error, last_probed_at) =
                     if !acp_command_available {

@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use agentero_host::models::UpsertAgentRequest;
+use agentero_host::models::{AgentTemplate, UpsertAgentRequest};
 use agentero_host::service::AgentHost;
 
 /// Standard mount point used by `docker-compose.host-agent.yml.example`.
@@ -99,6 +99,10 @@ pub fn ensure_host_dsh(agents: &AgentHost, settings_path: &Path) -> bool {
         "--profile".to_string(),
         "acp".to_string(),
     ];
+    // Marks a host-mounted descriptor so the catalog's ensure/probe path does
+    // not "refresh" it back to `dsh --profile acp` (which is not on PATH).
+    let mut env = HashMap::new();
+    env.insert("AGENTERO_HOST_AGENT".to_string(), "1".to_string());
 
     let mark_done = || {
         if let Some(parent) = marker.parent() {
@@ -110,11 +114,32 @@ pub fn ensure_host_dsh(agents: &AgentHost, settings_path: &Path) -> bool {
     };
 
     if let Ok(list) = agents.list_agents() {
-        let already = list.agents.iter().any(|agent| {
+        let existing = list.agents.iter().find(|agent| {
             agent.command == command
                 && agent.args.iter().any(|arg| arg == &args[0])
         });
-        if already {
+        if let Some(existing) = existing {
+            // Migrate an older "Host Dsh" custom row to the Dsh template so the
+            // catalog row (icon/name) replaces the duplicate custom entry.
+            if existing.template != AgentTemplate::Dsh {
+                let migrated = UpsertAgentRequest {
+                    id: Some(existing.id.clone()),
+                    name: "Dsh".to_string(),
+                    template: Some(AgentTemplate::Dsh),
+                    command: existing.command.clone(),
+                    args: existing.args.clone(),
+                    env: {
+                        let mut env = existing.env.clone();
+                        env.insert("AGENTERO_HOST_AGENT".to_string(), "1".to_string());
+                        env
+                    },
+                    set_default: false,
+                };
+                match agents.upsert_agent(migrated) {
+                    Ok(_) => log::info!("host-agent: migrated existing host agent to the Dsh template"),
+                    Err(error) => log::warn!("host-agent: could not migrate host agent: {error}"),
+                }
+            }
             mark_done();
             return false;
         }
@@ -122,11 +147,13 @@ pub fn ensure_host_dsh(agents: &AgentHost, settings_path: &Path) -> bool {
 
     let request = UpsertAgentRequest {
         id: Some(HOST_AGENT_ID.to_string()),
-        name: "Host Dsh".to_string(),
-        template: None,
+        // Use the Dsh template so the catalog row shows the Dsh icon/name
+        // instead of a second generic "Host Dsh" custom-agent row.
+        name: "Dsh".to_string(),
+        template: Some(AgentTemplate::Dsh),
         command,
         args,
-        env: HashMap::new(),
+        env,
         set_default: true,
     };
     match agents.upsert_agent(request) {

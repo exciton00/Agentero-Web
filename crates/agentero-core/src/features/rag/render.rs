@@ -1,6 +1,8 @@
 //! Paper package → merged Markdown for WeKnora (renderer v1).
 //!
-//! The document is the single RAG unit per paper: metadata header + abstract +
+//! The document is the single RAG unit per paper: metadata header + abstract
+//! (catalog, then metadata.json fallback) + body (`PAPER.md`, otherwise extracted
+//! text from `source/layout.json` or the PDF) +
 //! `PAPER.md` body + figure/table index + user notes + annotations/marks +
 //! notes-image placeholders + a BibTeX/BibLaTeX citation section.
 //!
@@ -176,17 +178,27 @@ pub fn render_paper(
     }
     sections.push(header.trim_end().to_string());
 
-    if let Some(abstract_text) = record
+    let abstract_text = record
         .abstract_text
         .as_deref()
         .map(str::trim)
         .filter(|text| !text.is_empty())
-    {
+        .map(str::to_string)
+        .or_else(|| read_metadata_abstract(&paper_dir));
+    if let Some(abstract_text) = &abstract_text {
         sections.push(format!("## Abstract\n{abstract_text}"));
     }
 
     let paper_body = if options.include_paper_body {
         read_optional(paper_dir.join("PAPER.md"))?
+            .filter(|body| !body.trim().is_empty())
+            .or_else(|| {
+                // Many imported papers never ran the paper-reader and therefore
+                // have no PAPER.md. Use the layout text (MinerU/LiteParse) or the
+                // PDF text layer so the RAG document still contains the body.
+                layout_body_text(vault, &record.path)
+                    .or_else(|| pdf_body_text(&paper_dir, record))
+            })
     } else {
         None
     };
@@ -304,6 +316,80 @@ pub fn user_tags(record: &PaperRecord) -> Vec<String> {
         }
     }
     tags
+}
+
+/// `metadata.json` abstract fallback for papers whose catalog row lost it.
+fn read_metadata_abstract(paper_dir: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(paper_dir.join("metadata.json")).ok()?;
+    let value: Value = serde_json::from_str(&text).ok()?;
+    value
+        .get("abstract")
+        .or_else(|| value.get("abstract_text"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+}
+
+/// Body text from `source/layout.json` paragraph/title/header regions.
+fn layout_body_text(vault: &Path, paper_path: &str) -> Option<String> {
+    let raw_path = vault.join(paper_path).join("source").join("layout.json");
+    if !raw_path.is_file() {
+        return None;
+    }
+    let layout = layout_index::load_raw_layout(vault, paper_path).ok()?;
+    let mut lines: Vec<String> = Vec::new();
+    let mut seen = HashSet::new();
+    for region in &layout.regions {
+        let kind = region.kind.trim().to_ascii_lowercase();
+        if !(kind.contains("text")
+            || matches!(kind.as_str(), "paragraph" | "title" | "header" | "section"))
+        {
+            continue;
+        }
+        let Some(text) = region
+            .text
+            .as_deref()
+            .or(region.title.as_deref())
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+        else {
+            continue;
+        };
+        if seen.insert(text.to_string()) {
+            lines.push(text.to_string());
+        }
+    }
+    (!lines.is_empty()).then(|| lines.join("\n\n"))
+}
+
+/// Last-resort body extraction from the paper PDF's text layer.
+fn pdf_body_text(paper_dir: &Path, record: &PaperRecord) -> Option<String> {
+    let pdf_path = paper_dir.join(format!("{}.pdf", record.id));
+    let pdf_path = if pdf_path.is_file() {
+        pdf_path
+    } else {
+        std::fs::read_dir(paper_dir)
+            .ok()?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
+            })?
+    };
+    let bytes = std::fs::read(&pdf_path).ok()?;
+    let extracted =
+        crate::features::pdf::text::extract_text(&bytes, None, 20_000).ok()?;
+    let text = extracted
+        .pages
+        .into_iter()
+        .map(|page| page.text.trim().to_string())
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    (!text.is_empty()).then_some(text)
 }
 
 fn read_optional(path: std::path::PathBuf) -> Result<Option<String>, AppError> {
@@ -893,6 +979,41 @@ mod tests {
         // No layout index fallback either (index still present, so this section
         // comes from the index file, not from PAPER.md).
         assert!(out.markdown.contains("## Figure and table index"));
+    }
+
+    #[test]
+    fn body_falls_back_to_layout_when_paper_md_is_missing() {
+        let vault = fixture_vault();
+        fs::remove_file(vault.path().join("papers/demo/PAPER.md")).unwrap();
+        fs::write(
+            vault.path().join("papers/demo/source/layout.json"),
+            r#"{"schemaVersion":3,"source":{},"regions":[
+                {"id":"r1","pageIndex":0,"kind":"title","text":"Layout paper title","bbox":{"x":0,"y":0,"w":1,"h":1}},
+                {"id":"r2","pageIndex":0,"kind":"paragraph","text":"Body text extracted from layout.","bbox":{"x":0,"y":0.1,"w":1,"h":1}},
+                {"id":"r3","pageIndex":0,"kind":"figure","text":"A figure caption that is not body text","bbox":{"x":0,"y":0.5,"w":1,"h":1}}
+            ]}"#,
+        )
+        .unwrap();
+        let record = record("papers/demo");
+        let out = render_fixture(vault.path(), &record, RenderOptions::default());
+        assert!(out.includes.paper_body);
+        assert!(out.markdown.contains("## Paper body"));
+        assert!(out.markdown.contains("Body text extracted from layout."));
+        assert!(!out.markdown.contains("A figure caption that is not body text"));
+    }
+
+    #[test]
+    fn abstract_falls_back_to_metadata_json() {
+        let vault = fixture_vault();
+        fs::write(
+            vault.path().join("papers/demo/metadata.json"),
+            r#"{"abstract":"Abstract from metadata.json fallback."}"#,
+        )
+        .unwrap();
+        let mut record = record("papers/demo");
+        record.abstract_text = None;
+        let out = render_fixture(vault.path(), &record, RenderOptions::default());
+        assert!(out.markdown.contains("## Abstract\nAbstract from metadata.json fallback."));
     }
 
     #[test]

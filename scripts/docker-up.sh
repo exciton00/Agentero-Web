@@ -4,7 +4,7 @@
 # - copies the tracked .example files to the ignored working files when missing
 # - detects a globally installed Dsh on the Docker host
 # - generates docker-compose.host-agent.yml so the container can run the host
-#   Dsh; the web host then registers "Host Dsh" automatically (no UI setup)
+#   Dsh; the web host then registers "Dsh" automatically (no UI setup)
 # - pulls the GHCR image and starts the stack
 #
 # Usage: ./scripts/docker-up.sh [prod]
@@ -61,7 +61,7 @@ if [[ -f docker-compose.host-agent.yml ]]; then
       fi
       compose_args+=(-f docker-compose.host-agent.yml)
       echo "host Dsh detected: $dsh_real"
-      echo "wrote docker-compose.host-agent.yml (agent auto-registers as Host Dsh)"
+      echo "wrote docker-compose.host-agent.yml (agent auto-registers as Dsh)"
     else
       echo "host Dsh found but its package/home could not be resolved; starting without it"
     fi

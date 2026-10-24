@@ -24,7 +24,7 @@ pub use settings::RagSettings;
 
 /// Renderer version. Bump when the merged-Markdown layout changes: it is part
 /// of every content hash, so a bump triggers a full re-sync of every paper.
-pub const RENDERER_VERSION: u32 = 1;
+pub const RENDERER_VERSION: u32 = 2;
 
 /// Hard cap for a rendered document (providers reject/time out on huge docs).
 /// Content above this is truncated with an explicit marker in the markdown.

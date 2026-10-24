@@ -23,7 +23,54 @@ export type ReadTextOptions = {
 };
 
 /**
+ * Copy through a temporary `<textarea>` + `document.execCommand("copy")`.
+ *
+ * `navigator.clipboard` is only available in secure contexts (HTTPS or
+ * localhost). A self-hosted Agentero-Web instance is often opened over plain
+ * HTTP on a LAN/NAS address, where the async Clipboard API is missing — PDF
+ * selection copy would otherwise always report "Could not copy the selection".
+ * `execCommand` still works there when invoked from a user gesture.
+ */
+function copyWithExecCommand(text: string): boolean {
+	if (typeof document === "undefined" || typeof document.body === "undefined") {
+		return false;
+	}
+	const textarea = document.createElement("textarea");
+	textarea.value = text;
+	textarea.setAttribute("readonly", "");
+	textarea.style.position = "fixed";
+	textarea.style.top = "-1000px";
+	textarea.style.left = "-1000px";
+	textarea.style.opacity = "0";
+	document.body.appendChild(textarea);
+	const previousRange =
+		typeof document.getSelection === "function" &&
+		document.getSelection()?.rangeCount
+			? document.getSelection()!.getRangeAt(0).cloneRange()
+			: null;
+	let copied = false;
+	try {
+		textarea.select();
+		textarea.setSelectionRange(0, text.length);
+		copied = document.execCommand("copy");
+	} catch {
+		copied = false;
+	} finally {
+		document.body.removeChild(textarea);
+		if (previousRange) {
+			const selection = document.getSelection();
+			selection?.removeAllRanges();
+			selection?.addRange(previousRange);
+		}
+	}
+	return copied;
+}
+
+/**
  * Write plain text to the system clipboard.
+ *
+ * Prefers the async Clipboard API and falls back to `execCommand` for
+ * insecure (plain HTTP) self-hosted origins.
  * @returns true when the write succeeded.
  */
 export async function copyTextToClipboard(
@@ -31,10 +78,20 @@ export async function copyTextToClipboard(
 	opts: CopyTextOptions = {},
 ): Promise<boolean> {
 	try {
-		if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
+		if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+			try {
+				await navigator.clipboard.writeText(text);
+				if (opts.successMessage) {
+					notifySuccess(opts.successMessage, opts.successNotify);
+				}
+				return true;
+			} catch {
+				// Permission denied / insecure context: try the legacy fallback.
+			}
+		}
+		if (!copyWithExecCommand(text)) {
 			throw new Error("clipboard unavailable");
 		}
-		await navigator.clipboard.writeText(text);
 		if (opts.successMessage) {
 			notifySuccess(opts.successMessage, opts.successNotify);
 		}

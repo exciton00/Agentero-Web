@@ -13,7 +13,11 @@ export function openSettingsWindow(section: string = "general"): void {
 		// The web build has no native windows: settings are a separate browser
 		// tab using the existing `?window=settings` shell route.
 		const url = new URL(window.location.href);
+		const vaultPath = getVaultPath();
 		url.search = `?window=settings&section=${encodeURIComponent(section)}`;
+		if (vaultPath) {
+			url.searchParams.set("vault_path", vaultPath);
+		}
 		window.open(url.toString(), "_blank", "noopener");
 		return;
 	}

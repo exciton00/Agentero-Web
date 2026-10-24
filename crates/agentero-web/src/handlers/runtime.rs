@@ -40,7 +40,9 @@ pub async fn dispatch(ctx: &RpcCtx, command: &str, args: &Value) -> Option<Handl
         | "job_download_assets_enqueue"
         | "job_parse_body_enqueue"
         | "job_parse_refs_enqueue"
-        | "job_papers_needing_assets" => jobs::dispatch(ctx, command, args).await,
+        | "job_papers_needing_assets"
+        | "clear_parse_results"
+        | "clear_and_reparse" => jobs::dispatch(ctx, command, args).await,
         // ---- Vault cloud sync (S3 / WebDAV / Git) ----
         "sync_get_status" | "sync_configure" | "sync_disconnect" | "sync_now"
         | "sync_scope_sizes" => sync::dispatch(ctx, command, args).await,

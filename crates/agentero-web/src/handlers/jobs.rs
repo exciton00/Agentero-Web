@@ -24,7 +24,7 @@
 //! previous server-side lookup import is kept behind
 //! `AGENTERO_WEB_IMPORT_SERVER_FALLBACK=1` for headless/CI runs with no tab.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -98,6 +98,41 @@ struct JobEnqueueArgs {
     force: bool,
 }
 
+/// Which generated parse artifacts a bulk clear/reparse command touches.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+enum ParseResultScope {
+    Layout,
+    Paper,
+    All,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ClearParseResultsArgs {
+    vault_path: String,
+    scope: ParseResultScope,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ClearParseResultsResult {
+    papers_scanned: u32,
+    files_removed: u32,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ClearAndReparseResult {
+    papers_scanned: u32,
+    files_removed: u32,
+    layout_enqueued: u32,
+    paper_enqueued: u32,
+}
+
+const LAYOUT_SIDECAR_FILES: &[&str] = &["layout.json", "layout-index.json"];
+const PAPER_MD_FILE: &str = "PAPER.md";
+
 /// `JobParseBodyEnqueueArgs` — parseBody carries the renderer's cooperative
 /// cancel task id; the server runs the job under its own id instead.
 #[derive(Debug, Deserialize)]
@@ -165,6 +200,8 @@ pub async fn dispatch(ctx: &RpcCtx, command: &str, args: &Value) -> Option<Handl
         "job_parse_body_enqueue" => job_parse_body_enqueue(ctx, args).await,
         "job_parse_refs_enqueue" => job_parse_refs_enqueue(ctx, args).await,
         "job_papers_needing_assets" => job_papers_needing_assets(ctx, args).await,
+        "clear_parse_results" => clear_parse_results(ctx, args).await,
+        "clear_and_reparse" => clear_and_reparse(ctx, args).await,
         _ => return None,
     })
 }
@@ -404,15 +441,19 @@ fn enqueue_renderer_job(ctx: &RpcCtx, spec: JobSpec) -> HandlerResult {
     typed_ok(job.snapshot)
 }
 
-fn emit_offer(ctx: &RpcCtx, snapshot: &JobSnapshot) {
-    let offer = JobOfferPayload {
+fn job_offer_payload(snapshot: &JobSnapshot) -> JobOfferPayload {
+    JobOfferPayload {
         job_id: snapshot.id.clone(),
         kind: snapshot.kind,
         vault_path: snapshot.vault_path.clone(),
         paper_path: snapshot.paper_path.clone(),
         force: snapshot.force,
         params: snapshot.params.clone(),
-    };
+    }
+}
+
+fn emit_offer(ctx: &RpcCtx, snapshot: &JobSnapshot) {
+    let offer = job_offer_payload(snapshot);
     match ctx.window.as_deref() {
         // Targeted offer: only the tab that issued the RPC executes it.
         Some(label) => {
@@ -579,6 +620,139 @@ async fn job_papers_needing_assets(ctx: &RpcCtx, args: &Value) -> HandlerResult 
     match result {
         Ok(paths) => typed_ok(paths),
         Err(error) => fail_msg(error),
+    }
+}
+
+/// `clear_parse_results({vaultPath, scope})` → typed ApiResult.
+async fn clear_parse_results(ctx: &RpcCtx, args: &Value) -> HandlerResult {
+    let args: ClearParseResultsArgs = match parse_args(args) {
+        Ok(args) => args,
+        Err(error) => return typed_err(error),
+    };
+    let cancel_vault = args.vault_path.clone();
+    let scope = args.scope;
+    cancel_parse_jobs(ctx, &cancel_vault, scope);
+    let vault_path = args.vault_path;
+    match blocking(move || clear_parse_artifacts(&vault_path, scope)).await {
+        Ok((papers_scanned, files_removed, _)) => {
+            ctx.state.caps.clear();
+            typed_ok(ClearParseResultsResult {
+                papers_scanned,
+                files_removed,
+            })
+        }
+        Err(error) => fail_msg(error),
+    }
+}
+
+/// `clear_and_reparse({vaultPath, scope})` — clear artifacts, then enqueue
+/// layout offers (browser executor) and server-side `PAPER.md` parses.
+async fn clear_and_reparse(ctx: &RpcCtx, args: &Value) -> HandlerResult {
+    let args: ClearParseResultsArgs = match parse_args(args) {
+        Ok(args) => args,
+        Err(error) => return typed_err(error),
+    };
+    let vault_path = args.vault_path.clone();
+    let scope = args.scope;
+    cancel_parse_jobs(ctx, &vault_path, scope);
+    let clear_path = vault_path.clone();
+    let (papers_scanned, files_removed, affected) =
+        match blocking(move || clear_parse_artifacts(&clear_path, scope)).await {
+            Ok(result) => result,
+            Err(error) => return fail_msg(error),
+        };
+
+    ctx.state.caps.clear();
+    let mut layout_enqueued = 0u32;
+    let mut paper_enqueued = 0u32;
+    for path in affected {
+        if matches!(scope, ParseResultScope::Layout | ParseResultScope::All) {
+            if let Ok(spec) = JobSpec::new(JobKind::LayoutAnalyze, &vault_path) {
+                let spec = spec
+                    .paper_path(path.clone())
+                    .lane(Some(JobLane::Idle))
+                    .force(true);
+                let job = ctx.state.tasks.spawn_renderer(spec);
+                if job.created {
+                    // Settings is usually a separate tab without the JobCenter
+                    // executor; hand the offer to the main workspace tab, which
+                    // owns the layout executor.
+                    ctx.state.events.emit_to(
+                        "main",
+                        crate::tasks::JOB_OFFER_EVENT,
+                        &job_offer_payload(&job.snapshot),
+                    );
+                    layout_enqueued += 1;
+                }
+            }
+        }
+        if matches!(scope, ParseResultScope::Paper | ParseResultScope::All) {
+            if enqueue_parse_body(&ctx.state.tasks, &ctx.state.caps, &vault_path, &path, true)
+                .is_ok()
+            {
+                paper_enqueued += 1;
+            }
+        }
+    }
+    typed_ok(ClearAndReparseResult {
+        papers_scanned,
+        files_removed,
+        layout_enqueued,
+        paper_enqueued,
+    })
+}
+
+fn cancel_parse_jobs(ctx: &RpcCtx, vault_path: &str, scope: ParseResultScope) {
+    let kinds: &[JobKind] = match scope {
+        ParseResultScope::Layout => &[JobKind::LayoutAnalyze],
+        ParseResultScope::Paper => &[JobKind::ParseBody],
+        ParseResultScope::All => &[JobKind::LayoutAnalyze, JobKind::ParseBody],
+    };
+    for job in ctx.state.tasks.list(Some(vault_path), None) {
+        if matches!(job.state, JobState::Queued | JobState::Running)
+            && kinds.contains(&job.kind)
+        {
+            ctx.state.tasks.cancel(&job.id);
+        }
+    }
+}
+
+fn clear_parse_artifacts(
+    vault_path: &str,
+    scope: ParseResultScope,
+) -> Result<(u32, u32, Vec<String>), String> {
+    let vault = crate::error::vault_root(vault_path)?;
+    let papers = agentero_core::features::catalog::papers::list_all(&vault)
+        .map_err(|error| error.to_string())?;
+    let papers_scanned = papers.len() as u32;
+    let mut files_removed = 0u32;
+    let mut affected = Vec::with_capacity(papers.len());
+    for paper in papers {
+        let paper_dir = vault.join(&paper.path);
+        if !paper_dir.is_dir() {
+            continue;
+        }
+        affected.push(paper.path);
+        if matches!(scope, ParseResultScope::Layout | ParseResultScope::All) {
+            let source_dir = paper_dir.join("source");
+            for file in LAYOUT_SIDECAR_FILES {
+                files_removed += u32::from(remove_file_best_effort(&source_dir.join(file))?);
+            }
+        }
+        if matches!(scope, ParseResultScope::Paper | ParseResultScope::All) {
+            files_removed += u32::from(remove_file_best_effort(&paper_dir.join(PAPER_MD_FILE))?);
+        }
+    }
+    // Capability probes cache PDF/body/layout presence; clear them so the next
+    // UI read reflects the deleted files.
+    Ok((papers_scanned, files_removed, affected))
+}
+
+fn remove_file_best_effort(path: &Path) -> Result<bool, String> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!("remove {}: {error}", path.display())),
     }
 }
 

@@ -171,7 +171,7 @@ git merge upstream/main   # 或 rebase；Web 改动较多，冲突需自行解�
 git clone https://github.com/exciton00/Agentero-Web.git agentero-web
 cd agentero-web
 
-# 一键：生成 .env/compose、检测宿主机 Dsh（有则自动挂载并注册 Host Dsh）、
+# 一键：生成 .env/compose、检测宿主机 Dsh（有则自动挂载并注册 Dsh）、
 # 拉取 GHCR 镜像并启动。没有宿主机 Dsh 时就是普通 Web 部署。
 ./scripts/docker-up.sh
 
@@ -193,7 +193,7 @@ docker compose up -d --no-build
 ```
 
 > 如果宿主机已安装并登录 Dsh，可以直接用 `./scripts/docker-up.sh`：脚本会自动检测宿主 Dsh、
-> 挂载其 CLI 与 `~/.dsh`，Web host 启动后会自动出现 `Host Dsh`（无需手填 Agent 配置）。
+> 挂载其 CLI 与 `~/.dsh`，Web host 启动后会自动出现 `Dsh`（无需手填 Agent 配置）。
 > 也可以用 `./scripts/docker-up.sh prod` 走生产编排。
 
 > 镜像地址由 `.env` 的 `AGENTERO_IMAGE` 控制；fork 后改成
@@ -306,7 +306,7 @@ Docker Compose 的所有用户配置统一放在 `.env`（从 `.env.example` 复
 默认 GHCR 镜像**不包含任何 Agent CLI**；但 Docker 宿主机上通常已经装好并登录了 Dsh。
 不需要手动在 Settings → Agent 添加 Agent：
 `scripts/docker-up.sh` 会检测宿主机的 Dsh，生成 host-agent 挂载；Web host 启动时通过
-Agentero 自己的 agent registry 自动注册 `Host Dsh`，打开设置即可看到。
+Agentero 自己的 agent registry 自动注册 `Dsh`，打开设置即可看到。
 
 ```bash
 # 宿主机已安装并登录 Dsh（~/.dsh 存在），然后：
@@ -324,7 +324,7 @@ docker compose -f docker-compose.yml -f docker-compose.host-agent.yml up -d
 # 或 -f docker-compose.prod.yml ...
 ```
 
-启动后 Settings → Agent 会自动出现 `Host Dsh`（command 为镜像内 Node，args 为挂载的真实
+启动后 Settings → Agent 会自动出现 `Dsh`（command 为镜像内 Node，args 为挂载的真实
 `dsh/lib/bin.js --profile acp`）；不需要手填命令。也可以直接开始对话，`agentero-context`
 MCP 由 Web host 自己再执行（`agentero-web --agentero-context-mcp <grant>`），不会出现
 `mcp-client(agentero-context) initial connection failed`。
@@ -347,9 +347,10 @@ AGENTERO_VAULT_CONTAINER_PATH=/srv/agentero/vault
   `.env` 的 `AGENTERO_HOST_DSH_PKG` / `AGENTERO_DSH_HOME`。
 - 不想用宿主机 ACP 时，仍可用自定义镜像安装 CLI（见下方流程），其他 Agent 未测试。
 - 本方式要求容器能读取宿主机的 Dsh 文件（同一台 Docker 宿主机 + bind mount）；不支持远程 Docker。
-- **Host Dsh 可编辑/删除**：自动注册后，Settings → Agent 的自定义 Agent 行可以修改名称/命令/参数或删除。
-  删除后不会被下次启动重新加回（会写入 `/data/config/agentero/.host-agent-auto.flag` 标记）；
-  要恢复自动注册，删除该 marker 后重启即可。
+- **Dsh 可删除**：自动注册后会作为 Dsh catalog 行出现（Dsh 图标/名称，不再额外生成自定义 Agent 行）；
+  catalog 行的卸载/删除按钮在 Web 下已启用。删除后不会被下次启动重新加回
+  （会写入 `/data/config/agentero/.host-agent-auto.flag` 标记）；要恢复自动注册，删除该 marker 后重启。
+  自动注册的命令来自宿主机挂载，因此不提供“编辑 command/args”表单；需要改路径时调整挂载/`.env` 后重新生成。
 
 ---
 

@@ -60,15 +60,16 @@
 `weknora`。`provider="ragflow"` 时 `rag_test`/同步/工具调用返回可读的
 `not_implemented`，不会写 KB。
 
-## 渲染格式（renderer v1）
+## 渲染格式（renderer v2）
 
 单篇文档 = 以下小节按序合并（开关可关；空小节省略）：
 
 1. 元数据头：title、paper id、Vault path、authors、year/venue/doi、tags、
    `BibTeX key`、`\cite{key}`。
-2. `## Abstract`
-3. `## Paper body`：`PAPER.md`；所有 `![](images/…)` 替换为
-   `[figure on page N]`（保留 MinerU 图注文本，不上传像素）。
+2. `## Abstract`：catalog `abstract_text`；缺失时读 `metadata.json` 的 `abstract`。
+3. `## Paper body`：优先 `PAPER.md`；缺失/为空时回退 `source/layout.json` 的
+   paragraph/title/header 区域文本，再回退 PDF 文本层（PDFium）；所有
+   `![](images/…)` 替换为 `[figure on page N]`（保留 MinerU 图注文本，不上传像素）。
 4. `## Figure and table index`：`source/layout-index.json` 按
    `(page, title)` 去重；缺失时回退解析 `PAPER.md` 的 `Fig.` / `Table` 行。
 5. `## User notes`：`NOTES.md` 去 YAML frontmatter，但 `aliases` / `created` /
@@ -200,8 +201,9 @@ tags → index wait → delete`：
 ## 已知缺口（v2.1）
 
 - RAGFlow adapter 未实现（槽位/UI/错误语义已就绪）。
-- `sync.ensurePaperBody=true` 目前只是渲染时容忍缺 `PAPER.md`（标
-  `has_body=false`），未自动排队 parse-body 任务。
+- `sync.ensurePaperBody=true` 目前仍不自动排队 parse-body 任务；但 renderer v2 会从
+  `layout.json` / PDF 文本层补齐正文，避免只有 notes/figures 的文档。升级后需重新同步
+  RAG（renderer version 变化会触发文档重渲染）。
 - 无图片/PDF 上传（需 provider 视觉模型）；无排除规则（private tag/dir）。
 - 论文移动/改名（id/path 变化）按新增+删除处理；同 id 移动会更新文档内容与
   metadata。

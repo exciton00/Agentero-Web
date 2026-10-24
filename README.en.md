@@ -110,7 +110,7 @@ git clone https://github.com/exciton00/Agentero-Web.git agentero-web
 cd agentero-web
 
 # One command: prepare .env/compose, detect a host Dsh (mounts it and
-# auto-registers Host Dsh), pull the GHCR image and start.
+# auto-registers Dsh), pull the GHCR image and start.
 ./scripts/docker-up.sh
 
 # open http://127.0.0.1:8787
@@ -131,7 +131,7 @@ docker compose up -d --no-build
 ```
 
 > If the host already has an authenticated Dsh, run `./scripts/docker-up.sh` instead: it detects the
-> host Dsh, mounts its CLI plus `~/.dsh`, and the web host auto-registers `Host Dsh` — no manual agent
+> host Dsh, mounts its CLI plus `~/.dsh`, and the web host auto-registers `Dsh` — no manual agent
 > setup. Use `./scripts/docker-up.sh prod` for the production compose file.
 
 > `AGENTERO_IMAGE` in `.env` controls the image; after forking, point it at
@@ -236,7 +236,7 @@ See [`.env.example`](.env.example) for the full template.
 
 The default GHCR image does **not** bundle an agent CLI. If the Docker host already has a configured
 Dsh (`~/.dsh` exists), you do not need to add an agent manually: `scripts/docker-up.sh` detects the
-host Dsh, writes the host-agent mounts, and the web host auto-registers `Host Dsh` through Agentero's
+host Dsh, writes the host-agent mounts, and the web host auto-registers `Dsh` through Agentero's
 own agent registry at startup.
 
 ```bash
@@ -255,7 +255,7 @@ docker compose -f docker-compose.yml -f docker-compose.host-agent.yml up -d
 # or -f docker-compose.prod.yml ...
 ```
 
-`Host Dsh` appears in Settings → Agent automatically (command = the image's Node, args = the mounted
+`Dsh` appears in Settings → Agent automatically (command = the image's Node, args = the mounted
 real `dsh/lib/bin.js --profile acp`). No manual command entry is needed. Context turns work because
 the web host also acts as the `agentero-context` MCP worker
 (`agentero-web --agentero-context-mcp <grant>`), so the previous
@@ -279,10 +279,11 @@ Notes:
 - Without a host ACP, install the CLI into a custom image instead (see below); other agents are untested.
 - This requires the container to read host Dsh files (same Docker host + bind mounts); remote Docker is
   not supported.
-- **Host Dsh is editable/removable**: the custom-agent row in Settings → Agent supports editing its
-  name/command/args and deleting it. A deleted host agent is not re-added on restart
-  (`/data/config/agentero/.host-agent-auto.flag` is written); delete that marker and restart to
-  re-enable auto-registration.
+- **Dsh is recognized in the Dsh catalog row and can be removed**: the auto-registered agent shows
+  the Dsh icon/name (no extra custom row), and the catalog uninstall/remove action is enabled on Web.
+  A deleted host agent is not re-added on restart (`/data/config/agentero/.host-agent-auto.flag` is
+  written); delete that marker and restart to re-enable auto-registration. The command/args are
+  derived from the host mount, so there is no edit form; adjust the mount/`.env` and recreate instead.
 
 ---
 

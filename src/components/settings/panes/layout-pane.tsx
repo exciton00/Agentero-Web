@@ -47,7 +47,7 @@ import {
 import { BUILTIN_PROVIDER_ID } from "@/lib/core/builtin";
 import { errorMessage, notifyError, notifySuccess } from "@/lib/core/notify";
 import { openExternalUrl } from "@/lib/core/open-external";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 import { cn } from "@/lib/core/utils";
 import {
 	clearAndReparse,
@@ -115,7 +115,7 @@ export function LayoutPane({
 	const layout = settings.layout;
 	const builtinAvailable = useBuiltinProviderAvailable();
 	const isLocalVault = hostContext.kind === "local";
-	const canManageResults = Boolean(vaultPath) && isLocalVault && isTauri();
+	const canManageResults = Boolean(vaultPath) && isLocalVault && hasHostTransport();
 	const [dialogOpen, setDialogOpen] = useState(false);
 	const [dialogMode, setDialogMode] = useState<"clear" | "reparse">("clear");
 	const [scope, setScope] = useState<ParseResultScope>("all");

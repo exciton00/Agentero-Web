@@ -13,7 +13,7 @@ Agentero 的 headless Web 宿主把同一个 Vault 与工作台界面跑在一�
 ```bash
 git clone https://github.com/exciton00/Agentero-Web.git agentero && cd agentero
 
-# 一键：生成 .env/compose，检测宿主机 Dsh（有则自动挂载并注册 Host Dsh），
+# 一键：生成 .env/compose，检测宿主机 Dsh（有则自动挂载并注册 Dsh），
 # 拉取 GHCR 镜像并启动。
 ./scripts/docker-up.sh
 
@@ -227,7 +227,7 @@ Agent 运行在服务器/宿主机上（BYOA/ACP），浏览器只发指令、�
 ```
 
 脚本会检测宿主 Dsh、生成 `docker-compose.host-agent.yml`（挂载宿主
-`@deepseek-ai/dsh` 与 `~/.dsh`），Web host 启动时自动注册 `Host Dsh`。打开
+`@deepseek-ai/dsh` 与 `~/.dsh`），Web host 启动时自动注册 `Dsh`。打开
 Settings → Agent 即可看到，无需手填 command/args。手动 compose 等价：
 
 ```bash
@@ -264,15 +264,17 @@ Dsh 凭据仍需挂载/配置（`~/.dsh`）。
 
 ### 注册与凭据
 
-- 自动方式：`Host Dsh` 由 Web host 启动时通过 agent registry 自动添加；日志会出现
-  `host-agent: registered Host Dsh`。
+- 自动方式：`Dsh` 由 Web host 启动时通过 agent registry 自动添加；日志会出现
+  `host-agent: registered Dsh`。
 - 手动方式/其他 Agent：Settings → Agent 扫描目录或添加自定义 Agent
   （`agent_scan_catalog` / `agent_upsert_agent`），探测通过后使用。
 - Dsh 凭据来自挂载的 `~/.dsh`（`/data/home/.dsh`）；其他 CLI 用各自环境变量/配置文件。
 - 已验证：宿主 `dsh --profile acp` 作为 ACP Agent，浏览器提问能使用 `agentero-context`
   工具读取 Vault 论文并返回摘要；Docker 内 host-agent 方式的 probe/对话也已验证。
-- 自动注册的 `Host Dsh` 是可编辑/删除的普通自定义 Agent。删除后再次启动不会自动加回
+- 自动注册的 `Dsh` 会显示在 catalog 的 Dsh 行（图标/名称），不再额外生成自定义 Agent 行。
+  Web 下 catalog 的卸载/删除按钮已启用；删除后再次启动不会自动加回
   （`/data/config/agentero/.host-agent-auto.flag` marker）；要恢复自动注册，删除 marker 后重启。
+  命令/参数来自宿主机挂载，不提供编辑表单；需要改路径时调整挂载/`.env` 后重建。
 
 ## 已知边界（当前）
 
