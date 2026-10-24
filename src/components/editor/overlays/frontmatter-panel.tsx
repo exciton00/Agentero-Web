@@ -33,6 +33,7 @@ import {
 	TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/core/utils";
+import { randomUuid } from "@/lib/core/uuid";
 import {
 	convertPropertyKind,
 	countFrontmatterProperties,
@@ -63,7 +64,7 @@ function rowsFromProperties(
 ): PropertyRowState[] {
 	return properties.map((property) => ({
 		...property,
-		id: crypto.randomUUID(),
+		id: randomUuid(),
 	}));
 }
 
@@ -141,7 +142,7 @@ export function FrontmatterPanel({
 		// Default to text (scalar); user can switch to list via the type icon.
 		commitRows([
 			...rows,
-			{ ...createEmptyProperty("", "scalar"), id: crypto.randomUUID() },
+			{ ...createEmptyProperty("", "scalar"), id: randomUuid() },
 		]);
 	};
 

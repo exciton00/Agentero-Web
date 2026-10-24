@@ -43,6 +43,7 @@ import type { PdfViewerProps } from "@/components/viewer/pdf/types";
 import i18n from "@/i18n";
 import { errorText } from "@/lib/core/error";
 import { notifyError } from "@/lib/core/notify";
+import { randomUuid } from "@/lib/core/uuid";
 import {
 	ANNOTATIONS_FILE,
 	type HighlightCustom,
@@ -396,7 +397,7 @@ export function usePdfHighlights({
 			if (!scope) return [] as { pageIndex: number; id: string }[];
 			const created: { pageIndex: number; id: string }[] = [];
 			for (const page of pages) {
-				const id = crypto.randomUUID();
+				const id = randomUuid();
 				const translatedRects = translatedPages?.find(
 					(item) => item.pageIndex === page.pageIndex,
 				)?.rects;

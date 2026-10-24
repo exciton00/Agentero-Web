@@ -13,6 +13,7 @@
 import { createStore } from "zustand/vanilla";
 import { stripSystemReminder } from "@/lib/agent/prompt-display";
 import { toVaultRelative } from "@/lib/core/path";
+import { randomUuid } from "@/lib/core/uuid";
 import type { PdfVisualNormalizedRect } from "@/lib/pdf-visual/types";
 import { vaultStore } from "@/lib/vault/store";
 import { normalizeQuoteContext, type QuoteContext } from "./selection-context";
@@ -76,7 +77,7 @@ export function createSelectionContext(
 	if (!text) return null;
 	return {
 		...input,
-		id: `sel-${crypto.randomUUID()}`,
+		id: `sel-${randomUuid()}`,
 		text,
 		sourcePath:
 			input.origin === "chat"
