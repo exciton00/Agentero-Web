@@ -91,6 +91,11 @@ git merge upstream/main   # 或 rebase；Web 改动较多，冲突需自行解�
 
 - 设置 → Layout：选择 MinerU（Self-hosted）、填 Base URL / API Key（BYOK，仅运行时 settings）；
   服务端调用远程 MinerU 解析，写入 `source/layout.json` + `layout-index.json`。
+- **版面分析引擎与正文解析引擎是两项设置**：Analysis engine 产出 layout sidecar；Body parse engine
+  产出 `PAPER.md` + `images/`。Web 现已注册 MinerU / Paddle / OpenAI-compatible 三种云端正文解析引擎
+  （之前只有本地 liteparse，云端 body parser 没有注册，所以不会出现 PAPER.md/images）。
+- 从本地默认（local）把 Analysis engine 切到 MinerU/Paddle 时，Body parse engine 也会自动跟随；
+  版面分析完成后若还没有 `PAPER.md`，会再自动排队一次 ParseBody。
 - PDF 工具栏 Analysis → FIGURES 面板（缩略图 + caption + 页码）；`layout_index` 供 MCP/CLI 使用。
 - 版面解析页数上限 `layout.maxPages`（0 = 不限）：前端超限跳过、后端兜底拒绝；`/api` body
   limit 默认 64MB（`AGENTERO_WEB_MAX_BODY_MB` 可调），解决大 PDF base64 超限。
@@ -347,6 +352,8 @@ AGENTERO_VAULT_CONTAINER_PATH=/srv/agentero/vault
   `.env` 的 `AGENTERO_HOST_DSH_PKG` / `AGENTERO_DSH_HOME`。
 - 不想用宿主机 ACP 时，仍可用自定义镜像安装 CLI（见下方流程），其他 Agent 未测试。
 - 本方式要求容器能读取宿主机的 Dsh 文件（同一台 Docker 宿主机 + bind mount）；不支持远程 Docker。
+- **源码 / 裸机运行**：如果 Web host 直接跑在你自己电脑上，只要 `dsh` 在 PATH、`~/.dsh` 存在，
+  启动时也会自动注册为 Dsh catalog 行，不需要 host-agent compose。
 - **Dsh 可删除**：自动注册后会作为 Dsh catalog 行出现（Dsh 图标/名称，不再额外生成自定义 Agent 行）；
   catalog 行的卸载/删除按钮在 Web 下已启用。删除后不会被下次启动重新加回
   （会写入 `/data/config/agentero/.host-agent-auto.flag` 标记）；要恢复自动注册，删除该 marker 后重启。

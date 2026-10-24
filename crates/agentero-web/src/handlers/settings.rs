@@ -42,6 +42,7 @@ pub async fn set(ctx: &RpcCtx, args: &Value) -> HandlerResult {
     let result = blocking(move || store.set(settings).map_err(|error| error.to_string())).await;
     match result {
         Ok(settings) => {
+            crate::parser_engines::refresh_from_store(&ctx.state.settings);
             ctx.state.events.emit("settings:changed", &settings);
             ok(settings)
         }

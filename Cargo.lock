@@ -248,6 +248,7 @@ version = "0.12.0"
 dependencies = [
  "agentero-core",
  "agentero-host",
+ "async-trait",
  "axum",
  "base64 0.22.1",
  "dirs",
@@ -257,6 +258,7 @@ dependencies = [
  "log",
  "mime_guess",
  "notify-debouncer-full",
+ "reqwest 0.12.28",
  "rmcp",
  "schemars 1.2.2",
  "serde",

@@ -87,6 +87,31 @@ async function runLayoutAnalyzeExecutor(
 			signal,
 			force: ctx.force,
 		});
+		// Layout analysis only writes source/layout.json + layout-index.json.
+		// PAPER.md and its images/ assets come from the body-parse engine; make
+		// the Web flow match the desktop import backfill by kicking it off when
+		// the paper has no parsed body yet.
+		if (paperPath && !(await vaultPathExists(`${paperAbsPath}/PAPER.md`))) {
+			try {
+				await callApiResult(
+					() =>
+						commands.jobParseBodyEnqueue({
+							vaultPath,
+							path: paperPath,
+							lane: "normal",
+							force: false,
+							taskId: null,
+						}),
+					{ fallback: "body parse enqueue failed" },
+				);
+			} catch (e) {
+				logger.warn("enqueue PAPER.md parse after layout failed", {
+					jobId,
+					paperPath,
+					error: errorText(e),
+				});
+			}
+		}
 		await report({ progress: 100, phase: "completed", state: "succeeded" });
 	} catch (e) {
 		const message = errorText(e);

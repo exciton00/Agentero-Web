@@ -41,6 +41,9 @@ pub struct AppState {
 impl AppState {
     pub fn new(config: Config) -> Self {
         let settings = Arc::new(AppSettingsStore::load());
+        // Cloud PAPER.md body parsers (MinerU/Paddle/OpenAI-compatible) share
+        // the layout credential pool. Register them before any ParseBody job.
+        crate::parser_engines::refresh_from_store(&settings);
         let events = EventBus::new();
         let caps = CapsCache::new();
         let watcher = FsWatchService::new(events.clone(), caps.clone());

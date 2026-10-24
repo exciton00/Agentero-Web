@@ -177,6 +177,8 @@ AGENTERO_WEB_DIST=$PWD/dist \
 
 设置 → Layout → 选择 **MinerU**、打开 **Self-hosted**、填 Base URL 与 API Key（BYOK，只写入服务器 `settings.json`，不进镜像/仓库）。之后新入库或手动 Force re-parse 的论文由**服务端**调用 MinerU 解析，写 `source/layout.json` + `layout-index.json`；PDF 工具栏「Analysis」里的 FIGURES 面板展示检测到的图/表/算法/公式（缩略图 + caption + 页码跳转）。未配置远程服务时回退到浏览器本地 ONNX 模型。
 
+**正文与图片**：`layout.json` 只描述版面；`PAPER.md` + `images/` 由 **Body parse engine** 生成。Web host 现已注册 MinerU / Paddle / OpenAI-compatible 三种云端正文解析引擎（凭据与 Analysis engine 共用同一 settings 配置池）。如果 Body parse engine 仍是 local，把 Analysis engine 切到 MinerU/Paddle 时会自动跟随；版面分析完成后若还没有 `PAPER.md`，会自动排队一次 ParseBody。之前 Web 只注册了本地 liteparse body parser，所以云端解析不会生成 `PAPER.md`/`images`。
+
 ## RAG 外部知识库（可选，仅 Web host；provider 抽象）
 
 设置 → RAG：选择 **Provider**（当前可选 WeKnora；RAGFlow 预留、coming soon），打开开关、填 Base URL（可带/不带 `/api/v1`）、API Key、选择知识库（`rag_list_kbs` 下拉），可先「测试连接」。开启后服务端把当前 Vault 的每篇论文渲染成一份合并 Markdown 同步到该知识库（正文 + 图表索引 + NOTES + 批注文本；**PDF 与图片二进制不上传**），检索结果带论文路径/BibTeX `\cite{}`。
@@ -219,7 +221,7 @@ Agent 运行在服务器/宿主机上（BYOA/ACP），浏览器只发指令、�
 
 ### 方式 A：自动使用宿主机的 ACP（推荐，实测 Dsh）
 
-宿主机已安装并登录 Dsh（`dsh --version`；`~/.dsh` 存在）时：
+宿主机已安装并登录 Dsh（`dsh --version`；`~/.dsh` 存在）时。**源码/裸机运行**（Web host 直接跑在本机）只要 `dsh` 在 PATH 且 `~/.dsh` 存在，启动时就会自动注册，不需要 compose 挂载；Docker 部署继续往下看：
 
 ```bash
 ./scripts/docker-up.sh          # dev/intranet

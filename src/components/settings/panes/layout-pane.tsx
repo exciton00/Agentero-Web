@@ -223,7 +223,18 @@ export function LayoutPane({
 						disabled={backendOptions.length <= 1}
 						onValueChange={(value) => {
 							if (isLayoutBackend(value)) {
-								patch({ layout: { ...layout, backend: value } });
+								const next = { ...layout, backend: value };
+								// Paper body (PAPER.md + images/) uses a separate parser
+								// backend. Keep the common intent — choosing MinerU as the
+								// layout engine — from silently leaving body parsing on
+								// local when the user has not chosen one explicitly.
+								if (
+									isParserBackend(value) &&
+									layout.parserBackend === "local"
+								) {
+									next.parserBackend = value;
+								}
+								patch({ layout: next });
 							}
 						}}
 					>

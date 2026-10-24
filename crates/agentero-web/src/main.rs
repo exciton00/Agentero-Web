@@ -15,6 +15,7 @@ mod events;
 mod handlers;
 mod host_agent;
 mod mcp;
+mod parser_engines;
 mod rag_mcp;
 mod rpc;
 mod state;

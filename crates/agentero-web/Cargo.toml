@@ -37,6 +37,8 @@ tokio = { workspace = true, features = [
 ] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+async-trait = "0.1.91"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "socks", "multipart", "cookies"] }
 log = { workspace = true }
 env_logger = "0.11"
 mime_guess = "2"

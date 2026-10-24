@@ -56,7 +56,11 @@ See [`docs/development/webui.md`](docs/development/webui.md) for the detailed ro
 - **Library/PDF/notes web UX**: tag filters (hidden `tag-index.json`, AND semantics, directory scope),
   click-to-select/double-click-to-open, multi-select bulk actions, PDF/layout asset status icons,
   overwrite PDF, batch delete, long-press copy, hidden desktop-only Vault menu entries.
-- **Layout analysis**: self-hosted MinerU via server-side remote call; FIGURES panel; `layout.maxPages`
+- **Layout analysis**: self-hosted MinerU via server-side remote call; FIGURES panel; `layout.maxPages`.
+  Analysis engine produces `source/layout.json` + `layout-index.json`; the separate **Body parse engine**
+  now registers MinerU/Paddle/OpenAI-compatible cloud engines and writes `PAPER.md` + `images/`.
+  Choosing a remote Analysis engine auto-follows the Body parse engine when it is still `local`, and a
+  completed layout job enqueues `ParseBody` if no `PAPER.md` exists yet.
   cap; `/api` body limit raised to 64MB (`AGENTERO_WEB_MAX_BODY_MB`).
 - **MCP server in the web host**: desktop Streamable HTTP MCP (24 tools + resources) ported, own
   listener at `127.0.0.1:8765/mcp`, settings UI, port hot reload, `AGENTERO_MCP_ENABLED` /
@@ -278,7 +282,8 @@ Notes:
   also set `AGENTERO_HOST_DSH_PKG` / `AGENTERO_DSH_HOME` in `.env`.
 - Without a host ACP, install the CLI into a custom image instead (see below); other agents are untested.
 - This requires the container to read host Dsh files (same Docker host + bind mounts); remote Docker is
-  not supported.
+  not supported. For **source/bare-metal** runs on the same computer, a `dsh` on PATH plus `~/.dsh` is
+  auto-registered at startup too.
 - **Dsh is recognized in the Dsh catalog row and can be removed**: the auto-registered agent shows
   the Dsh icon/name (no extra custom row), and the catalog uninstall/remove action is enabled on Web.
   A deleted host agent is not re-added on restart (`/data/config/agentero/.host-agent-auto.flag` is
