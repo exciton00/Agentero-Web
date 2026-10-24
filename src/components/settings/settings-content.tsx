@@ -2,6 +2,7 @@ import {
 	Bot,
 	CloudUpload,
 	Compass,
+	Database,
 	FlaskConical,
 	Info,
 	Keyboard,
@@ -58,6 +59,7 @@ const PANE_LOADERS = {
 	agent: () => import("@/components/settings/panes/agent-pane"),
 	translate: () => import("@/components/settings/panes/translate-pane"),
 	layout: () => import("@/components/settings/panes/layout-pane"),
+	rag: () => import("@/components/settings/panes/rag-pane"),
 	experimental: () => import("@/components/settings/panes/experimental-pane"),
 	doctor: () => import("@/components/settings/panes/doctor-pane"),
 	keyboard: () => import("@/components/settings/panes/keyboard-pane"),
@@ -102,6 +104,9 @@ const TranslatePane = memo(
 const LayoutPane = memo(
 	lazy(() => PANE_LOADERS.layout().then((m) => ({ default: m.LayoutPane }))),
 );
+const RagPane = memo(
+	lazy(() => PANE_LOADERS.rag().then((m) => ({ default: m.RagPane }))),
+);
 const ExperimentalPane = memo(
 	lazy(() =>
 		PANE_LOADERS.experimental().then((m) => ({
@@ -141,6 +146,7 @@ const NAV: {
 	{ id: "agent", icon: Bot, dividerBefore: true },
 	{ id: "translate", icon: Languages },
 	{ id: "layout", icon: LayoutTemplate },
+	{ id: "rag", icon: Database },
 	{ id: "remote-access", icon: MonitorSmartphone },
 	{ id: "sync", icon: CloudUpload },
 	{ id: "experimental", icon: FlaskConical },
@@ -548,6 +554,17 @@ export function SettingsContent({
 									vaultPath={vaultPath}
 									hostContext={hostContext}
 								/>
+							</Suspense>
+						</div>
+					)}
+					{visitedSections.includes("rag") && (
+						<div
+							data-settings-pane
+							data-active={section === "rag" ? "true" : "false"}
+							hidden={section !== "rag"}
+						>
+							<Suspense fallback={<PaneFallback />}>
+								<RagPane settings={settings} patch={patch} />
 							</Suspense>
 						</div>
 					)}

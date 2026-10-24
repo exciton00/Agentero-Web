@@ -4,6 +4,7 @@ export type SettingsSection =
 	| "agent"
 	| "translate"
 	| "layout"
+	| "rag"
 	| "experimental"
 	| "doctor"
 	| "keyboard"

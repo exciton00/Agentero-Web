@@ -10,6 +10,7 @@ import type {
 import { DEFAULT_LIBRARY_COLUMNS } from "@/lib/settings/types";
 import { DEFAULT_TRANSLATE_SETTINGS } from "@/lib/translate/defaults";
 import { DEFAULT_UI_THEME } from "@/lib/ui/theme";
+import { defaultWeKnoraSettings } from "@/lib/weknora/types";
 
 export const DEFAULT_PDF_ASK_SETTINGS: PdfAskSettings = {
 	agentId: "",
@@ -230,6 +231,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
 	embedding: { ...DEFAULT_EMBEDDING_SETTINGS },
 	translate: { ...DEFAULT_TRANSLATE_SETTINGS },
 	layout: { ...DEFAULT_LAYOUT_SETTINGS, providerConfigs: {} },
+	weknora: defaultWeKnoraSettings(),
 	dismissedReminders: [],
 	decision: { ...DEFAULT_DECISION_SETTINGS },
 	bibtexMount: { ...DEFAULT_BIBTEX_MOUNT_SETTINGS },

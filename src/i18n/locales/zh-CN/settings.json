@@ -10,6 +10,7 @@
 		"agent": "Agent",
 		"translate": "翻译",
 		"layout": "版面解析",
+		"rag": "RAG / WeKnora",
 		"experimental": "实验功能",
 		"doctor": "问题诊断",
 		"keyboard": "快捷键",
@@ -637,6 +638,146 @@
 				"reparseTitle": "清除并重新解析？",
 				"scopeLabel": "选择范围"
 			}
+		}
+	},
+	"weknora": {
+		"title": "RAG / WeKnora",
+		"desktopOnly": "WeKnora RAG 同步仅在 headless web 服务端运行，桌面版不可用。",
+		"loading": "正在读取 WeKnora 状态…",
+		"unavailable": {
+			"title": "WeKnora 后端尚未就绪",
+			"errorTitle": "无法读取 WeKnora 状态",
+			"body": "当前 web host 版本还未提供 WeKnora RPC；后端更新前这些控件保持禁用，不会发送任何数据。",
+			"retry": "重试"
+		},
+		"enable": {
+			"label": "启用 WeKnora RAG",
+			"description": "把论文同步到外部 WeKnora 知识库，并向 web agent 与 MCP 客户端提供只读 RAG 检索。"
+		},
+		"baseUrl": {
+			"label": "Base URL",
+			"help": "WeKnora API 根地址，例如 https://weknora.example.com/api/v1。"
+		},
+		"apiKey": {
+			"label": "API Key",
+			"help": "仅保存在服务端，前端不回读明文。",
+			"stored": "服务端已保存密钥；仅在需要更换时输入新 Key。",
+			"placeholder": "粘贴 WeKnora API Key",
+			"placeholderStored": "已保存密钥 —— 留空表示保持不变"
+		},
+		"test": {
+			"button": "测试连接",
+			"resultLabel": "连接",
+			"testing": "测试中…",
+			"okDetail": "已连接 {{kbName}} · {{count}} 篇文档 · {{model}}",
+			"failed": "连接失败",
+			"failedDetail": "连接失败：{{error}}"
+		},
+		"kb": {
+			"label": "知识库",
+			"help": "从列表选择知识库，或直接填写 ID。只会写入这一个知识库。",
+			"placeholder": "知识库 ID",
+			"refresh": "刷新知识库列表",
+			"loading": "正在加载知识库…",
+			"loaded": "共 {{count}} 个可用知识库",
+			"error": "无法获取知识库列表：{{error}}"
+		},
+		"sections": {
+			"connection": "连接",
+			"content": "同步内容",
+			"autoSync": "自动同步",
+			"tools": "工具",
+			"actions": "操作",
+			"status": "状态"
+		},
+		"content": {
+			"paperBody": "论文正文（PAPER.md）",
+			"notes": "用户笔记（NOTES.md）",
+			"marks": "批注与划词",
+			"figureIndex": "图表索引",
+			"citation": "BibTeX / BibLaTeX 引用",
+			"ensurePaperBody": "缺少正文时先解析",
+			"ensurePaperBodyHelp": "对还没有 PAPER.md 的论文先排队执行正文解析。"
+		},
+		"privacy": {
+			"pdf": "PDF 与图片二进制不会上传 —— 只同步提取出的文字与图注。",
+			"notes": "笔记与批注会以文本形式发送到外部 WeKnora 知识库。"
+		},
+		"autoSync": {
+			"label": "自动同步",
+			"description": "写入后防抖同步，并周期性兜底扫描。默认关闭。",
+			"interval": "间隔",
+			"minutesUnit": "分钟"
+		},
+		"tools": {
+			"agent": "暴露给 web Agent",
+			"agentHelp": "允许内置 web agent 调用只读的 WeKnora 检索工具。",
+			"mcp": "暴露给 MCP 客户端",
+			"mcpHelp": "在 Agentero /mcp 服务中增加只读 WeKnora 检索工具。"
+		},
+		"ops": {
+			"syncLabel": "立即同步",
+			"syncDetail": "范围内共 {{total}} 篇论文",
+			"needEnabled": "请先启用 WeKnora RAG。",
+			"needConfigured": "请先配置连接与知识库。",
+			"syncNow": "立即同步",
+			"cancel": "取消",
+			"alreadyRunning": "已有同步任务在进行。",
+			"started": "同步已开始 · 共 {{total}} 篇",
+			"cancelled": "同步已取消",
+			"nothingToCancel": "当前没有进行中的同步。",
+			"reconcileLabel": "重建映射",
+			"reconcileDescription": "根据知识库元数据重建本地「论文 → 文档」映射（孤儿项只报告、不删除）。",
+			"reconcile": "重建",
+			"reconcileDone": "映射已重建：采纳 {{adopted}}，缺失 {{missing}}，孤儿 {{orphans}}，删除 {{deleted}}",
+			"clearLabel": "清理映射 / 删除受管文档",
+			"clearDescription": "清空本地同步映射；可选择同时删除 WeKnora 中由 Agentero 管理的文档。",
+			"clear": "清理…"
+		},
+		"status": {
+			"label": "已同步",
+			"synced": "{{synced}} / {{total}} 已同步",
+			"indexing": "{{count}} 篇索引中",
+			"pending": "{{count}} 篇待同步",
+			"failed": "{{count}} 篇失败",
+			"lastSync": "最近同步",
+			"neverSynced": "尚未同步",
+			"kb": "知识库",
+			"lastSyncAt": "最近同步 {{time}}",
+			"lastError": "最近错误：{{error}}",
+			"backendUnavailable": "后端未就绪",
+			"connected": "已连接",
+			"syncing": "同步中",
+			"unconfigured": "未配置",
+			"disabled": "未启用"
+		},
+		"sync": {
+			"running": "同步中",
+			"lastRun": "最近一次",
+			"phase": {
+				"scan": "扫描",
+				"render": "渲染",
+				"sync": "同步",
+				"index": "索引",
+				"done": "完成"
+			},
+			"counters": {
+				"created": "新建 {{count}}",
+				"updated": "更新 {{count}}",
+				"skipped": "跳过 {{count}}",
+				"deleted": "删除 {{count}}",
+				"failed": "失败 {{count}}"
+			},
+			"errorsTitle": "{{count}} 篇失败",
+			"retry": "重试"
+		},
+		"clear": {
+			"title": "清理同步映射？",
+			"body": "本地映射会被清空，下次同步会从头重建。",
+			"deleteDocs": "同时删除 WeKnora 中由 Agentero 管理的文档",
+			"deleteDocsHint": "只会删除元数据标记为「由本 vault 管理」的文档。此操作不可撤销。",
+			"confirm": "清理映射",
+			"done": "已清理 {{cleared}} 条映射，删除 {{deleted}} 个文档"
 		}
 	},
 	"experimental": {

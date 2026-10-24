@@ -10,6 +10,7 @@
 		"agent": "Agent",
 		"translate": "Translate",
 		"layout": "Layout",
+		"rag": "RAG / WeKnora",
 		"experimental": "Experimental",
 		"doctor": "Doctor",
 		"keyboard": "Keyboard",
@@ -637,6 +638,146 @@
 				"reparseTitle": "Clear and reparse?",
 				"scopeLabel": "Choose scope"
 			}
+		}
+	},
+	"weknora": {
+		"title": "RAG / WeKnora",
+		"desktopOnly": "WeKnora RAG sync runs in the headless web host only. It is not available in the desktop app.",
+		"loading": "Loading WeKnora status…",
+		"unavailable": {
+			"title": "WeKnora backend not ready",
+			"errorTitle": "Could not load WeKnora status",
+			"body": "This web host build does not expose the WeKnora RPCs yet. Controls stay disabled until the backend is updated; no data is sent.",
+			"retry": "Retry"
+		},
+		"enable": {
+			"label": "Enable WeKnora RAG",
+			"description": "Sync papers into an external WeKnora knowledge base and expose read-only RAG search to the web agent and MCP clients."
+		},
+		"baseUrl": {
+			"label": "Base URL",
+			"help": "WeKnora API root, e.g. https://weknora.example.com/api/v1."
+		},
+		"apiKey": {
+			"label": "API key",
+			"help": "Stored on the server; the UI never reads it back.",
+			"stored": "A key is stored on the server. Type a new key only to replace it.",
+			"placeholder": "Paste the WeKnora API key",
+			"placeholderStored": "Stored key — leave empty to keep it"
+		},
+		"test": {
+			"button": "Test connection",
+			"resultLabel": "Connection",
+			"testing": "Testing…",
+			"okDetail": "Connected to {{kbName}} · {{count}} documents · {{model}}",
+			"failed": "Connection failed",
+			"failedDetail": "Connection failed: {{error}}"
+		},
+		"kb": {
+			"label": "Knowledge base",
+			"help": "Pick a knowledge base from the list or type its ID. Only this KB is written.",
+			"placeholder": "Knowledge base ID",
+			"refresh": "Refresh knowledge bases",
+			"loading": "Loading knowledge bases…",
+			"loaded": "{{count}} knowledge bases available",
+			"error": "Could not list knowledge bases: {{error}}"
+		},
+		"sections": {
+			"connection": "Connection",
+			"content": "Sync content",
+			"autoSync": "Auto sync",
+			"tools": "Tools",
+			"actions": "Operations",
+			"status": "Status"
+		},
+		"content": {
+			"paperBody": "Paper body (PAPER.md)",
+			"notes": "User notes (NOTES.md)",
+			"marks": "Annotations and marks",
+			"figureIndex": "Figure and table index",
+			"citation": "BibTeX / BibLaTeX citation",
+			"ensurePaperBody": "Parse body first when missing",
+			"ensurePaperBodyHelp": "Queue PAPER.md parsing for papers that do not have one yet."
+		},
+		"privacy": {
+			"pdf": "PDF and image binaries are never uploaded — only extracted text and captions.",
+			"notes": "Notes and annotations are sent as text to the external WeKnora knowledge base."
+		},
+		"autoSync": {
+			"label": "Auto sync",
+			"description": "Debounced after writes plus a periodic safety scan. Off by default.",
+			"interval": "Interval",
+			"minutesUnit": "minutes"
+		},
+		"tools": {
+			"agent": "Expose to web agent",
+			"agentHelp": "Let the built-in web agent call read-only WeKnora search tools.",
+			"mcp": "Expose to MCP clients",
+			"mcpHelp": "Add read-only WeKnora search tools to the Agentero /mcp server."
+		},
+		"ops": {
+			"syncLabel": "Sync now",
+			"syncDetail": "{{total}} papers in scope",
+			"needEnabled": "Enable WeKnora RAG first.",
+			"needConfigured": "Configure the connection and knowledge base first.",
+			"syncNow": "Sync now",
+			"cancel": "Cancel",
+			"alreadyRunning": "A sync is already running.",
+			"started": "Sync started · {{total}} papers",
+			"cancelled": "Sync cancelled",
+			"nothingToCancel": "No sync is running.",
+			"reconcileLabel": "Rebuild mapping",
+			"reconcileDescription": "Rebuild the local paper → document mapping from KB metadata (orphans are reported, not deleted).",
+			"reconcile": "Rebuild",
+			"reconcileDone": "Mapping rebuilt: adopted {{adopted}}, missing {{missing}}, orphans {{orphans}}, deleted {{deleted}}",
+			"clearLabel": "Clear mapping / delete managed documents",
+			"clearDescription": "Drops the local sync mapping. Managed documents in WeKnora can optionally be deleted as well.",
+			"clear": "Clear…"
+		},
+		"status": {
+			"label": "Synced",
+			"synced": "{{synced}} / {{total}} synced",
+			"indexing": "{{count}} indexing",
+			"pending": "{{count}} pending",
+			"failed": "{{count}} failed",
+			"lastSync": "Last sync",
+			"neverSynced": "Never synced",
+			"kb": "Knowledge base",
+			"lastSyncAt": "Last sync {{time}}",
+			"lastError": "Last error: {{error}}",
+			"backendUnavailable": "Backend not ready",
+			"connected": "Connected",
+			"syncing": "Syncing",
+			"unconfigured": "Not configured",
+			"disabled": "Disabled"
+		},
+		"sync": {
+			"running": "Syncing",
+			"lastRun": "Last run",
+			"phase": {
+				"scan": "Scanning",
+				"render": "Rendering",
+				"sync": "Syncing",
+				"index": "Indexing",
+				"done": "Done"
+			},
+			"counters": {
+				"created": "{{count}} created",
+				"updated": "{{count}} updated",
+				"skipped": "{{count}} skipped",
+				"deleted": "{{count}} deleted",
+				"failed": "{{count}} failed"
+			},
+			"errorsTitle": "{{count}} failed papers",
+			"retry": "Retry"
+		},
+		"clear": {
+			"title": "Clear sync mapping?",
+			"body": "The local mapping is dropped; the next sync recreates it from scratch.",
+			"deleteDocs": "Also delete Agentero-managed documents in WeKnora",
+			"deleteDocsHint": "Only documents whose metadata marks them as managed by this vault are deleted. This cannot be undone.",
+			"confirm": "Clear mapping",
+			"done": "Cleared {{cleared}} mappings, deleted {{deleted}} documents"
 		}
 	},
 	"experimental": {

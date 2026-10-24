@@ -10,6 +10,7 @@ import type {
 	TranslateSettings,
 	TranslateTargetLang,
 } from "@/lib/translate/types";
+import type { WeKnoraSettings } from "@/lib/weknora/types";
 
 export type {
 	LayoutBackend,
@@ -375,6 +376,12 @@ export type AppSettings = {
 	 * Host that predates the field still loads; the settings UI normalizes it.
 	 */
 	bibtexMount?: BibtexMountSettings;
+	/**
+	 * WeKnora RAG integration (headless web host). Optional so a Host that
+	 * predates the field still loads; the RAG settings pane normalizes it and
+	 * the Host keeps the real API key behind the mask.
+	 */
+	weknora?: WeKnoraSettings;
 };
 
 /**
