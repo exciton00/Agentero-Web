@@ -55,7 +55,9 @@ jobs:
       - name: Stage PDFium
         run: node scripts/prepare-pdfium.mjs
       - name: Core tests
-        run: cargo test -p agentero-core --lib
+        # Serial: the sync-lock tests share process-global temp/lock state and
+        # are flaky when the lib test harness runs them in parallel on CI.
+        run: cargo test -p agentero-core --lib -- --test-threads=1
       - name: Web host tests
         run: cargo test -p agentero-web
       - name: Agent host tests
