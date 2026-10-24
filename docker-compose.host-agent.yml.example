@@ -1,0 +1,32 @@
+# Optional override: let the Agentero-Web container call the ACP agent that is
+# already installed and authenticated on the Docker host.
+#
+# Tested with Dsh 0.2.1-rc.2 on a Linux host (Docker Engine):
+#   host: dsh --version; ~/.dsh exists (credentials + profiles/acp)
+#
+# Usage:
+#   cp docker-compose.host-agent.yml.example docker-compose.host-agent.yml
+#   docker compose -f docker-compose.yml -f docker-compose.host-agent.yml up -d
+#   # production:
+#   # docker compose -f docker-compose.prod.yml -f docker-compose.host-agent.yml up -d
+#
+# Then register a custom agent in Settings -> Agent:
+#   Command: /usr/local/bin/node
+#   Args:    /usr/lib/node_modules/@deepseek-ai/dsh/lib/bin.js
+#            --profile
+#            acp
+#
+# Do NOT mount /usr/bin/dsh directly: Docker resolves the symlink and mounts
+# the bin.js as a regular /usr/bin file, so Node cannot resolve the
+# @deepseek-ai/* packages. Running the real bin.js through the image's Node does.
+#
+# This shares the host's ~/.dsh credentials with the container. Use it only on a
+# trusted host; for other agents install the CLI into a custom image instead.
+
+services:
+  agentero-web:
+    volumes:
+      # Host's global Dsh package (adjust if using nvm/volta/another prefix):
+      - /usr/lib/node_modules/@deepseek-ai:/usr/lib/node_modules/@deepseek-ai:ro
+      # Host's configured Dsh home (credentials + acp profile):
+      - ${HOME}/.dsh:/data/home/.dsh

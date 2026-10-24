@@ -218,6 +218,42 @@ See [`.env.example`](.env.example) for the full template.
 > GHCR packages may default to private; make the package public in GitHub Packages or
 > `docker login ghcr.io` with a PAT that has `read:packages`.
 
+### 5.5 Call the host's ACP agent directly (Docker Compose, optional)
+
+The default image does **not** include any agent CLI, so a fresh compose deployment shows no available
+agent. If the Docker host already has a configured agent (only Dsh was tested for this fork), you can let
+the container call the host's ACP instead of installing a CLI in the image:
+
+```bash
+# On the host:
+dsh --version          # tested 0.2.1-rc.2
+ls ~/.dsh              # has .credentials.yaml + profiles/acp
+
+# Use the host-agent override (mounts the host's Dsh package and ~/.dsh):
+cp docker-compose.host-agent.yml.example docker-compose.host-agent.yml
+docker compose -f docker-compose.yml -f docker-compose.host-agent.yml up -d
+# production: docker compose -f docker-compose.prod.yml -f docker-compose.host-agent.yml up -d
+```
+
+Then add a custom agent in **Settings → Agent**:
+
+| Field | Value |
+|---|---|
+| Name | `Host Dsh` |
+| Command | `/usr/local/bin/node` |
+| Args | `/usr/lib/node_modules/@deepseek-ai/dsh/lib/bin.js`, `--profile`, `acp` |
+
+Probe should report `dsh-acp` / Protocol 1; then use it from Chat.
+
+Notes:
+- **Do not mount `/usr/bin/dsh` directly**: Docker resolves the symlink and mounts `bin.js` as a regular
+  file, so Node cannot resolve `@deepseek-ai/*`. The node + bin.js form above is tested.
+- If Dsh lives elsewhere (nvm/volta/custom prefix), use `readlink -f "$(which dsh)"` and adjust both the
+  override mount and the Args path.
+- The mount gives the container access to the host's `~/.dsh` credentials; only do this on a trusted host.
+  For other agents, install the CLI into a custom image instead (see the Agent section in
+  [docs/usage/web-self-host.md](docs/usage/web-self-host.md)).
+
 ---
 
 ## 6. Tested environment (important)

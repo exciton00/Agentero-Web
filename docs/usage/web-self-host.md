@@ -209,24 +209,61 @@ AGENTERO_WEB_DIST=$PWD/dist \
 
 ## 接入 Agent（服务器上跑 CLI）
 
-Agent 运行在服务器上（BYOA/ACP），浏览器只发指令、看流式输出、答权限弹窗：
+Agent 运行在服务器/宿主机上（BYOA/ACP），浏览器只发指令、看流式输出、答权限弹窗。
+**默认 GHCR 镜像不包含任何 Agent CLI**，所以全新部署默认看不到 Agent。两种接入方式：
 
-1. **CLI**：镜像默认只有 Node 22（ACP adapters 需要 Node）。用自定义镜像安装所需 CLI，例如：
+### 方式 A：直接调用宿主机的 ACP（推荐，实测 Dsh）
 
-   ```dockerfile
-   FROM agentero-web:local
-   # 以 DeepSeek Harness ACP 为例；也可装 claude / codex 及其 ACP adapter
-   RUN npm i -g @deepseek-ai/dsh@latest
-   ```
+若 Docker 宿主机已经安装并登录了 Dsh（`dsh --version`；`~/.dsh` 内有 `.credentials.yaml` 与
+`profiles/acp`），使用 host-agent 覆盖文件即可，无需把 CLI 装进镜像：
 
-   或者在宿主机安装后 bind-mount 进容器（注意 glibc 兼容）。
-2. **凭据**：把 API key 用环境变量传给容器（`DEEPSEEK_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`…），或在宿主机的 `~/.dsh/.env` 里配置并挂载。
-3. **注册**：设置 → Agent → 重新扫描/添加（对应 `agent_scan_catalog` / `agent_upsert_agent`），探测通过即可在右侧 Agent 面板对话。
+```bash
+cp docker-compose.host-agent.yml.example docker-compose.host-agent.yml
+docker compose -f docker-compose.yml -f docker-compose.host-agent.yml up -d
+# 生产：docker compose -f docker-compose.prod.yml -f docker-compose.host-agent.yml up -d
+```
 
-已验证：服务器上运行 `dsh --profile acp` 作为真实 ACP Agent，浏览器发出中文问题后返回真实模型的中文总结（含 Chain of Thought 与论文上下文）。
+然后在 **Settings → Agent** 添加自定义 Agent：
+
+| 字段 | 值 |
+|---|---|
+| Name | `Host Dsh` |
+| Command | `/usr/local/bin/node` |
+| Args | `/usr/lib/node_modules/@deepseek-ai/dsh/lib/bin.js`、`--profile`、`acp` |
+
+保存后 Probe 应显示 `dsh-acp` / Protocol 1，即可对话。注意：
+
+- **不要直接挂载 `/usr/bin/dsh`**：Docker 会把符号链接解析成普通文件，Node 找不到
+  `@deepseek-ai/*`；用镜像内 Node 执行真实 `lib/bin.js` 才是实测可用方式。
+- 宿主机 Dsh 不在默认路径（nvm/volta/custom prefix）时，用 `readlink -f "$(which dsh)"` 找到
+  `lib/bin.js`，同时改覆盖文件里的挂载路径与 Args。
+- 该挂载会共享宿主机 `~/.dsh` 凭据；只建议在可信宿主机使用。
+
+### 方式 B：把 CLI 装进自定义镜像
+
+镜像默认只有 Node 22（且没有 `npm` 可执行文件，只有 npm-cli.js）。自定义镜像示例：
+
+```dockerfile
+FROM ghcr.io/exciton00/agentero-web:latest
+RUN /usr/local/bin/node /usr/local/lib/node_modules/npm/bin/npm-cli.js \
+    install -g @deepseek-ai/dsh@0.2.1-rc.2 --prefix /usr/local
+```
+
+然后运行 `docker compose build` 或 `docker build -t agentero-web:local .`，并把 `.env` 的
+`AGENTERO_IMAGE` 改成该镜像。凭据仍需要挂载/配置（Dsh 的 `~/.dsh`）。
+
+### 凭据与注册
+
+- 凭据：Dsh 使用 `~/.dsh`（或挂载宿主机 `~/.dsh` 到 `/data/home/.dsh`）；其他 CLI 用各自环境变量
+  （`DEEPSEEK_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`）或配置文件。
+- 注册：设置 → Agent → 扫描目录 / 添加自定义 Agent（`agent_scan_catalog` / `agent_upsert_agent`），
+  探测通过后即可在 Chat 面板使用。
+- 已验证：宿主机 `dsh --profile acp` 作为真实 ACP Agent，浏览器中文提问返回真实模型总结
+  （含 reasoning/工具事件）；Docker 容器通过 host-agent 挂载调用宿主 Dsh 也已完成 probe 与对话验证。
 
 ## 已知边界（当前）
 
 - 单用户、无内置鉴权；不要直接把 8787 暴露到公网。
-- Agent（ACP）尚未接入；之后需要在镜像/服务器上安装 Node 22 与对应 CLI（claude / codex），凭据存服务器。
+- Agent（ACP）需要自行安装/配置 CLI（默认镜像不含）；本仓库实测 Dsh，其他 ACP Agent 未测试。
+- Docker 直接调用宿主机 ACP 需要挂载宿主机 Dsh 包与 `~/.dsh`，见上面「方式 A」；不是所有平台/安装方式都保证可用。
 - 版面分析（ONNX）、Zotero Connector、远程 Vault（SSH）、自动更新在 Web 版不可用或不移植。

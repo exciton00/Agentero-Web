@@ -288,6 +288,41 @@ Docker Compose 的所有用户配置统一放在 `.env`（从 `.env.example` 复
 > GHCR 包默认可能是 private；公开部署前可在 GitHub 仓库 → Packages 里把包设为 public，
 > 或先 `docker login ghcr.io -u <user>`（PAT 需要 `read:packages`）。
 
+### 5.5 直接使用宿主机的 ACP Agent（Docker Compose，可选）
+
+默认镜像**不包含任何 Agent CLI**，所以全新的 Compose 部署在 Settings → Agent 里看不到可用 Agent。
+如果 Docker 宿主机上已经装好并登录了 Agent（本仓库唯一实测的是 Dsh），可以直接让容器调用宿主机的 ACP，
+不需要把 CLI 装进镜像：
+
+```bash
+# 宿主机先确认：
+dsh --version          # 实测 0.2.1-rc.2
+ls ~/.dsh              # 已有 .credentials.yaml + profiles/acp
+
+# 使用 host-agent 覆盖文件（会挂载宿主机的 Dsh 包与 ~/.dsh）：
+cp docker-compose.host-agent.yml.example docker-compose.host-agent.yml
+docker compose -f docker-compose.yml -f docker-compose.host-agent.yml up -d
+# 生产： docker compose -f docker-compose.prod.yml -f docker-compose.host-agent.yml up -d
+```
+
+然后在 **Settings → Agent** 添加自定义 Agent：
+
+| 字段 | 值 |
+|---|---|
+| Name | `Host Dsh` |
+| Command | `/usr/local/bin/node` |
+| Args | `/usr/lib/node_modules/@deepseek-ai/dsh/lib/bin.js`、`--profile`、`acp` |
+
+保存后点 Probe，应显示 `dsh-acp` / Protocol 1；随后即可在 Chat 里使用。
+
+说明：
+- **不要直接挂载 `/usr/bin/dsh`**：Docker 会把符号链接解析成普通文件，Node 找不到 `@deepseek-ai/*` 包；
+  上面的 node + bin.js 方式是实测可用的。
+- 若宿主机的 Dsh 不在 `/usr/lib/node_modules/@deepseek-ai`（nvm/volta/自定义 prefix），
+  用 `readlink -f "$(which dsh)"` 找到真实 `lib/bin.js`，同时调整覆盖文件里的挂载路径与 Args。
+- 此挂载会让容器使用宿主机的 `~/.dsh` 凭据；仅建议在可信宿主机使用。其他 Agent 请用自定义镜像安装 CLI，
+  或参考 [docs/usage/web-self-host.md](docs/usage/web-self-host.md) 的 Agent 章节。
+
 ---
 
 ## 6. 实测环境与未测试事项（请务必阅读）

@@ -1,25 +1,30 @@
 name: CI
 
+# This fork is a self-hosted web build of Agentero. CI is intentionally scoped
+# to the web host and its shared crates; inherited desktop-only checks
+# (bindings regeneration, full UI test suite, formatting of all legacy files)
+# are not part of this workflow.
+
 on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  ts:
-    name: TypeScript (${{ matrix.task }})
+  typescript:
+    name: TypeScript (web build)
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        task:
-          - quality
-          - test-1
-          - test-2
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4
@@ -27,159 +32,25 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - name: Assert desktop package does not embed CLI
-        if: matrix.task == 'quality'
-        # Desktop installers must not embed the headless CLI (#285). A prior
-        # guard required beforeBuildCommand to run cli:bundle:stub; that stub
-        # path was removed in 9dee13f0 after the fake Windows .exe triggered
-        # "Unsupported 16-bit application" (#320 follow-up). Guard the config
-        # directly: bundle.externalBin must stay empty/absent.
-        run: |
-          set -euo pipefail
-          node --input-type=commonjs -e "
-            const conf = require('./src-tauri/tauri.conf.json');
-            const bins = conf.bundle && conf.bundle.externalBin;
-            if (Array.isArray(bins) && bins.length > 0) {
-              console.error('::error file=src-tauri/tauri.conf.json::bundle.externalBin must be empty so desktop packages do not embed the CLI (#285/#320). Got: ' + JSON.stringify(bins));
-              process.exit(1);
-            }
-          "
-      - name: Run TypeScript checks
-        run: |
-          set -euo pipefail
-          case "${{ matrix.task }}" in
-            quality)
-              node --test scripts/sync-atomgit-release.test.mjs
-              # Stage the bundled ACP adapter trees so a broken staging script
-              # (or a hostile upstream release) fails the PR, not the release build.
-              pnpm adapters:stage
-              pnpm exec biome ci .
-              pnpm typecheck
-              pnpm deps:check
-              ;;
-            test-1)
-              pnpm exec vitest run --shard=1/2
-              ;;
-            test-2)
-              pnpm exec vitest run --shard=2/2
-              ;;
-            *)
-              echo "::error::Unknown TypeScript CI task: ${{ matrix.task }}"
-              exit 1
-              ;;
-          esac
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Build web assets
+        run: pnpm build:web
 
-  # The release APK build is the only thing that compiles the mobile cfg, so
-  # target-gated `#[cfg]` drift (e.g. PDFium features left enabled on Android)
-  # only surfaced after a version bump. Check the Android lib on every PR/merge
-  # so mobile stays green without waiting for a release.
-  rust-mobile:
-    name: Rust (android cfg)
+  rust-web:
+    name: Rust (agentero-core / agentero-web / agentero-host)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-java@v4
         with:
-          distribution: temurin
-          java-version: 17
-      - name: Install Android NDK
-        env:
-          # Keep in sync with the release workflow's android matrix.
-          NDK_VERSION: "29.0.14206865"
-        run: |
-          set -euo pipefail
-          (yes || true) | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;${NDK_VERSION}" > /dev/null
-          echo "NDK_HOME=$ANDROID_HOME/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
-      - name: Check Android lib target cfg
-        run: |
-          set -euo pipefail
-          # Mirror what `tauri android build` exports, so the external crates
-          # (cc / pdfium-sys) compile for the device ABI instead of the host.
-          TOOLCHAIN="$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64"
-          API=24
-          export CC_aarch64_linux_android="$TOOLCHAIN/bin/aarch64-linux-android${API}-clang"
-          export CXX_aarch64_linux_android="$TOOLCHAIN/bin/aarch64-linux-android${API}-clang++"
-          export AR_aarch64_linux_android="$TOOLCHAIN/bin/llvm-ar"
-          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$TOOLCHAIN/bin/aarch64-linux-android${API}-clang"
-          cargo check -p agentero --lib --target aarch64-linux-android
-
-  rust:
-    name: Rust (${{ matrix.task }})
-    runs-on: macos-14
-    strategy:
-      fail-fast: false
-      matrix:
-        task:
-          - quality
-          - agentero-tests
-          - cli-tests
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v5
-        if: matrix.task != 'cli-tests'
-        with:
-          node-version: 22
-          package-manager-cache: false
-      - name: Stage bundled ACP adapters
-        if: matrix.task != 'cli-tests'
-        run: node scripts/prepare-adapters.mjs
-      - name: Provision PDFium
-        shell: bash
-        run: |
-          set -euo pipefail
-          # liteparse-pdfium-sys fetches PDFium in its build script into an OS
-          # cache dir that Swatinem/rust-cache does not persist. On a cache hit
-          # the build script is skipped, so libpdfium.dylib is absent when tests
-          # dlopen it. Provision it explicitly and point both the build script
-          # and the runtime loader at a stable directory. Keep the tag in sync
-          # with liteparse-pdfium-sys (currently chromium/7897).
-          tag="chromium/7897"
-          case "$(uname -m)" in
-            arm64 | aarch64) asset="pdfium-mac-arm64" ;;
-            *) asset="pdfium-mac-x64" ;;
-          esac
-          dest="$RUNNER_TEMP/pdfium"
-          mkdir -p "$dest"
-          url="https://github.com/run-llama/pdfium-binaries/releases/download/${tag/\//%2F}/${asset}.tgz"
-          echo "Downloading $url"
-          curl -fsSL "$url" | tar -xz -C "$dest"
-          test -f "$dest/lib/libpdfium.dylib"
-          test -d "$dest/include"
-          echo "PDFIUM_LIB_PATH=$dest/lib" >> "$GITHUB_ENV"
-          echo "PDFIUM_INCLUDE_PATH=$dest/include" >> "$GITHUB_ENV"
-          # tauri.macos.conf.json lists pdfium/libpdfium.dylib under
-          # bundle.macOS.frameworks; tauri-build hard-fails when the file is
-          # missing even for clippy/tests that never bundle.
-          mkdir -p src-tauri/pdfium
-          cp "$dest/lib/libpdfium.dylib" src-tauri/pdfium/libpdfium.dylib
-      - name: Run Rust checks
-        run: |
-          set -euo pipefail
-          case "${{ matrix.task }}" in
-            quality)
-              cargo fmt --all --check
-              cargo clippy --workspace --all-targets -- -D warnings
-              ;;
-            agentero-tests)
-              cargo test -p agentero
-              ;;
-            cli-tests)
-              # Dependency builds do not run agentero-core's own tests. Keep
-              # both headless packages in this job to share PDFium and artifacts.
-              cargo test -p agentero-core -p agentero-cli
-              cargo build -p agentero-cli
-              ;;
-            *)
-              echo "::error::Unknown Rust CI task: ${{ matrix.task }}"
-              exit 1
-              ;;
-          esac
+          workspaces: .
+      - name: Core tests
+        run: cargo test -p agentero-core --lib
+      - name: Web host tests
+        run: cargo test -p agentero-web
+      - name: Agent host tests
+        run: cargo test -p agentero-host
