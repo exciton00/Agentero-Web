@@ -167,6 +167,9 @@ Docker 镜像已包含测试过的 `@deepseek-ai/dsh@0.2.1-rc.2`，不需要在�
 - Web host 启动时检测镜像内 `dsh` + `/data/home/.dsh`，自动注册为正常 Dsh catalog 行；
 - 源码/裸机运行 Web host 时，`dsh` 在 PATH 且 `~/.dsh` 存在也会自动注册。
 
+复用旧 `./data` 卷时如果看不到 Dsh（旧版本留下自动注册 marker），打开
+Settings → Agent →「检测宿主机 Dsh」→「重新检测」即可清除 marker 并重新注册。
+
 `agentero-context` MCP 由 web host 自己 re-exec 提供，带论文/选区的对话可正常使用。
 
 **Vault 路径对齐**：容器内默认 `/vault`。若要求宿主路径一致，在 `.env` 同时设：

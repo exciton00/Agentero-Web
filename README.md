@@ -209,6 +209,9 @@ AGENTERO_DSH_HOME=/root/.dsh
 
 源码/裸机运行 Web host 时同理：`dsh` 在 PATH 且 `~/.dsh` 存在就会自动注册。
 
+如果复用旧容器的 `./data` 卷导致 Dsh 不显示（旧版本留下 `.host-agent-auto.flag`），
+进入 Settings → Agent → 「检测宿主机 Dsh」→「重新检测」即可清除标记并重新注册。
+
 **Vault 路径对齐**：容器内默认 `/vault`。如果宿主工具需要和宿主机完全一致的绝对路径，在
 `.env` 同时设：
 

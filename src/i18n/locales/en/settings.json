@@ -454,6 +454,13 @@
 			"hint": "Refresh runs command -v then ACP initialize over SSH. If Claude shows “ACP adapter missing”, use Install ACP (opens Terminal → Enter → SSH install on the server). API keys stay on the remote machine (BYOA). If probe times out, enable Agent proxy (must be reachable from the server).",
 			"installAdapterAria": "Install ACP adapter for {{name}} on remote host via Terminal",
 			"installAdapterTitle": "Open Terminal, then SSH to {{host}} and run: {{command}} (press Enter to confirm)"
+		},
+		"hostAgentDetect": {
+			"label": "Detect host Dsh",
+			"description": "Clear the auto-registration marker and retry the host Dsh mounts.",
+			"button": "Redetect",
+			"success": "Detected host agent: {{name}}.",
+			"notFound": "No usable host Dsh was detected; check the compose mounts."
 		}
 	},
 	"translate": {
@@ -742,7 +749,6 @@
 			"clear": "Clear…"
 		},
 		"status": {
-			"label": "Synced",
 			"label": "Synced",
 			"provider": "Provider",
 			"synced": "{{synced}} / {{total}} synced",

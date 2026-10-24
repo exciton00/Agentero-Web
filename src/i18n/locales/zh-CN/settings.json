@@ -454,6 +454,13 @@
 			"hint": "刷新会经 SSH 执行 command -v 与 ACP initialize。若 Claude 显示「ACP adapter missing」，点「Install ACP」（打开终端 → Enter → 经 SSH 在服务器安装）。密钥留在远端（BYOA）。若探测超时，可开启 Agent 代理（代理需从服务器可达）。",
 			"installAdapterAria": "在终端中经 SSH 为 {{name}} 安装远端 ACP 适配器",
 			"installAdapterTitle": "打开终端，SSH 到 {{host}} 并执行：{{command}}（按 Enter 确认）"
+		},
+		"hostAgentDetect": {
+			"label": "检测宿主机 Dsh",
+			"description": "清除自动注册标记，并重新检测 compose 挂载的宿主机 Dsh。",
+			"button": "重新检测",
+			"success": "已检测到宿主机 Agent：{{name}}。",
+			"notFound": "未检测到可用的宿主机 Dsh，请检查 compose 挂载。"
 		}
 	},
 	"translate": {
@@ -742,7 +749,6 @@
 			"clear": "清理…"
 		},
 		"status": {
-			"label": "已同步",
 			"label": "已同步",
 			"provider": "服务商",
 			"synced": "{{synced}} / {{total}} 已同步",

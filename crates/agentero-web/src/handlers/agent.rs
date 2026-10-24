@@ -288,6 +288,28 @@ async fn list_agents(ctx: &RpcCtx, _args: &Value) -> HandlerResult {
     blocking_agent(ctx, move |host| api(host.list_agents())).await
 }
 
+/// `host_agent_redetect` — clear the auto-registration marker and retry host
+/// Dsh discovery. Used by the Settings button when an old data volume carries a
+/// stale `.host-agent-auto.flag`.
+async fn host_agent_redetect(ctx: &RpcCtx) -> HandlerResult {
+    let marker = ctx
+        .state
+        .settings
+        .path()
+        .with_file_name(".host-agent-auto.flag");
+    match std::fs::remove_file(&marker) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => log::warn!("host_agent_redetect: remove {}: {error}", marker.display()),
+    }
+    let settings_path = ctx.state.settings.path().to_path_buf();
+    let agents = ctx.state.agents.clone();
+    if !crate::host_agent::ensure_host_dsh(&agents, &settings_path) {
+        log::warn!("host_agent_redetect: no host Dsh detected");
+    }
+    blocking_agent(ctx, move |host| api(host.list_agents())).await
+}
+
 /// `agent_list_skills({vaultPath})` → `ApiResult<AgentSkill[]>`.
 async fn list_skills(ctx: &RpcCtx, args: &Value) -> HandlerResult {
     let args: AgentSkillsArgs = match parse_args(args) {
@@ -1058,6 +1080,7 @@ pub async fn dispatch(ctx: &RpcCtx, command: &str, args: &Value) -> Option<Handl
         "agent_set_user_agent" => set_user_agent(ctx, args).await,
         "agent_probe" => probe(ctx, args).await,
         "agent_probe_catalog" => probe_catalog(ctx, args).await,
+        "host_agent_redetect" => host_agent_redetect(ctx).await,
 
         // sessions
         "agent_run_once" => run_once(ctx, args).await,

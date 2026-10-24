@@ -399,6 +399,26 @@ export async function scanCatalog(): Promise<CatalogScanResponse> {
 	)) as CatalogScanResponse;
 }
 
+/**
+ * Web-host only: remove the stale auto-registration marker and retry host Dsh
+ * discovery. Returns the refreshed registry (possibly empty if no mounts).
+ */
+export async function redetectHostAgent(): Promise<AgentListResponse> {
+	const { rpc } = await import("@/web-transport/rpc");
+	type Envelope = {
+		ok?: boolean;
+		data?: AgentListResponse;
+		error?: { message?: string } | null;
+	};
+	const response = await rpc<Envelope>("host_agent_redetect");
+	if (!response.ok || !response.data) {
+		throw new Error(
+			response.error?.message ?? "host agent redetect failed",
+		);
+	}
+	return response.data;
+}
+
 /** PATH scan + version compare for Settings Upgrade visibility. */
 export async function checkCatalogUpdates(): Promise<CatalogScanResponse> {
 	return (await callApiResult(

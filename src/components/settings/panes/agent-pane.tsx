@@ -1,5 +1,5 @@
 import { Loader2, RefreshCw } from "lucide-react";
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AgentCommonRows } from "@/components/settings/agent-common-rows";
 import { AgentModelPicker } from "@/components/settings/agent-model-picker";
@@ -21,6 +21,7 @@ import { AgentUninstallDialog } from "@/components/settings/panes/agent-uninstal
 import {
 	PageTitle,
 	SettingsGroup,
+	SettingsRow,
 	SettingsSectionLabel,
 } from "@/components/settings/settings-layout";
 import type { SettingsHostContext } from "@/components/settings/types";
@@ -30,11 +31,12 @@ import {
 	type AgentTemplate,
 	type CatalogEntry,
 	openAgentCliTerminal,
+	redetectHostAgent,
 	upsertAgent,
 } from "@/lib/agent";
 import { errorText } from "@/lib/core/error";
-import { notifyError } from "@/lib/core/notify";
-import { hasHostTransport } from "@/lib/core/tauri";
+import { notifyError, notifySuccess } from "@/lib/core/notify";
+import { hasHostTransport, isWebHost } from "@/lib/core/tauri";
 import type { AppSettings } from "@/lib/settings";
 import { remoteAgentOpenInstallTerminal } from "@/lib/vault/remote/remote-vault";
 
@@ -128,6 +130,28 @@ export function AgentPane({
 	);
 
 	const busy = loading;
+	const [hostRedetectBusy, setHostRedetectBusy] = useState(false);
+
+	const onRedetectHostAgent = useCallback(async () => {
+		if (!isWebHost()) return;
+		setHostRedetectBusy(true);
+		try {
+			const registry = await redetectHostAgent();
+			await scanOnce();
+			const dsh = registry.agents.find((agent) => agent.template === "dsh");
+			if (dsh) {
+				notifySuccess(
+					t("agent.hostAgentDetect.success", { name: dsh.name }),
+				);
+			} else {
+				notifyError(t("agent.hostAgentDetect.notFound"));
+			}
+		} catch (error) {
+			notifyError(errorText(error));
+		} finally {
+			setHostRedetectBusy(false);
+		}
+	}, [scanOnce, t]);
 
 	const onOpenCli = useCallback(
 		(templateId: string) => {
@@ -154,6 +178,30 @@ export function AgentPane({
 				scanOnce={scanOnce}
 				onDefaultApplied={() => void refreshPdfAskRegistry()}
 			/>
+
+			{isWebHost() ? (
+				<SettingsGroup>
+					<SettingsRow
+						label={t("agent.hostAgentDetect.label")}
+						description={t("agent.hostAgentDetect.description")}
+					>
+						<Button
+							type="button"
+							variant="outline"
+							size="sm"
+							disabled={hostRedetectBusy}
+							onClick={() => void onRedetectHostAgent()}
+						>
+							{hostRedetectBusy ? (
+								<Loader2 className="size-3.5 animate-spin" aria-hidden />
+							) : (
+								<RefreshCw className="size-3.5" aria-hidden />
+							)}
+							{t("agent.hostAgentDetect.button")}
+						</Button>
+					</SettingsRow>
+				</SettingsGroup>
+			) : null}
 
 			{!hasHostTransport() ? (
 				<p className="mb-3 text-muted-foreground text-xs">

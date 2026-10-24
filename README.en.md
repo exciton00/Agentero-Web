@@ -143,6 +143,10 @@ and use that as `AGENTERO_HOST_DSH_ROOT`. Do not mount the `/usr/bin/dsh` symlin
 
 For source/bare-metal runs, a `dsh` on PATH plus `~/.dsh` is auto-registered at startup too.
 
+If a reused `./data` volume from an older container hides Dsh (stale
+`.host-agent-auto.flag`), use Settings → Agent → **Detect host Dsh** → **Redetect** to clear the
+marker and register again.
+
 **Vault path parity**: if host tools need exactly the same absolute Vault path, set both:
 
 ```dotenv

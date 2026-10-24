@@ -21,6 +21,8 @@
 #   AGENTERO_HOST_DSH_ROOT=/usr/lib/node_modules/@deepseek-ai
 #   AGENTERO_DSH_HOME=/root/.dsh
 # If `readlink -f "$(command -v dsh)"` points elsewhere, set both paths in .env.
+# Reusing an old ./data volume may keep a stale auto-registration marker: use
+# Settings -> Agent -> "Detect host Dsh" -> "Redetect" to clear it.
 #
 # The real docker-compose.yml and .env are git-ignored.
 

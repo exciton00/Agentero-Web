@@ -13,7 +13,7 @@ mod context_mcp;
 mod error;
 mod events;
 mod handlers;
-mod host_agent;
+pub(crate) mod host_agent;
 mod mcp;
 mod parser_engines;
 mod rag_mcp;
