@@ -14,10 +14,12 @@ use crate::features::agent::acp::updates::{
     models_from_config_options, stream_from_update,
 };
 use crate::features::agent::context_turn::{
-    insert_context_block, insert_resume_transcript, prepare_context,
+    attach_rag_mcp, insert_context_block, insert_resume_transcript, prepare_context,
+    RagConfigGuard, RAG_PROMPT_HINT,
 };
 use crate::features::agent::models::{
     AgentDescriptor, AgentFailedEvent, AgentResultPayload, AgentStatusEvent, AgentStreamEvent,
+    RagMcpSpec,
     AgentStreamKind, AgentTemplate, PromptImage,
 };
 use crate::features::agent::prompt::envelope::build_prompt;
@@ -80,10 +82,12 @@ pub struct RunOnceParams {
     /// Earlier chat turns. Used only when the context fingerprint refuses to
     /// resume `resume_session_id`, so the new session still sees the conversation.
     pub resume_transcript: Option<String>,
+    /// Optional session-scoped RAG stdio MCP (agentero-rag) injected into this
+    /// turn. Comes from `AgentHost::set_rag_mcp` (Web host settings).
+    pub rag_mcp: Option<RagMcpSpec>,
 }
 
 /// Prompt/cwd prepared before any ACP I/O.
-#[derive(Clone)]
 struct RunTurnPrep {
     full_prompt: String,
     prompt_images: Vec<PromptImage>,
@@ -95,6 +99,8 @@ struct RunTurnPrep {
     context_usage: Option<PathBuf>,
     context_vault: Option<PathBuf>,
     skip_warm_pool: bool,
+    /// 0600 `agentero-rag` worker config; removed when the turn ends.
+    rag_config: Option<RagConfigGuard>,
 }
 
 /// Everything the connection turn needs beyond the shared state.
@@ -238,6 +244,23 @@ async fn prepare_run_turn(params: &RunOnceParams) -> Result<RunTurnPrep, AppErro
         )
     };
     let mut full_prompt = insert_context_block(&full_prompt, &prepared.block);
+    let mut mcp_servers = prepared.mcp_servers;
+    let mut skip_warm_pool = prepared.skip_warm_pool;
+    let mut rag_config = None;
+    if let Some(spec) = params.rag_mcp.as_ref().filter(|spec| spec.is_complete()) {
+        match attach_rag_mcp(spec, &params.session_id) {
+            Ok((server, guard)) => {
+                mcp_servers.push(server);
+                full_prompt = insert_context_block(&full_prompt, RAG_PROMPT_HINT);
+                // A warm pooled ACP session was created without this MCP server.
+                skip_warm_pool = true;
+                rag_config = Some(guard);
+            }
+            Err(error) => {
+                log::warn!(target: "agentero::agent", "rag mcp unavailable: {error}");
+            }
+        }
+    }
     if params.resume_session_id.is_some() && prepared.resume_session_id.is_none() {
         if let Some(transcript) = params
             .resume_transcript
@@ -259,12 +282,13 @@ async fn prepare_run_turn(params: &RunOnceParams) -> Result<RunTurnPrep, AppErro
         full_prompt,
         prompt_images,
         cwd,
-        mcp_servers: prepared.mcp_servers,
+        mcp_servers,
         resume_session_id: prepared.resume_session_id,
         context_fingerprint: prepared.fingerprint,
         context_usage: prepared.usage_path,
         context_vault: prepared.vault,
-        skip_warm_pool: prepared.skip_warm_pool,
+        skip_warm_pool,
+        rag_config,
     })
 }
 
@@ -1092,7 +1116,10 @@ async fn run_on_pooled(
 /// A healthy pooled warm connection short-circuits the spawn chain.
 pub async fn run_once(params: RunOnceParams) -> Result<AgentResultPayload, AppError> {
     // Phase 1 — prompt: skill instructions + template envelope + cwd.
-    let prep = prepare_run_turn(&params).await?;
+    let mut prep = prepare_run_turn(&params).await?;
+    // Keep the RAG worker config alive for the whole turn (agent spawns the
+    // stdio server later); the guard removes the 0600 file on drop.
+    let _rag_config = prep.rag_config.take();
 
     // Phase 1.5 — pooled warm connection: skip spawn → initialize →
     // session/new entirely when a healthy slot matches this run.
@@ -1211,5 +1238,101 @@ mod cancelled_payload_tests {
             Some("provider-session")
         );
         assert_eq!(payload.content, "partial answer");
+    }
+}
+
+#[cfg(test)]
+mod rag_injection_tests {
+    use super::*;
+    use crate::host::MockSink;
+
+    fn params(rag: Option<RagMcpSpec>) -> RunOnceParams {
+        let sink = Arc::new(MockSink::new());
+        let (_cancel_tx, cancellation) = tokio::sync::watch::channel(false);
+        RunOnceParams {
+            app: AgentEventEmitter::new(sink, "test"),
+            desc: AgentDescriptor {
+                id: "test-agent".into(),
+                name: "Test".into(),
+                template: AgentTemplate::Opencode,
+                command: "true".into(),
+                args: Vec::new(),
+                env: Default::default(),
+                available: true,
+                last_error: None,
+                last_probe_ok: None,
+                last_probe_agent_name: None,
+                last_probe_error: None,
+                last_probed_at: None,
+            },
+            session_id: "rag-injection-session".into(),
+            message_id: "message".into(),
+            prompt: "question".into(),
+            is_acp_command: true,
+            images: Vec::new(),
+            workflow: None,
+            target: None,
+            vault_path: None,
+            preferred_model_id: None,
+            preferred_collaboration_mode_id: None,
+            preferred_reasoning_effort: None,
+            prefer_highest_reasoning_effort: false,
+            fast_mode: None,
+            skill_ids: Vec::new(),
+            permission_policy: PermissionPolicy::Restricted,
+            permission_gate: PermissionGate::new(),
+            elicitation_gate: ElicitationGate::new(),
+            ask_user_gate: AskUserGate::new(),
+            response_language: None,
+            personal_prompt: None,
+            cancellation,
+            remote: None,
+            resume_session_id: None,
+            warm_pool: None,
+            context: None,
+            resume_transcript: None,
+            rag_mcp: rag,
+        }
+    }
+
+    fn spec() -> RagMcpSpec {
+        RagMcpSpec {
+            base_url: "https://kb.example.com".into(),
+            api_key: "secret".into(),
+            knowledge_base_id: "kb-1".into(),
+            vault_path: "/tmp/vault".into(),
+            state_path: "/tmp/state.json".into(),
+            rerank: false,
+            timeout_ms: 15_000,
+            top_k: 8,
+        }
+    }
+
+    fn has_agentero_rag(prep: &RunTurnPrep) -> bool {
+        prep.mcp_servers.iter().any(|server| {
+            matches!(
+                server,
+                agent_client_protocol::schema::v1::McpServer::Stdio(stdio)
+                    if stdio.name == "agentero-rag"
+            )
+        })
+    }
+
+    #[tokio::test]
+    async fn rag_spec_injects_stdio_server_prompt_hint_and_skips_warm_pool() {
+        let prep = prepare_run_turn(&params(Some(spec()))).await.unwrap();
+        assert!(has_agentero_rag(&prep), "{:?}", prep.mcp_servers.len());
+        assert!(prep.full_prompt.contains("weknora_search"));
+        assert!(prep.skip_warm_pool, "pooled sessions lack the RAG server");
+        let guard = prep.rag_config.expect("worker config guard");
+        drop(guard);
+    }
+
+    #[tokio::test]
+    async fn without_rag_spec_the_turn_surface_is_unchanged() {
+        let prep = prepare_run_turn(&params(None)).await.unwrap();
+        assert!(!has_agentero_rag(&prep));
+        assert!(!prep.full_prompt.contains("weknora_search"));
+        assert!(prep.rag_config.is_none());
     }
 }

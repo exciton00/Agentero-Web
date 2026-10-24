@@ -15,8 +15,8 @@ use crate::host::Host;
 use crate::models::{
     AgentDescriptor, AgentFailedEvent, AgentListResponse, AgentOnly, AgentSkill, AgentStatusEvent,
     AskUserResponseRequest, CatalogScanResponse, ElicitationResponseRequest, PermissionResponded,
-    PermissionResponseRequest, ProbeResult, RunOnceAccepted, RunOnceRequest, UpsertAgentRequest,
-    WarmRequest, WarmResult,
+    PermissionResponseRequest, ProbeResult, RagMcpSpec, RunOnceAccepted, RunOnceRequest,
+    UpsertAgentRequest, WarmRequest, WarmResult,
 };
 use crate::registry::{version_check, AgentRegistry};
 use crate::runtime::events::AgentEventEmitter;
@@ -30,7 +30,7 @@ use crate::session::{
 };
 use agentero_core::error::AppError;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// One agent domain instance for a host process.
 pub struct AgentHost {
@@ -42,6 +42,9 @@ pub struct AgentHost {
     ask_user_gate: AskUserGate,
     warm_gate: Arc<AgentWarmGate>,
     warm_pool: Arc<AgentWarmPool>,
+    /// Optional RAG (WeKnora) stdio MCP injected into every turn. The Web host
+    /// updates it from settings; `None` keeps the tool surface unchanged.
+    rag_mcp: Mutex<Option<RagMcpSpec>>,
 }
 
 impl AgentHost {
@@ -64,6 +67,7 @@ impl AgentHost {
             ask_user_gate: AskUserGate::new(),
             warm_gate: Arc::new(AgentWarmGate::new()),
             warm_pool: Arc::new(AgentWarmPool::new()),
+            rag_mcp: Mutex::new(None),
         }
     }
 
@@ -73,6 +77,34 @@ impl AgentHost {
 
     pub fn registry(&self) -> &AgentRegistry {
         &self.registry
+    }
+
+    /// Update the session-scoped RAG MCP configuration (Web host settings).
+    ///
+    /// Returns true when the configuration changed. A changed configuration
+    /// invalidates the warm pool because pooled ACP sessions were created
+    /// without the previous MCP server list.
+    pub fn set_rag_mcp(&self, spec: Option<RagMcpSpec>) -> bool {
+        let changed = {
+            let mut guard = self.rag_mcp.lock().unwrap_or_else(|error| error.into_inner());
+            let changed = *guard != spec;
+            if changed {
+                *guard = spec;
+            }
+            changed
+        };
+        if changed {
+            self.warm_pool.shutdown();
+        }
+        changed
+    }
+
+    /// Current RAG MCP configuration snapshot for one turn.
+    pub fn rag_mcp(&self) -> Option<RagMcpSpec> {
+        self.rag_mcp
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
     }
 
     pub fn permission_gate(&self) -> &PermissionGate {
@@ -254,6 +286,7 @@ impl AgentHost {
         let ask_user_gate = self.ask_user_gate.clone();
         let warm_pool = self.warm_pool.clone();
         let warm_gate = self.warm_gate.clone();
+        let rag_mcp = self.rag_mcp();
         let runs = self.runs.clone();
         let agent_id = desc.id.clone();
         let log_session = session_id.clone();
@@ -288,6 +321,7 @@ impl AgentHost {
                 warm_pool: Some(warm_pool),
                 context: request.context,
                 resume_transcript: request.resume_transcript,
+                rag_mcp,
             })
             .await;
             if result.is_ok() {
@@ -578,4 +612,44 @@ pub fn descriptor_for(
 /// server uses this at startup when adapters are mounted outside the binary.
 pub fn init_adapters(resource_dir: impl AsRef<Path>) {
     crate::registry::bundled::init(Some(resource_dir.as_ref().to_path_buf()));
+}
+
+#[cfg(test)]
+mod rag_mcp_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn spec(kb: &str) -> RagMcpSpec {
+        RagMcpSpec {
+            base_url: "https://kb.example.com".into(),
+            api_key: "secret".into(),
+            knowledge_base_id: kb.into(),
+            vault_path: "/tmp/vault".into(),
+            state_path: "/tmp/state.json".into(),
+            rerank: false,
+            timeout_ms: 15_000,
+            top_k: 8,
+        }
+    }
+
+    #[test]
+    fn rag_mcp_setter_reports_changes_and_snapshots() {
+        let host = AgentHost::new(Arc::new(crate::host::MockHost::new()));
+        assert_eq!(host.rag_mcp(), None);
+        assert!(host.set_rag_mcp(Some(spec("kb-1"))), "first set is a change");
+        assert_eq!(
+            host.rag_mcp().map(|spec| spec.knowledge_base_id),
+            Some("kb-1".into())
+        );
+        assert!(
+            !host.set_rag_mcp(Some(spec("kb-1"))),
+            "identical spec must not invalidate the warm pool"
+        );
+        assert!(
+            host.set_rag_mcp(Some(spec("kb-2"))),
+            "KB change invalidates pooled sessions"
+        );
+        assert!(host.set_rag_mcp(None), "turning RAG off invalidates too");
+        assert_eq!(host.rag_mcp(), None);
+    }
 }

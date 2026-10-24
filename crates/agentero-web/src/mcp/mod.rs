@@ -19,6 +19,7 @@ mod icons;
 mod layout;
 mod notes;
 mod paper;
+pub mod rag_tools;
 mod resources;
 mod server;
 mod tools;
@@ -32,6 +33,7 @@ use agentero_core::app_handle::AppHandle;
 use agentero_core::error::AppError;
 use agentero_core::features::paper::capabilities::CapsCache;
 use agentero_core::features::system::settings::{AppSettingsStore, DEFAULT_MCP_PORT};
+use agentero_core::features::weknora::settings::WeKnoraSettings;
 use serde::Serialize;
 use tokio::sync::oneshot;
 
@@ -189,6 +191,16 @@ impl McpController {
 
     pub fn caps(&self) -> &CapsCache {
         &self.caps
+    }
+
+    /// Live WeKnora RAG settings (dynamic tool gating + rag runtime).
+    pub fn weknora_settings(&self) -> WeKnoraSettings {
+        self.settings.weknora()
+    }
+
+    /// Vault served by the Web host (RAG tool scope).
+    pub fn server_vault(&self) -> &Path {
+        &self.server_vault
     }
 
     /// Fresh core host handle wired to this process's WebSocket event bus.

@@ -13,6 +13,7 @@ mod error;
 mod events;
 mod handlers;
 mod mcp;
+mod rag_mcp;
 mod rpc;
 mod state;
 mod static_files;
@@ -133,6 +134,11 @@ fn main() {
     {
         std::process::exit(status);
     }
+    // Per-session stdio RAG MCP worker spawned by an ACP agent
+    // (`agentero-web --agentero-rag-mcp <config>`); builds its own runtime.
+    if let Some(status) = rag_mcp::try_run_rag_mcp() {
+        std::process::exit(status);
+    }
     run();
 }
 
@@ -173,6 +179,11 @@ async fn run() {
     // WeKnora RAG: listens for settings changes / Vault writes to run the
     // optional debounced auto-sync (60s) and the 30-minute fallback scan.
     state.weknora.clone().start();
+
+    // RAG MCP injection for ACP agent turns: keep AgentHost's spec in sync with
+    // settings (enabled + configured + tools.exposeToAgent). Skipped while off.
+    sync_rag_mcp(&state);
+    start_rag_mcp_settings_listener(Arc::clone(&state));
 
     // axum caps `Bytes` bodies at 2 MB by default, which a 15-page PDF blows
     // past once base64-encoded (`layout_remote_analyze_pdf`). The same cap
@@ -233,6 +244,52 @@ async fn run() {
         eprintln!("agentero-web: server error: {error}");
         std::process::exit(1);
     }
+}
+
+/// Build the per-turn RAG MCP spec from live settings.
+///
+/// `None` when the feature is off/unconfigured or the user did not expose the
+/// tools to agents — the ACP tool surface then stays byte-identical to before.
+fn rag_mcp_spec(state: &AppState) -> Option<agentero_host::models::RagMcpSpec> {
+    let settings = state.settings.weknora();
+    if !mcp::rag_tools::agent_tools_enabled(&settings) {
+        return None;
+    }
+    Some(agentero_host::models::RagMcpSpec {
+        base_url: settings.base_url().to_string(),
+        api_key: settings.api_key().unwrap_or_default().to_string(),
+        knowledge_base_id: settings.knowledge_base_id().to_string(),
+        vault_path: state.config.vault_root.to_string_lossy().into_owned(),
+        state_path: agentero_core::features::weknora::state::state_path(&state.config.vault_root)
+            .to_string_lossy()
+            .into_owned(),
+        rerank: settings.retrieval.rerank,
+        timeout_ms: settings.retrieval.timeout_ms,
+        top_k: settings.retrieval.top_k,
+    })
+}
+
+/// Push the current RAG MCP spec into the agent host (pool invalidated on change).
+fn sync_rag_mcp(state: &Arc<AppState>) {
+    let spec = rag_mcp_spec(state);
+    if state.agents.set_rag_mcp(spec) {
+        log::info!("agentero-web updated the agent RAG MCP configuration");
+    }
+}
+
+/// Refresh the agent RAG spec whenever settings are saved from any tab.
+fn start_rag_mcp_settings_listener(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        let mut receiver = state.events.subscribe();
+        loop {
+            match receiver.recv().await {
+                Ok(frame) if frame.event == "settings:changed" => sync_rag_mcp(&state),
+                Ok(_) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(_) => break,
+            }
+        }
+    });
 }
 
 /// Browser bootstrap facts: default Vault root, platform marker, version.

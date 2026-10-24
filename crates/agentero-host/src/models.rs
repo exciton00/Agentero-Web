@@ -888,3 +888,38 @@ mod agent_status_event_tests {
         );
     }
 }
+
+/// Optional RAG (WeKnora) stdio MCP injected into one ACP turn.
+///
+/// The Web host updates this from `settings.weknora` on every settings change
+/// (`AgentHost::set_rag_mcp`). When present and complete, `prepare_run_turn`
+/// writes a 0600 session config, appends the `agentero-rag` stdio MCP server to
+/// the ACP `mcpServers`, and adds a short prompt hint. Secrets never go to
+/// logs; the temp config is removed when the turn ends.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RagMcpSpec {
+    pub base_url: String,
+    pub api_key: String,
+    pub knowledge_base_id: String,
+    pub vault_path: String,
+    /// Local WeKnora sync-state file (mapping knowledge_id → paper).
+    pub state_path: String,
+    /// Retrieval defaults mirrored from settings.
+    pub rerank: bool,
+    pub timeout_ms: u64,
+    pub top_k: u32,
+}
+
+impl RagMcpSpec {
+    /// Complete enough to spawn the worker (the API key may be empty for a
+    /// self-hosted/anonymous WeKnora instance).
+    pub fn is_complete(&self) -> bool {
+        !self.base_url.trim().is_empty()
+            && !self.knowledge_base_id.trim().is_empty()
+            && !self.vault_path.trim().is_empty()
+    }
+}
+
+/// Worker arg: re-exec this binary as the session-scoped RAG stdio MCP.
+pub const RAG_MCP_WORKER_ARG: &str = "--agentero-rag-mcp";
+

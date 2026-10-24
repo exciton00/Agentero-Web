@@ -135,7 +135,8 @@ AGENTERO_WEB_DIST=$PWD/dist \
 - **同步方式**：设置页「立即同步」（可取消、可看进度/失败项）或自动同步（默认关；开启后 Vault 写入 **60s 防抖** + 每 **30 分钟**兜底扫描）。内容按哈希增量更新，删除论文后下次同步清理对应 managed 文档；`weknora_reconcile` 可从 KB `custom_metadata` 重建映射，「清理 Agentero 文档」需二次确认。
 - **状态**：同步映射存 `$XDG_DATA_HOME/agentero/weknora/<vault-key>.json`（不在 Vault、不进 git、无密钥）；设置页显示已同步/待同步/失败计数与 `weknora:sync` 进度。
 - **单 Vault / 单知识库**（v1）：更换知识库会重置映射；同一 KB 多部署同时写属于未支持场景。出站请求遵循设置里的网络代理。
-- **限制**：图片语义检索、PDF 原件上传、WeKnora 侧聊天/Agent 调用不在 v1；检索默认关闭 rerank（该实例开启时可能 20–40s 不返回）。API 细节与 RPC/事件契约见 [backend/weknora.md](../backend/weknora.md)。
+- **给外部 MCP / Web Agent 用**：设置里 `tools.exposeToMcp` 打开后，Agentero 的 MCP server（`/mcp`）会动态出现只读 `weknora_search` / `weknora_paper_context` / `weknora_sync_status`；`tools.exposeToAgent` 打开后，Web 端 ACP agent（Chat）每轮会注入会话级 `agentero-rag` stdio MCP，可直接问"我库里有没有讨论 trapping/TCS 的笔记或图注，引用怎么写"。两者都只读、命中带 `paper.path` 与 `\cite{key}`，不会写入 WeKnora；关闭开关后工具立即消失，不影响其余 MCP 工具。
+- **限制**：图片语义检索、PDF 原件上传、WeKnora 侧聊天/Agent 调用不在 v1；检索默认关闭 rerank（该实例开启时可能 20–40s 不返回）。单篇检索受 API key scope 限制（不支持 `knowledge_ids`）走 KB-wide 检索 + 本地过滤。API 细节与 RPC/事件契约见 [backend/weknora.md](../backend/weknora.md)，MCP 工具 schema 见 [backend/mcp.md](../backend/mcp.md)。
 
 ## Vault 同步（NAS 友好）
 

@@ -5,8 +5,7 @@
 //! 30-min fallback scan) and the read-only RPC helpers. The heavy lifting lives
 //! in `agentero_core::features::weknora`.
 
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -16,16 +15,12 @@ use serde_json::{json, Value};
 
 use agentero_core::features::paper::catalog::papers;
 use agentero_core::features::system::settings::AppSettingsStore;
-use agentero_core::features::weknora::client::{
-    KnowledgeBaseInfo, SearchMode, SearchRequest, WeKnoraClient, WeKnoraError,
-};
-use agentero_core::features::weknora::render::user_tags;
+use agentero_core::features::weknora::client::{KnowledgeBaseInfo, WeKnoraClient, WeKnoraError};
 use agentero_core::features::weknora::settings::WeKnoraSettings;
-use agentero_core::features::weknora::state::{WeKnoraSyncState, STATUS_INDEXING, STATUS_READY};
+use agentero_core::features::weknora::state::WeKnoraSyncState;
 use agentero_core::features::weknora::sync::{
     self, SyncOptions, SyncPhase, SyncProgress,
 };
-use agentero_core::features::weknora::RENDERER_VERSION;
 
 use crate::events::EventBus;
 
@@ -571,149 +566,24 @@ impl WeKnoraService {
 
     /// `weknora_search` — read-only preview used by the settings page / agents.
     pub async fn search(&self, args: SearchArgs) -> Result<Value, String> {
-        let query = args.query.trim().to_string();
-        if query.is_empty() {
-            return Err("query is required".into());
-        }
-        let (settings, client) = self.require_client()?;
+        let (settings, _client) = self.require_client()?;
         let retrieval = settings.retrieval.clone();
-        let top_k = args
-            .top_k
-            .unwrap_or(retrieval.top_k)
-            .clamp(1, 50) as usize;
-        let rerank = args.rerank.unwrap_or(retrieval.rerank);
-        let mode = args
-            .mode
-            .as_deref()
-            .map(SearchMode::parse)
-            .unwrap_or_default();
-        let state = self.state();
-        let catalog = self.catalog();
-        let by_path: HashMap<&str, &papers::PaperRecord> =
-            catalog.iter().map(|record| (record.path.as_str(), record)).collect();
-        let by_knowledge: HashMap<&str, (&str, &str)> = state
-            .docs
-            .iter()
-            .map(|(path, doc)| {
-                (
-                    doc.knowledge_id.as_str(),
-                    (path.as_str(), doc.bibtex_key.as_str()),
-                )
-            })
-            .collect();
-
-        // Optional single-paper restriction. The tested API-key scope rejects
-        // `knowledge_ids` filters ("not allowed without a verified knowledge
-        // base"), so search KB-wide and filter by the mapped knowledge id.
-        let mut paper_knowledge_id: Option<String> = None;
-        if let Some(paper) = args.paper.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
-            let resolved = papers::lookup_paper_ref(&self.vault, paper)
-                .ok()
-                .and_then(|lookup| match lookup {
-                    papers::PaperRefLookup::Found(record) => Some(record.path),
-                    _ => None,
-                })
-                .unwrap_or_else(|| paper.to_string());
-            paper_knowledge_id = Some(
-                state
-                    .docs
-                    .get(&resolved)
-                    .map(|doc| doc.knowledge_id.clone())
-                    .filter(|id| !id.is_empty())
-                    .ok_or_else(|| format!("paper is not synced to WeKnora yet: {resolved}"))?,
-            );
-        }
-
-        // Optional tag-name filter (resolved through the KB tag list).
-        let mut tag_ids = Vec::new();
-        if let Some(tag) = args.tag.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
-            let tags = client.list_tags(settings.knowledge_base_id()).await.map_err(|error| {
-                format!("resolve WeKnora tag {tag}: {error}")
-            })?;
-            if let Some(found) = tags
-                .iter()
-                .find(|candidate| candidate.name.eq_ignore_ascii_case(tag))
-            {
-                tag_ids.push(found.id.clone());
-            } else {
-                return Ok(json!({ "hits": [], "count": 0 }));
-            }
-        }
-
-        let request = SearchRequest {
-            query,
-            knowledge_base_ids: vec![settings.knowledge_base_id().to_string()],
-            knowledge_ids: Vec::new(),
-            tag_ids,
-            match_count: top_k,
-            mode,
-            rerank,
+        // Delegate to the shared MCP-tool implementation so the RPC preview and
+        // the agent/MCP tools map WeKnora hits identically.
+        let rag_args = crate::mcp::rag_tools::RagSearchArgs {
+            query: args.query,
+            top_k: Some(args.top_k.unwrap_or(retrieval.top_k)),
+            paper: args.paper,
+            tag: args.tag,
+            mode: args.mode,
+            rerank: Some(args.rerank.unwrap_or(retrieval.rerank)),
+            // The settings-page preview keeps the historical behaviour that
+            // includes WeKnora summary chunks.
+            include_summaries: true,
         };
-        let client = client
-            .with_timeout(Duration::from_millis(retrieval.timeout_ms.max(1_000)))
-            .map_err(|error| error.to_string())?;
-        let mut degraded = false;
-        let hits = match client.search(&request).await {
-            Ok(hits) => hits,
-            Err(error) if error.kind == agentero_core::features::weknora::client::WeKnoraErrorKind::Timeout && rerank => {
-                degraded = true;
-                let fallback = SearchRequest {
-                    rerank: false,
-                    ..request
-                };
-                client.search(&fallback).await.map_err(|error| error.to_string())?
-            }
-            Err(error) => return Err(error.to_string()),
-        };
-        let mut seen = std::collections::HashSet::new();
-        let mut mapped = Vec::new();
-        for hit in hits {
-            if let Some(wanted) = paper_knowledge_id.as_deref() {
-                if hit.knowledge_id != wanted {
-                    continue;
-                }
-            }
-            let dedupe_key = format!("{}|{}", hit.knowledge_id, hit.content);
-            if !seen.insert(dedupe_key) {
-                continue;
-            }
-            let (path, bibtex_key) = by_knowledge
-                .get(hit.knowledge_id.as_str())
-                .copied()
-                .unwrap_or(("", ""));
-            let record = by_path.get(path).copied();
-            let title = record
-                .map(|record| record.title.clone())
-                .or(hit.knowledge_title.clone())
-                .unwrap_or_default();
-            let tags = record.map(user_tags).unwrap_or_default();
-            let latex = if bibtex_key.is_empty() {
-                Value::Null
-            } else {
-                Value::String(format!("\\cite{{{bibtex_key}}}"))
-            };
-            mapped.push(json!({
-                "paper": {
-                    "ref": record.map(|record| record.id.clone()).unwrap_or_default(),
-                    "path": path,
-                    "title": title,
-                    "tags": tags,
-                    "bibtexKey": if bibtex_key.is_empty() { Value::Null } else { Value::String(bibtex_key.to_string()) },
-                },
-                "knowledgeId": hit.knowledge_id,
-                "chunkType": hit.chunk_type,
-                "score": hit.score,
-                "content": truncate_chars(&hit.content, 4_000),
-                "section": detect_section(&hit.content),
-                "latex": latex,
-            }));
-        }
-        let count = mapped.len();
-        let mut payload = json!({ "hits": mapped, "count": count });
-        if degraded {
-            payload["degraded"] = json!(true);
-        }
-        Ok(payload)
+        let runtime = crate::mcp::rag_tools::RagRuntime::new(settings, &self.vault);
+        let out = runtime.search(rag_args).await.map_err(|error| error.to_string())?;
+        serde_json::to_value(out).map_err(|error| error.to_string())
     }
 }
 
@@ -743,63 +613,6 @@ fn kb_json(kb: &KnowledgeBaseInfo) -> Value {
         "description": kb.description,
         "capabilities": kb.capabilities,
     })
-}
-
-/// Fixed H2 section detection (chunks keep their heading text upstream).
-fn detect_section(content: &str) -> Option<&'static str> {
-    const SECTIONS: &[(&str, &str)] = &[
-        ("## Paper body", "paper"),
-        ("## User notes", "notes"),
-        ("## Annotations and marks", "annotations"),
-        ("## Figure and table index", "figure"),
-        ("## Abstract", "abstract"),
-        ("## Citation (BibTeX / BibLaTeX)", "citation"),
-    ];
-    SECTIONS
-        .iter()
-        .find(|(heading, _)| content.contains(heading))
-        .map(|(_, section)| *section)
-}
-
-fn truncate_chars(text: &str, max_chars: usize) -> String {
-    if text.chars().count() <= max_chars {
-        return text.to_string();
-    }
-    let mut out: String = text.chars().take(max_chars).collect();
-    out.push('…');
-    out
-}
-
-/// Status helpers shared by tests: derive synced/pending counters.
-pub fn state_counters(vault: &Path) -> (usize, usize, usize, usize) {
-    let state = WeKnoraSyncState::load(vault);
-    let counts = state.counts();
-    let catalog = papers::list_all(vault).map(|rows| rows.len()).unwrap_or(0);
-    (
-        catalog,
-        counts.synced,
-        counts.indexing,
-        counts.failed,
-    )
-}
-
-/// Renderer version reported by status diagnostics (kept in one place).
-pub const WEKNORA_RENDERER_VERSION: u32 = RENDERER_VERSION;
-
-/// Ensure the status payload exposes the same renderer version as the engine.
-pub fn renderer_version() -> u32 {
-    WEKNORA_RENDERER_VERSION
-}
-
-/// Convenience for the MCP/agent tool layer later: synced ready paper paths.
-pub fn synced_paths(vault: &Path) -> Vec<String> {
-    let state = WeKnoraSyncState::load(vault);
-    state
-        .docs
-        .iter()
-        .filter(|(_, doc)| doc.status == STATUS_READY || doc.status == STATUS_INDEXING)
-        .map(|(path, _)| path.clone())
-        .collect()
 }
 
 #[cfg(test)]
@@ -916,30 +729,4 @@ mod tests {
         assert!(error.contains("disabled"), "{error}");
     }
 
-    #[test]
-    fn section_detection_matches_renderer_headings() {
-        assert_eq!(
-            detect_section("intro\n## User notes\nbody"),
-            Some("notes")
-        );
-        assert_eq!(
-            detect_section("## Annotations and marks\n- page 3"),
-            Some("annotations")
-        );
-        assert_eq!(detect_section("just text"), None);
-    }
-
-    #[test]
-    fn truncation_keeps_utf8_and_marks_overflow() {
-        let text = "汉".repeat(10);
-        let out = truncate_chars(&text, 4);
-        assert_eq!(out.chars().count(), 5);
-        assert!(out.ends_with('…'));
-        assert_eq!(truncate_chars("short", 100), "short");
-    }
-
-    #[test]
-    fn renderer_version_is_pinned() {
-        assert_eq!(renderer_version(), 1);
-    }
 }
