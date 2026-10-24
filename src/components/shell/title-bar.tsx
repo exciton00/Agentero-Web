@@ -1,4 +1,4 @@
-import { PanelLeft, Settings } from "lucide-react";
+import { MessageSquareText, PanelLeft, Settings } from "lucide-react";
 import { memo } from "react";
 import { useTranslation } from "react-i18next";
 import { AgentLogo } from "@/components/agent/agent-logo";
@@ -45,9 +45,11 @@ type TitleBarProps = {
 	showSettingsGear: boolean;
 	sidebarCollapsed: boolean;
 	rightSidebarOpen: boolean;
+	rightSidebarTab: "agent" | "annotations";
 	layoutMode: LayoutMode;
 	onToggleSidebar: () => void;
 	onToggleAgent: () => void;
+	onOpenRightTab: (tab: "agent" | "annotations") => void;
 	onApplyLayoutMode: (mode: Exclude<LayoutMode, "custom">) => void;
 	onOpenSettings: () => void;
 };
@@ -61,9 +63,11 @@ export const TitleBar = memo(function TitleBar({
 	showSettingsGear,
 	sidebarCollapsed,
 	rightSidebarOpen,
+	rightSidebarTab,
 	layoutMode,
 	onToggleSidebar,
 	onToggleAgent,
+	onOpenRightTab,
 	onApplyLayoutMode,
 	onOpenSettings,
 }: TitleBarProps) {
@@ -116,6 +120,37 @@ export const TitleBar = memo(function TitleBar({
 				<div className="flex shrink-0 items-center gap-0.5 pr-2">
 					<UpdateIndicator />
 					<LayoutMenu value={layoutMode} onValueChange={onApplyLayoutMode} />
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<Button
+								type="button"
+								variant="ghost"
+								size="icon-xs"
+								data-tb-annotations
+								aria-label={t("titlebar.annotationsPanel")}
+								aria-pressed={
+									rightSidebarOpen && rightSidebarTab === "annotations"
+								}
+								className={cn(
+									rightSidebarOpen &&
+										rightSidebarTab === "annotations" &&
+										"bg-muted text-foreground",
+								)}
+								onClick={() => {
+									if (rightSidebarOpen && rightSidebarTab === "annotations") {
+										onToggleAgent();
+										return;
+									}
+									onOpenRightTab("annotations");
+								}}
+							>
+								<MessageSquareText className="size-3.5" />
+							</Button>
+						</TooltipTrigger>
+						<TooltipContent side="bottom">
+							{t("annotations.title", { ns: "viewer" })}
+						</TooltipContent>
+					</Tooltip>
 					<ContextMenu>
 						<Tooltip>
 							<TooltipTrigger asChild>
@@ -126,15 +161,25 @@ export const TitleBar = memo(function TitleBar({
 										size="icon-xs"
 										data-tb-agent
 										aria-label={
-											rightSidebarOpen
+											rightSidebarOpen && rightSidebarTab === "agent"
 												? t("titlebar.hideRightSidebar")
 												: t("titlebar.showRightSidebar")
 										}
-										aria-pressed={rightSidebarOpen}
+										aria-pressed={
+											rightSidebarOpen && rightSidebarTab === "agent"
+										}
 										className={cn(
-											rightSidebarOpen && "bg-muted text-foreground",
+											rightSidebarOpen &&
+												rightSidebarTab === "agent" &&
+												"bg-muted text-foreground",
 										)}
-										onClick={onToggleAgent}
+										onClick={() => {
+											if (rightSidebarOpen && rightSidebarTab === "agent") {
+												onToggleAgent();
+												return;
+											}
+											onOpenRightTab("agent");
+										}}
 									>
 										<AgentLogo
 											template={agentTemplate}

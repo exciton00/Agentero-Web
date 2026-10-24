@@ -1,18 +1,37 @@
 import {
+	ChevronDown,
+	ChevronUp,
 	Link2,
 	MessageCircle,
 	MessageSquareText,
+	Pencil,
 	ScanSearch,
 	Trash2,
 } from "lucide-react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { PaneHeader } from "@/components/shell/pane-header";
 import { Button } from "@/components/ui/button";
+import {
+	Popover,
+	PopoverContent,
+	PopoverTrigger,
+} from "@/components/ui/popover";
 import { copyTextToClipboard } from "@/lib/core/clipboard";
 import { cn } from "@/lib/core/utils";
 import type { PdfVisualTraceThumbnail } from "@/lib/pdf/agent-trace/thumbnail";
 import { annotationWikilinkMarkdown } from "@/lib/pdf/annotation-ref";
+import {
+	HIGHLIGHT_COLORS,
+	type HighlightColor,
+	swatchBorderClass,
+	swatchColorClass,
+} from "@/lib/pdf/highlight/palette";
+import type { HighlightPanelRow } from "@/lib/pdf/highlight/panel-rows";
+
+/** Text highlight with an optional note, as listed in the annotations panel. */
+export type AnnotationRow = HighlightPanelRow;
 
 /** PDF selection-ask conversation for the annotations sidebar. */
 export type AskRow = {
@@ -36,15 +55,21 @@ export type VisualTraceRow = {
 };
 
 type AnnotationsPanelProps = {
+	/** Text highlights / annotations for the active paper. */
+	items: AnnotationRow[];
 	/** PDF ask threads with at least one user message. */
 	asks?: AskRow[];
 	/** Visual agent-trace marks for this paper. */
 	visualTraces?: VisualTraceRow[];
 	/**
 	 * Resolvable wiki target for `[[target@id]]` (e.g. `papers/…/NOTES`).
-	 * When set, visual cards expose copy-link / copy-embed.
+	 * When set, highlight and visual cards expose copy-link / copy-embed.
 	 */
 	wikiTarget?: string | null;
+	onJump: (id: string) => void;
+	onEdit: (id: string) => void;
+	onChangeColor: (id: string, color: HighlightColor) => void;
+	onDelete: (id: string) => void;
 	onJumpAsk?: (id: string) => void;
 	onDeleteAsk?: (id: string) => void;
 	onJumpVisual?: (id: string) => void;
@@ -52,14 +77,24 @@ type AnnotationsPanelProps = {
 	className?: string;
 };
 
+/** Character threshold: longer notes get clamp + expand control. */
+const COMMENT_COLLAPSE_CHARS = 120;
+const COMMENT_CLAMP_CLASS = "line-clamp-3";
+
 /**
- * Right-sidebar overview of PDF ask threads and visual agent-trace marks on
- * the active paper. Click to jump.
+ * Right-sidebar overview of highlights, PDF ask threads, and visual
+ * agent-trace marks on the active paper. Click to jump; long notes clamp with
+ * an expand control.
  */
 export function AnnotationsPanel({
+	items,
 	asks = [],
 	visualTraces = [],
 	wikiTarget = null,
+	onJump,
+	onEdit,
+	onChangeColor,
+	onDelete,
 	onJumpAsk,
 	onDeleteAsk,
 	onJumpVisual,
@@ -67,8 +102,10 @@ export function AnnotationsPanel({
 	className,
 }: AnnotationsPanelProps) {
 	const { t } = useTranslation("viewer");
-	const total = asks.length + visualTraces.length;
-	const multiSection = asks.length > 0 && visualTraces.length > 0;
+	const total = items.length + asks.length + visualTraces.length;
+	const multiSection =
+		[items.length > 0, asks.length > 0, visualTraces.length > 0].filter(Boolean)
+			.length > 1;
 	const linkTarget = wikiTarget?.trim() || null;
 
 	return (
@@ -98,6 +135,30 @@ export function AnnotationsPanel({
 				</div>
 			) : (
 				<div className="agentero-scroll min-h-0 flex-1 space-y-4 overflow-y-auto p-2">
+					{items.length > 0 ? (
+						<section aria-label={t("annotations.sectionHighlights")}>
+							{multiSection ? (
+								<h3 className="mb-1.5 px-1 font-medium text-xs text-muted-foreground uppercase tracking-wider">
+									{t("annotations.sectionHighlights")}
+								</h3>
+							) : null}
+							<ul className="space-y-1">
+								{items.map((a) => (
+									<li key={a.id}>
+										<AnnotationCard
+											item={a}
+											wikiTarget={linkTarget}
+											onJump={onJump}
+											onEdit={onEdit}
+											onChangeColor={onChangeColor}
+											onDelete={onDelete}
+										/>
+									</li>
+								))}
+							</ul>
+						</section>
+					) : null}
+
 					{asks.length > 0 ? (
 						<section aria-label={t("annotations.sectionAsks")}>
 							{multiSection ? (
@@ -143,6 +204,188 @@ export function AnnotationsPanel({
 				</div>
 			)}
 		</section>
+	);
+}
+
+function AnnotationCard({
+	item: a,
+	wikiTarget,
+	onJump,
+	onEdit,
+	onChangeColor,
+	onDelete,
+}: {
+	item: AnnotationRow;
+	wikiTarget: string | null;
+	onJump: (id: string) => void;
+	onEdit: (id: string) => void;
+	onChangeColor: (id: string, color: HighlightColor) => void;
+	onDelete: (id: string) => void;
+}) {
+	const { t } = useTranslation("viewer");
+	const [colorOpen, setColorOpen] = useState(false);
+	const linkOpts = wikiTarget
+		? {
+				target: wikiTarget,
+				id: a.id,
+				...(a.linkAlias ? { alias: a.linkAlias } : {}),
+			}
+		: null;
+
+	return (
+		<div className="group relative rounded-lg border border-transparent px-3 py-2.5 transition-colors hover:border-border/60 hover:bg-muted/40">
+			{/* biome-ignore lint/a11y/useSemanticElements: a native <button> cannot wrap the blockquote/p flow content */}
+			<div
+				role="button"
+				tabIndex={0}
+				className="block w-full cursor-pointer rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+				onClick={() => onJump(a.id)}
+				onKeyDown={(e) => {
+					if (e.key === "Enter" || e.key === " ") {
+						e.preventDefault();
+						onJump(a.id);
+					}
+				}}
+			>
+				<div className="flex items-center gap-1.5">
+					<Popover open={colorOpen} onOpenChange={setColorOpen}>
+						<PopoverTrigger asChild>
+							<button
+								type="button"
+								className="shrink-0 rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+								aria-label={t("annotations.changeColor")}
+								title={t("annotations.changeColor")}
+								onClick={(event) => event.stopPropagation()}
+								onKeyDown={(event) => event.stopPropagation()}
+							>
+								<span
+									className={cn(
+										"block size-2 rounded-full",
+										swatchColorClass(a.color),
+									)}
+									aria-hidden
+								/>
+							</button>
+						</PopoverTrigger>
+						<PopoverContent
+							align="start"
+							className="w-auto p-1.5"
+							onClick={(event) => event.stopPropagation()}
+						>
+							<div className="flex items-center gap-1">
+								{HIGHLIGHT_COLORS.map((color) => (
+									<button
+										key={color}
+										type="button"
+										className={cn(
+											"flex size-6 items-center justify-center rounded-full outline-none transition-transform hover:scale-110 focus-visible:ring-2 focus-visible:ring-ring/60",
+											a.color === color && "ring-2 ring-ring/70",
+										)}
+										aria-label={t(`selection.color.${color}`)}
+										title={t(`selection.color.${color}`)}
+										onClick={(event) => {
+											event.stopPropagation();
+											onChangeColor(a.id, color);
+											setColorOpen(false);
+										}}
+									>
+										<span
+											className={cn(
+												"block size-4 rounded-full shadow-sm ring-1 ring-black/25",
+												swatchColorClass(color),
+											)}
+											aria-hidden
+										/>
+									</button>
+								))}
+							</div>
+						</PopoverContent>
+					</Popover>
+					<span className="font-medium text-xs text-muted-foreground uppercase tracking-wider tabular-nums">
+						{t("annotations.pageLabel", { page: a.page })}
+					</span>
+				</div>
+				<blockquote
+					className={cn(
+						"mt-1.5 line-clamp-2 border-l-2 pl-2.5 text-xs leading-relaxed",
+						swatchBorderClass(a.color),
+						a.comment ? "text-muted-foreground/90" : "text-muted-foreground",
+					)}
+				>
+					{a.quote}
+				</blockquote>
+				{a.comment ? (
+					<div className="mt-2">
+						<ExpandableText
+							text={a.comment}
+							className="whitespace-pre-wrap break-words text-foreground/80 text-sm leading-relaxed"
+						/>
+					</div>
+				) : null}
+			</div>
+			<div className="absolute top-2 right-2 flex items-center gap-0.5 rounded-lg bg-background/80 p-0.5 opacity-0 shadow-sm ring-1 ring-border/60 backdrop-blur-sm transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
+				{linkOpts ? (
+					<>
+						<Button
+							type="button"
+							variant="ghost"
+							size="icon-xs"
+							className="size-6 text-muted-foreground hover:text-foreground"
+							aria-label={t("annotations.copyLink")}
+							title={t("annotations.copyLink")}
+							onClick={() =>
+								void copyTextToClipboard(annotationWikilinkMarkdown(linkOpts), {
+									successMessage: t("annotations.linkCopied"),
+								})
+							}
+						>
+							<Link2 className="size-3.5" />
+						</Button>
+						<Button
+							type="button"
+							variant="ghost"
+							size="icon-xs"
+							className="size-6 text-muted-foreground hover:text-foreground"
+							aria-label={t("annotations.copyEmbed")}
+							title={t("annotations.copyEmbed")}
+							onClick={() =>
+								void copyTextToClipboard(
+									annotationWikilinkMarkdown({
+										...linkOpts,
+										embed: true,
+									}),
+									{ successMessage: t("annotations.embedCopied") },
+								)
+							}
+						>
+							<span className="font-mono text-caption leading-none">![[</span>
+						</Button>
+					</>
+				) : null}
+				<Button
+					type="button"
+					variant="ghost"
+					size="icon-xs"
+					className="size-6 text-muted-foreground hover:text-foreground"
+					aria-label={t("selection.editComment")}
+					title={t("selection.editComment")}
+					onClick={() => onEdit(a.id)}
+				>
+					<Pencil className="size-3.5" />
+				</Button>
+				<Button
+					type="button"
+					variant="ghost"
+					size="icon-xs"
+					className="size-6 text-muted-foreground hover:text-destructive"
+					aria-label={t("annotations.delete")}
+					title={t("annotations.delete")}
+					onClick={() => onDelete(a.id)}
+				>
+					<Trash2 className="size-3.5" />
+				</Button>
+			</div>
+		</div>
 	);
 }
 
@@ -319,6 +562,59 @@ function VisualTraceListCard({
 					) : null}
 				</div>
 			) : null}
+		</div>
+	);
+}
+
+/**
+ * Clamp long text to a few lines; show a chevron control to expand/collapse.
+ * Short notes render in full with no control.
+ */
+function ExpandableText({
+	text,
+	className,
+}: {
+	text: string;
+	className?: string;
+}) {
+	const { t } = useTranslation("viewer");
+	const [expanded, setExpanded] = useState(false);
+	const collapsible =
+		text.length > COMMENT_COLLAPSE_CHARS || text.split("\n").length > 3;
+
+	if (!collapsible) {
+		return <p className={className}>{text}</p>;
+	}
+
+	return (
+		<div className="relative">
+			<p className={cn(className, !expanded && COMMENT_CLAMP_CLASS)}>{text}</p>
+			<button
+				type="button"
+				className={cn(
+					"mt-0.5 inline-flex size-6 items-center justify-center rounded-md",
+					"text-muted-foreground transition-colors",
+					"hover:bg-muted hover:text-foreground",
+					"focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+				)}
+				aria-expanded={expanded}
+				aria-label={
+					expanded ? t("annotations.collapseNote") : t("annotations.expandNote")
+				}
+				title={
+					expanded ? t("annotations.collapseNote") : t("annotations.expandNote")
+				}
+				onClick={(e) => {
+					e.stopPropagation();
+					setExpanded((v) => !v);
+				}}
+			>
+				{expanded ? (
+					<ChevronUp className="size-3.5" aria-hidden />
+				) : (
+					<ChevronDown className="size-3.5" aria-hidden />
+				)}
+			</button>
 		</div>
 	);
 }

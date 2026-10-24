@@ -7,6 +7,7 @@ import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { TrafficLightSpacer } from "@/components/shell/traffic-light-spacer";
 import {
+	type AnnotationRow,
 	AnnotationsPanel,
 	type AskRow,
 	type VisualTraceRow,
@@ -39,6 +40,7 @@ import {
 	wikiTargetForPaper,
 } from "@/lib/pdf/annotation-ref";
 import { listPdfAskThreads } from "@/lib/pdf/ask/io";
+import { highlightRowsFromSummaries } from "@/lib/pdf/highlight/panel-rows";
 import { closeCurrentWindow } from "@/lib/shell/close-window";
 import {
 	type FeatureViewType,
@@ -178,6 +180,11 @@ function FeatureAnnotations({
 		};
 	}, [paperAbs, diskVisuals]);
 
+	const items = useMemo<AnnotationRow[]>(
+		() => highlightRowsFromSummaries(diskSummaries, null),
+		[diskSummaries],
+	);
+
 	const visualTraceRows = useMemo<VisualTraceRow[]>(
 		() =>
 			diskVisuals.length
@@ -213,9 +220,14 @@ function FeatureAnnotations({
 	// Jump actions need the main-window PDF handle — list-only in the popout.
 	return (
 		<AnnotationsPanel
+			items={items}
 			asks={diskAsks}
 			visualTraces={visualTraceRows}
 			wikiTarget={wikiTarget}
+			onJump={() => {}}
+			onEdit={() => {}}
+			onChangeColor={() => {}}
+			onDelete={() => {}}
 			onJumpAsk={() => {}}
 			onDeleteAsk={() => {}}
 			onJumpVisual={() => {}}

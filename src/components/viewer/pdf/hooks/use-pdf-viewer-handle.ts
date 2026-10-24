@@ -39,6 +39,7 @@ import {
 	isHighlightObject,
 	isLiveAnnotation,
 } from "@/lib/pdf/highlight/annotation-store";
+import type { HighlightColor } from "@/lib/pdf/highlight/palette";
 import type { PdfHighlight } from "@/lib/pdf/highlight/types";
 import { setFocusedLayoutRegion } from "@/lib/pdf/layout";
 import { planVisualTraceJump } from "@/lib/pdf/visual-trace-jump";
@@ -85,6 +86,12 @@ export type UsePdfViewerHandleOptions = {
 	openEditorForAnnotation: (id: string) => void;
 	openThread: (thread: PdfAskThread) => void;
 	deleteVisualTraceById: (id: string) => void;
+	/** Recolor a highlight (writes `paletteKey` + stroke color, then persists). */
+	updateHighlightColor: (
+		pageIndex: number,
+		id: string,
+		color: HighlightColor,
+	) => void;
 	/** Highlight deletion coordinated with any in-flight commit for the same uid. */
 	deleteHighlightAnnotation: (pageIndex: number, id: string) => void;
 	toggleRegionSelect: () => void;
@@ -111,6 +118,7 @@ export function usePdfViewerHandle({
 	openEditorForAnnotation,
 	openThread,
 	deleteVisualTraceById,
+	updateHighlightColor,
 	deleteHighlightAnnotation,
 	toggleRegionSelect,
 	toggleLayoutTranslate,
@@ -144,6 +152,12 @@ export function usePdfViewerHandle({
 					behavior: "instant",
 				});
 				annotationCap?.forDocument(docId).selectAnnotation(obj.pageIndex, id);
+			},
+			setHighlightColor: (id, color) => {
+				const tracked = annotationCap?.forDocument(docId).getAnnotationById(id);
+				if (!tracked || !isLiveAnnotation(tracked)) return;
+				if (!isHighlightObject(tracked.object)) return;
+				updateHighlightColor(tracked.object.pageIndex, id, color);
 			},
 			editComment: (id) => openEditorForAnnotation(id),
 			deleteHighlight: (id) => {

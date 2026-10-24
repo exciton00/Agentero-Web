@@ -1741,6 +1741,7 @@ function PdfViewerInner({
 		openEditorForAnnotation,
 		openThread,
 		deleteVisualTraceById,
+		updateHighlightColor,
 		deleteHighlightAnnotation,
 		toggleRegionSelect,
 		// Dual-pane aware — ⌥A and the toolbar Languages button share this path.

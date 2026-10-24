@@ -157,6 +157,7 @@ function zoomReset(): void {
 function AppTitleBar() {
 	const sidebarCollapsed = useUiStore((s) => s.sidebarCollapsed);
 	const rightSidebarOpen = useUiStore((s) => s.rightSidebarOpen);
+	const rightSidebarTab = useUiStore((s) => s.rightSidebarTab);
 	const layoutMode = useUiStore((s) => s.layoutMode);
 	// PERF: stable identity — an inline arrow would break TitleBar's memo.
 	const applyLayoutMode = useCallback(
@@ -170,9 +171,11 @@ function AppTitleBar() {
 			showSettingsGear={showSettingsGear}
 			sidebarCollapsed={sidebarCollapsed}
 			rightSidebarOpen={rightSidebarOpen}
+			rightSidebarTab={rightSidebarTab}
 			layoutMode={layoutMode}
 			onToggleSidebar={toggleSidebar}
 			onToggleAgent={toggleChat}
+			onOpenRightTab={openRightTab}
 			onApplyLayoutMode={applyLayoutMode}
 			onOpenSettings={openSettingsWindow}
 		/>

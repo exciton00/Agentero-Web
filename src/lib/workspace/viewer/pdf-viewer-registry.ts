@@ -15,6 +15,7 @@ import {
 	pdfTabIdForPaper,
 } from "@/lib/pdf/annotation-ref";
 import type { PdfAskNormalizedRect } from "@/lib/pdf/ask";
+import type { HighlightColor } from "@/lib/pdf/highlight/palette";
 import type { PdfHighlight } from "@/lib/pdf/highlight/types";
 import type { PdfLayoutKind } from "@/lib/pdf/layout";
 import { getVaultPath, vaultStore } from "@/lib/vault/store";
@@ -24,6 +25,8 @@ import { getActiveTab } from "@/lib/workspace/store";
 export type PdfViewerHandle = {
 	getHighlights: () => PdfHighlight[];
 	scrollToHighlight: (id: string) => void;
+	/** Recolor a highlight; persists through the annotations writer. */
+	setHighlightColor: (id: string, color: HighlightColor) => void;
 	editComment: (id: string) => void;
 	deleteHighlight: (id: string) => void;
 	/** Jump to an ask pin and reopen its conversation card. */

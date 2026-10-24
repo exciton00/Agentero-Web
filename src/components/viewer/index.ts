@@ -14,6 +14,7 @@
 export { HtmlViewer } from "@/components/viewer/html-viewer";
 export { ImageViewer } from "@/components/viewer/image-viewer";
 export {
+	type AnnotationRow,
 	AnnotationsPanel,
 	type AskRow,
 	type VisualTraceRow,
@@ -23,6 +24,7 @@ export {
 	type PdfViewerHandle,
 } from "@/components/viewer/pdf/pdf-viewer";
 export {
+	pdfHandleFor,
 	registerPdfHandle,
 	resolveActivePdfHandle,
 } from "@/lib/workspace/viewer/pdf-viewer-registry";
