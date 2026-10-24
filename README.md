@@ -140,7 +140,7 @@ git merge upstream/main   # 或 rebase；Web 改动较多，冲突需自行解�
 
 - `Dockerfile` 三阶段构建（Node 22 + PDFium + tesseract 预置，镜像内 `agentero-web` +
   `dist` + PDFium），非 root runtime、healthcheck。
-- `docker-compose.yml`（开发/内网）、`docker-compose.prod.yml` + `deploy/Caddyfile`
+- `docker-compose.yml`（普通与 `prod` profile 共用）+ `deploy/Caddyfile`
   （Caddy TLS + basic auth、不直接发布应用端口）。
 - 源码部署支持（Rust + pnpm）；环境变量、数据目录、备份与 MCP/RAG 配置说明见文档。
 
@@ -165,74 +165,72 @@ git merge upstream/main   # 或 rebase；Web 改动较多，冲突需自行解�
 
 ## 5. 部署
 
-### 5.1 Docker Compose（推荐，使用 GHCR 自动构建镜像）
+### 5.1 Docker Compose（普通与生产用同一个文件）
 
-前置：Linux（实测 Debian 13 x86_64）、Docker + Compose 插件。
+前置：Linux/macOS + Docker Compose 插件（Windows 走 Docker Desktop 也可）。
 
-仓库只提交 `.example` 模板；实际的 `docker-compose.yml`、`docker-compose.prod.yml`、
-`.env` 都被 `.gitignore` 忽略，不会被误提交。
+仓库只提交两个模板：`docker-compose.yml.example` 和 `.env.example`；复制出来的实际文件被
+`.gitignore` 忽略。**只有一个 compose 文件，没有单独的 prod/host-agent 文件。**
 
 ```bash
 git clone https://github.com/exciton00/Agentero-Web.git agentero-web
 cd agentero-web
 
-# 一键：生成 .env/compose、检测宿主机 Dsh（有则自动挂载并注册 Dsh）、
-# 拉取 GHCR 镜像并启动。没有宿主机 Dsh 时就是普通 Web 部署。
-./scripts/docker-up.sh
+cp docker-compose.yml.example docker-compose.yml
+cp .env.example .env
+# 编辑 .env：Vault/数据路径、端口、可选 MCP 等
+mkdir -p vault data
+
+# 拉取 GHCR 镜像并启动（镜像包含前端、PDFium、Node 22 和测试过的 Dsh）
+docker compose pull
+docker compose up -d
 
 # 打开 http://127.0.0.1:8787
 ```
 
-手动方式（等价）：
+**Dsh Agent**：镜像已内置测试过的 `@deepseek-ai/dsh@0.2.1-rc.2`；compose 默认把宿主机
+`~/.dsh`（凭据 + profile）挂到 `/data/home/.dsh`，Web host 启动时自动注册为正常的
+`Dsh` catalog 行。宿主机只需要有一个已登录的 `~/.dsh`，不需要在容器里装 Dsh，也不需要
+host-agent 覆盖文件。Windows/自定义 Dsh 目录可在 `.env` 设置：
 
-```bash
-cp docker-compose.yml.example docker-compose.yml
-cp .env.example .env
-# 编辑 .env：至少确认 AGENTERO_VAULT_DIR / AGENTERO_DATA_DIR / AGENTERO_WEB_PORT
-mkdir -p vault data
-
-# 默认使用 GitHub Actions 构建并推送到 GHCR 的镜像：
-#   ghcr.io/exciton00/agentero-web:latest
-docker compose pull
-docker compose up -d --no-build
+```dotenv
+AGENTERO_DSH_HOME=C:/Users/you/.dsh
 ```
 
-> 如果宿主机已安装并登录 Dsh，可以直接用 `./scripts/docker-up.sh`：脚本会自动检测宿主 Dsh、
-> 挂载其 CLI 与 `~/.dsh`，Web host 启动后会自动出现 `Dsh`（无需手填 Agent 配置）。
-> 也可以用 `./scripts/docker-up.sh prod` 走生产编排。
+源码/裸机运行 Web host 时同理：`dsh` 在 PATH 且 `~/.dsh` 存在就会自动注册。
 
-> 镜像地址由 `.env` 的 `AGENTERO_IMAGE` 控制；fork 后改成
-> `ghcr.io/<你的账号>/agentero-web:latest`。首次构建完成前 / 不想用 GHCR 时，可改
-> `AGENTERO_IMAGE=agentero-web:local` 并执行 `docker compose up -d --build`（本地源码构建，
-> 耗时较长）。GHCR 包默认可能是 private，pull 前需要 `docker login ghcr.io` 或在
-> GitHub Packages 中把包设为 public。
-
-`vault/` 与 `data/` 是本地运行数据（Vault 与 XDG 设置/记录），**已加入 `.gitignore`**；
-也可以把 `AGENTERO_VAULT_DIR` / `AGENTERO_DATA_DIR` 指向仓库外的绝对路径（生产建议这样做）。
-
-生产（Caddy TLS + basic auth，应用端口不直接发布）：
+**生产（同一 compose 文件）**：生产专属的 Caddy 服务放在 `prod` profile 里，默认不启动：
 
 ```bash
-cp docker-compose.prod.yml.example docker-compose.prod.yml
-# 继续使用同一个 .env：设置 AGENTERO_DOMAIN / AGENTERO_BASIC_AUTH_USER / AGENTERO_BASIC_AUTH_HASH
-docker run --rm caddy:2 caddy hash-password --plaintext 'change-me'
-
-docker compose -f docker-compose.prod.yml pull
-docker compose -f docker-compose.prod.yml up -d --no-build
+# 在 .env 设置：
+# AGENTERO_DOMAIN=agentero.example.com
+# AGENTERO_BASIC_AUTH_USER=you
+# AGENTERO_BASIC_AUTH_HASH='...'   # docker run --rm caddy:2 caddy hash-password --plaintext '...'
+docker compose --profile prod pull
+docker compose --profile prod up -d
 ```
 
-`deploy/Caddyfile` 不需要手改：域名和 basic auth 全部由 `.env` 注入
-（`{$AGENTERO_DOMAIN}` / `{$AGENTERO_BASIC_AUTH_*}`）。
+Caddy 会接管 80/443，应用端口仍只绑 loopback。`deploy/Caddyfile` 无需手改，域名和 basic auth
+由 `.env` 注入；反向代理必须支持 WebSocket（`/api/events` Upgrade）。
 
-关键点：
-- **必须让反向代理支持 WebSocket**（`/api/events` 的 Upgrade），否则流式输出/任务进度不可用。
-- `AGENTERO_VAULT_DIR`：Vault（Markdown/PDF/`.agentero/catalog.sqlite`）；`AGENTERO_DATA_DIR`：
-  XDG 设置/使用记录/同步状态/RAG state，均需备份。
+**Vault 路径对齐**：容器内默认 `/vault`。如果宿主工具需要和宿主机完全一致的绝对路径，在
+`.env` 同时设：
+
+```dotenv
+AGENTERO_VAULT_DIR=/srv/agentero/vault
+AGENTERO_VAULT_CONTAINER_PATH=/srv/agentero/vault
+```
+
+**关键点**：
+- `AGENTERO_VAULT_DIR` 是 Vault（Markdown/PDF/`.agentero/catalog.sqlite`）；`AGENTERO_DATA_DIR`
+  是 XDG 设置/使用记录/同步状态/RAG state，均需备份。
+- 镜像地址由 `.env` 的 `AGENTERO_IMAGE` 控制；fork 后改成
+  `ghcr.io/<你的账号>/agentero-web:latest`。本地源码构建可改 `AGENTERO_IMAGE=agentero-web:local`
+  并执行 `docker compose up -d --build`。GHCR 包默认可能是 private：公开前在 Packages 里设为 public
+  或先 `docker login ghcr.io`。
 - 需要公网 MCP 时：`.env` 设 `AGENTERO_MCP_ENABLED=1`、`AGENTERO_MCP_BIND=0.0.0.0:8765`，
-  取消 compose 中 MCP 端口映射注释并发布 8765；把外部域名加入 `AGENTERO_MCP_ALLOWED_HOSTS`，
+  取消 compose 里 MCP 端口映射注释并发布 8765；把外部域名加入 `AGENTERO_MCP_ALLOWED_HOSTS`，
   并由反代加鉴权（MCP 本身无鉴权）。
-- Agent CLI 需在镜像/容器内额外安装（镜像只含 Node 22）；凭据可在 `.env` 填
-  `DEEPSEEK_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`，或挂载 `~/.dsh/.env`。
 
 ### 5.2 源码部署
 
@@ -278,11 +276,12 @@ Docker Compose 的所有用户配置统一放在 `.env`（从 `.env.example` 复
 | `AGENTERO_VAULT_DIR` / `AGENTERO_DATA_DIR` | `./vault` / `./data` | 宿主机 Vault / XDG 数据目录 |
 | `AGENTERO_VAULT_CONTAINER_PATH` | `/vault` | 容器内 Vault 路径；与 `AGENTERO_VAULT_DIR` 设为同一绝对路径可实现宿主机/容器路径一致 |
 | `AGENTERO_WEB_BIND` / `AGENTERO_WEB_PORT` | `127.0.0.1` / `8787` | 宿主机绑定与端口 |
-| `AGENTERO_WEB_ADDR` / `AGENTERO_WEB_VAULT` / `AGENTERO_WEB_DIST` | 容器内固定路径 | 容器内 Web 监听 / Vault / dist |
+| `AGENTERO_WEB_ADDR` / `AGENTERO_WEB_DIST` | 容器内固定路径 | 容器内 Web 监听 / 前端 dist |
 | `AGENTERO_WEB_MAX_BODY_MB` | `64` | `/api` body 上限（8–512 MiB） |
 | `AGENTERO_WEB_ALLOW_ROOTS` | 空 | 文件端点额外根目录（`:`/`,` 分隔） |
 | `AGENTERO_MCP_ENABLED` / `AGENTERO_MCP_BIND` / `AGENTERO_MCP_ALLOWED_HOSTS` | 空 | MCP 强制开启 / 绑定地址 / Host 白名单 |
 | `AGENTERO_DOMAIN` / `AGENTERO_BASIC_AUTH_USER` / `AGENTERO_BASIC_AUTH_HASH` | 仅生产 | Caddy 域名与 basic auth（hash 用单引号，防止 `$` 插值） |
+| `AGENTERO_DSH_HOME` | `${HOME}/.dsh` | 宿主机 Dsh 凭据/profile 目录，挂载到 `/data/home/.dsh` |
 | `DEEPSEEK_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | 空 | 可选，服务端 Agent CLI 凭据 |
 | `RUST_LOG` | `info` | 日志级别 |
 
@@ -305,59 +304,6 @@ Docker Compose 的所有用户配置统一放在 `.env`（从 `.env.example` 复
 
 > GHCR 包默认可能是 private；公开部署前可在 GitHub 仓库 → Packages 里把包设为 public，
 > 或先 `docker login ghcr.io -u <user>`（PAT 需要 `read:packages`）。
-
-### 5.5 在容器内自动使用宿主机的 ACP Agent（推荐，实测 Dsh）
-
-默认 GHCR 镜像**不包含任何 Agent CLI**；但 Docker 宿主机上通常已经装好并登录了 Dsh。
-不需要手动在 Settings → Agent 添加 Agent：
-`scripts/docker-up.sh` 会检测宿主机的 Dsh，生成 host-agent 挂载；Web host 启动时通过
-Agentero 自己的 agent registry 自动注册 `Dsh`，打开设置即可看到。
-
-```bash
-# 宿主机已安装并登录 Dsh（~/.dsh 存在），然后：
-./scripts/docker-up.sh
-
-# 生产模式（docker-compose.prod.yml + 同一个 host ACP）：
-./scripts/docker-up.sh prod
-```
-
-手动 compose 等价配置：
-
-```bash
-cp docker-compose.host-agent.yml.example docker-compose.host-agent.yml
-docker compose -f docker-compose.yml -f docker-compose.host-agent.yml up -d
-# 或 -f docker-compose.prod.yml ...
-```
-
-启动后 Settings → Agent 会自动出现 `Dsh`（command 为镜像内 Node，args 为挂载的真实
-`dsh/lib/bin.js --profile acp`）；不需要手填命令。也可以直接开始对话，`agentero-context`
-MCP 由 Web host 自己再执行（`agentero-web --agentero-context-mcp <grant>`），不会出现
-`mcp-client(agentero-context) initial connection failed`。
-
-**Vault 路径对齐**：容器内默认 Vault 是 `/vault`。如果宿主机 ACP 或你的脚本需要看到**和宿主机
-完全相同的 Vault 绝对路径**，在 `.env` 里把两个变量设成同一个宿主机绝对路径即可：
-
-```dotenv
-AGENTERO_VAULT_DIR=/srv/agentero/vault
-AGENTERO_VAULT_CONTAINER_PATH=/srv/agentero/vault
-```
-
-这样容器内看到的路径与宿主机一致（Compose 会把宿主机目录挂到同名绝对路径）。
-默认的 `./vault` + `/vault` 也能工作，只是容器内外路径不同。
-
-说明：
-- 挂载的是宿主机 `@deepseek-ai/dsh` 包与 `~/.dsh`；仅建议在可信宿主机使用。
-- 如果 Dsh 不在 `/usr/lib/node_modules/@deepseek-ai`（nvm/volta/自定义 prefix），
-  `scripts/docker-up.sh` 会用 `readlink -f "$(which dsh)"` 自动定位；也可手动设置
-  `.env` 的 `AGENTERO_HOST_DSH_PKG` / `AGENTERO_DSH_HOME`。
-- 不想用宿主机 ACP 时，仍可用自定义镜像安装 CLI（见下方流程），其他 Agent 未测试。
-- 本方式要求容器能读取宿主机的 Dsh 文件（同一台 Docker 宿主机 + bind mount）；不支持远程 Docker。
-- **源码 / 裸机运行**：如果 Web host 直接跑在你自己电脑上，只要 `dsh` 在 PATH、`~/.dsh` 存在，
-  启动时也会自动注册为 Dsh catalog 行，不需要 host-agent compose。
-- **Dsh 可删除**：自动注册后会作为 Dsh catalog 行出现（Dsh 图标/名称，不再额外生成自定义 Agent 行）；
-  catalog 行的卸载/删除按钮在 Web 下已启用。删除后不会被下次启动重新加回
-  （会写入 `/data/config/agentero/.host-agent-auto.flag` 标记）；要恢复自动注册，删除该 marker 后重启。
-  自动注册的命令来自宿主机挂载，因此不提供“编辑 command/args”表单；需要改路径时调整挂载/`.env` 后重新生成。
 
 ---
 

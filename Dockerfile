@@ -78,6 +78,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=frontend /usr/local/bin/node /usr/local/bin/node
 COPY --from=frontend /usr/local/lib/node_modules /usr/local/lib/node_modules
 
+# Tested ACP agent (Dsh) is included so Docker deployments do not depend on the
+# host OS being able to execute the host's Dsh binary. Only ~/.dsh (credentials +
+# profiles) is mounted by compose; the host_agent startup path auto-registers it.
+ARG AGENTERO_DSH_VERSION=0.2.1-rc.2
+RUN /usr/local/bin/node /usr/local/lib/node_modules/npm/bin/npm-cli.js install -g \
+        "@deepseek-ai/dsh@${AGENTERO_DSH_VERSION}" --prefix /usr/local \
+    && ln -sf /usr/local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js /usr/local/bin/dsh
+
 WORKDIR /app
 COPY --from=builder /src/target/release/agentero-web /app/agentero-web
 COPY --from=builder /src/src-tauri/pdfium /app/pdfium

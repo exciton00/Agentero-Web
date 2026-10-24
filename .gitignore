@@ -16,8 +16,6 @@ dist-ssr
 !.env.example
 # Local docker-compose files; copy the tracked .example versions.
 /docker-compose.yml
-/docker-compose.prod.yml
-/docker-compose.host-agent.yml
 # macOS signing / notarization artifacts (never commit)
 *.p12
 *.p8

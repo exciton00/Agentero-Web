@@ -672,16 +672,7 @@ async fn clear_and_reparse(ctx: &RpcCtx, args: &Value) -> HandlerResult {
                     .paper_path(path.clone())
                     .lane(Some(JobLane::Idle))
                     .force(true);
-                let job = ctx.state.tasks.spawn_renderer(spec);
-                if job.created {
-                    // Settings is usually a separate tab without the JobCenter
-                    // executor; hand the offer to the main workspace tab, which
-                    // owns the layout executor.
-                    ctx.state.events.emit_to(
-                        "main",
-                        crate::tasks::JOB_OFFER_EVENT,
-                        &job_offer_payload(&job.snapshot),
-                    );
+                if enqueue_renderer_job(ctx, spec).is_ok() {
                     layout_enqueued += 1;
                 }
             }

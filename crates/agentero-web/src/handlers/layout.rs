@@ -132,9 +132,25 @@ pub async fn analyze_pdf(ctx: &RpcCtx, args: &Value) -> HandlerResult {
         credentials,
         args,
     };
-    match engine.analyze_pdf(context).await {
-        Ok(result) => ok(result),
-        Err(error) => fail(error),
+    // The remote engine can block on an unresponsive self-hosted MinerU/Paddle
+    // job; without a cap the browser's renderer job remains "running" forever.
+    // Keep the default generous enough for forced OCR and allow an env override.
+    let timeout_secs = std::env::var("AGENTERO_WEB_LAYOUT_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|seconds| *seconds > 0)
+        .unwrap_or(300);
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(timeout_secs),
+        engine.analyze_pdf(context),
+    )
+    .await
+    {
+        Ok(Ok(result)) => ok(result),
+        Ok(Err(error)) => fail(error),
+        Err(_) => fail_msg(format!(
+            "layout_remote: analysis timed out after {timeout_secs}s; check the provider endpoint or disable force OCR"
+        )),
     }
 }
 

@@ -1,15 +1,25 @@
-# Example dev/intranet docker-compose file.
+# Agentero-Web — single compose file for local + production.
 #
-# Usage:
-#   cp docker-compose.yml.example docker-compose.yml
-#   cp .env.example .env
-#   # edit .env (paths, ports, optional API keys / MCP)
-#   docker compose up -d --build
+# QUICK START
+#   1. cp docker-compose.yml.example docker-compose.yml
+#   2. cp .env.example .env          # edit paths/ports/prod fields
+#   3. mkdir -p vault data
+#   4. docker compose pull
+#   5. docker compose up -d          # open http://127.0.0.1:8787
 #
-# The real docker-compose.yml and .env are git-ignored. Do not commit them.
+# PRODUCTION (same file; Caddy lives behind the `prod` profile)
+#   - in .env set AGENTERO_DOMAIN / AGENTERO_BASIC_AUTH_USER / AGENTERO_BASIC_AUTH_HASH
+#   - docker compose --profile prod pull
+#   - docker compose --profile prod up -d
+#   The app port stays bound to loopback; Caddy owns 80/443.
 #
-# Single-user, no built-in auth. Put a reverse proxy (Caddy/nginx/Tailscale)
-# in front for TLS + auth before exposing this to a network.
+# AGENT (Dsh)
+#   The image bundles the tested `dsh` CLI. The app only needs the host ~/.dsh
+#   config mounted at /data/home/.dsh (default: ${HOME}/.dsh; override with
+#   AGENTERO_DSH_HOME in .env). The Web host auto-registers the normal Dsh
+#   catalog row at startup — no host-agent/host-prod compose file is needed.
+#
+# The real docker-compose.yml and .env are git-ignored.
 
 services:
   agentero-web:
@@ -21,10 +31,11 @@ services:
     container_name: agentero-web
     restart: unless-stopped
     ports:
-      # Host bind/port from .env; default only loopback.
+      # Keep loopback unless a reverse proxy (Caddy profile / your own proxy)
+      # is in front. Single-user app with no built-in auth.
       - "${AGENTERO_WEB_BIND:-127.0.0.1}:${AGENTERO_WEB_PORT:-8787}:8787"
-      # Optional MCP endpoint (Streamable HTTP, no auth): uncomment and set
-      # AGENTERO_MCP_ENABLED/AGENTERO_MCP_BIND in .env to publish it.
+      # Optional MCP endpoint (no auth of its own): uncomment and set the
+      # MCP variables in .env to publish it.
       # - "${AGENTERO_MCP_PORT:-8765}:${AGENTERO_MCP_PORT:-8765}"
     environment:
       AGENTERO_WEB_ADDR: ${AGENTERO_WEB_ADDR:-0.0.0.0:8787}
@@ -33,22 +44,50 @@ services:
       AGENTERO_WEB_MAX_BODY_MB: ${AGENTERO_WEB_MAX_BODY_MB:-64}
       AGENTERO_WEB_ALLOW_ROOTS: ${AGENTERO_WEB_ALLOW_ROOTS:-}
       RUST_LOG: ${RUST_LOG:-info}
-      # Optional MCP endpoint.
       AGENTERO_MCP_ENABLED: ${AGENTERO_MCP_ENABLED:-}
       AGENTERO_MCP_BIND: ${AGENTERO_MCP_BIND:-}
       AGENTERO_MCP_ALLOWED_HOSTS: ${AGENTERO_MCP_ALLOWED_HOSTS:-}
-      # Optional cloud-sync credentials (XDG sync.json otherwise).
       AGENTERO_SYNC_ACCESS_KEY: ${AGENTERO_SYNC_ACCESS_KEY:-}
       AGENTERO_SYNC_SECRET_KEY: ${AGENTERO_SYNC_SECRET_KEY:-}
-      # Optional agent CLI credentials (server-side).
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     volumes:
       - ${AGENTERO_VAULT_DIR:-./vault}:${AGENTERO_VAULT_CONTAINER_PATH:-/vault}
       - ${AGENTERO_DATA_DIR:-./data}:/data
+      # Host Dsh config (credentials + profiles). The image already contains the
+      # tested Dsh CLI, so a host Dsh installation only needs its ~/.dsh mounted
+      # here; the agent is auto-registered at startup. Override the source for
+      # Windows/custom homes with AGENTERO_DSH_HOME in .env.
+      - ${AGENTERO_DSH_HOME:-${HOME}/.dsh}:/data/home/.dsh
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
+
+  # Production-only reverse proxy. Enabled with `--profile prod`.
+  # Domain + basic-auth hash come from .env; deploy/Caddyfile is generic.
+  caddy:
+    profiles: ["prod"]
+    image: caddy:2
+    container_name: agentero-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      AGENTERO_DOMAIN: ${AGENTERO_DOMAIN}
+      AGENTERO_BASIC_AUTH_USER: ${AGENTERO_BASIC_AUTH_USER}
+      AGENTERO_BASIC_AUTH_HASH: ${AGENTERO_BASIC_AUTH_HASH}
+      AGENTERO_MCP_DOMAIN: ${AGENTERO_MCP_DOMAIN:-}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - agentero-web
+
+volumes:
+  caddy_data:
+  caddy_config:

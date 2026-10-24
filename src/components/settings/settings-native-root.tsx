@@ -6,6 +6,7 @@ import { TrafficLightSpacer } from "@/components/shell/traffic-light-spacer";
 import { Button } from "@/components/ui/button";
 import { applyLocale } from "@/i18n";
 import { commands } from "@/lib/core/bindings";
+import { startTaskRuntime } from "@/lib/core/tasks";
 import { hasHostTransport, isMacOS, isWebHost } from "@/lib/core/tauri";
 import {
 	applyDocumentChrome,
@@ -14,6 +15,7 @@ import {
 	saveSettingsAsync,
 	subscribeSettings,
 } from "@/lib/settings";
+import { registerLayoutTaskExecutor } from "@/lib/pdf/layout/enqueue-paper-layout";
 import { closeCurrentWindow } from "@/lib/shell/close-window";
 import { SettingsContent } from "./settings-content";
 
@@ -50,6 +52,14 @@ export function SettingsNativeRoot() {
 		return subscribeSettings((next) => {
 			setSettings(next);
 		});
+	}, []);
+
+	// The settings tab can own layout reparse jobs (Clear and reparse). Register
+	// the renderer executor here because this window does not mount the main App
+	// bootstrap/task runtime.
+	useEffect(() => {
+		registerLayoutTaskExecutor();
+		return startTaskRuntime();
 	}, []);
 
 	// Mirror main-window chrome (scale + interface/mono fonts) so pickers preview live.

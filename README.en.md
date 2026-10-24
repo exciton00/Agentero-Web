@@ -76,7 +76,7 @@ See [`docs/development/webui.md`](docs/development/webui.md) for the detailed ro
   `/agentero_online.bib` mount; write-burst batching (auto-refresh fix); ETag/304, Range, gzip/br,
   immutable hashed assets; MCP listener port-change/concurrency fixes; sidebar/settings fixes.
 - **Deployment**: three-stage `Dockerfile` (Node 22 + PDFium + tesseract), `docker-compose.yml`,
-  `docker-compose.prod.yml` + `deploy/Caddyfile` (TLS + basic auth); source deployment supported.
+  `docker-compose.yml` with the `prod` profile (Caddy TLS + basic auth); source deployment supported.
 
 ---
 
@@ -102,74 +102,65 @@ under its original copyright/license (see [LICENSE](LICENSE)).
 
 ## 5. Deployment
 
-### 5.1 Docker Compose (recommended; uses the GHCR image)
+### 5.1 Docker Compose (one file for local and production)
 
-Requirements: Linux (tested Debian 13 x86_64), Docker + Compose plugin.
-
-Only `.example` templates are committed; the real `docker-compose.yml`,
-`docker-compose.prod.yml` and `.env` are **git-ignored**.
+Only two templates are committed: `docker-compose.yml.example` and `.env.example`. The copied
+working files are git-ignored. **There is one compose file — no separate prod or host-agent file.**
 
 ```bash
 git clone https://github.com/exciton00/Agentero-Web.git agentero-web
 cd agentero-web
 
-# One command: prepare .env/compose, detect a host Dsh (mounts it and
-# auto-registers Dsh), pull the GHCR image and start.
-./scripts/docker-up.sh
+cp docker-compose.yml.example docker-compose.yml
+cp .env.example .env
+# edit .env (Vault/data paths, port, optional MCP/API keys)
+mkdir -p vault data
 
+docker compose pull
+docker compose up -d
 # open http://127.0.0.1:8787
 ```
 
-Manual equivalent:
+**Dsh agent**: the image bundles the tested `@deepseek-ai/dsh@0.2.1-rc.2`; compose mounts the host
+`~/.dsh` (credentials + profiles) at `/data/home/.dsh`, and the web host auto-registers it as the
+normal `Dsh` catalog row. The host does not need to run Dsh inside the container, and no host-agent
+compose file is needed. On Windows/custom homes set:
 
-```bash
-cp docker-compose.yml.example docker-compose.yml
-cp .env.example .env
-# edit .env (at least AGENTERO_VAULT_DIR / AGENTERO_DATA_DIR / AGENTERO_WEB_PORT)
-mkdir -p vault data
-
-# Default image built by GitHub Actions and pushed to GHCR:
-#   ghcr.io/exciton00/agentero-web:latest
-docker compose pull
-docker compose up -d --no-build
+```dotenv
+AGENTERO_DSH_HOME=C:/Users/you/.dsh
 ```
 
-> If the host already has an authenticated Dsh, run `./scripts/docker-up.sh` instead: it detects the
-> host Dsh, mounts its CLI plus `~/.dsh`, and the web host auto-registers `Dsh` — no manual agent
-> setup. Use `./scripts/docker-up.sh prod` for the production compose file.
+For source/bare-metal runs, a `dsh` on PATH plus `~/.dsh` is auto-registered at startup too.
 
-> `AGENTERO_IMAGE` in `.env` controls the image; after forking, point it at
-> `ghcr.io/<your-account>/agentero-web:latest`. Before the first CI build (or to build locally),
-> set `AGENTERO_IMAGE=agentero-web:local` and run `docker compose up -d --build` instead.
-> GHCR packages may be private by default — set the package to public in GitHub Packages or run
-> `docker login ghcr.io` first.
-
-`vault/` and `data/` hold local runtime data (Vault + XDG settings/records); both directories are
-**listed in `.gitignore`**. You can also point `AGENTERO_VAULT_DIR` / `AGENTERO_DATA_DIR` at absolute
-paths outside the repository (recommended in production).
-
-Production (Caddy TLS + basic auth; app port is not published):
+**Production (same file)**: Caddy lives behind the `prod` profile and is not started by default.
+Set the domain/basic-auth values in `.env`, then:
 
 ```bash
-cp docker-compose.prod.yml.example docker-compose.prod.yml
-# keep using .env; set AGENTERO_DOMAIN / AGENTERO_BASIC_AUTH_USER / AGENTERO_BASIC_AUTH_HASH
-docker run --rm caddy:2 caddy hash-password --plaintext 'change-me'
-
-docker compose -f docker-compose.prod.yml pull
-docker compose -f docker-compose.prod.yml up -d --no-build
+docker compose --profile prod pull
+docker compose --profile prod up -d
 ```
 
-`deploy/Caddyfile` is generic; domain and basic auth come from `.env`
-(`{$AGENTERO_DOMAIN}` / `{$AGENTERO_BASIC_AUTH_*}`), so no file edits are needed.
+Caddy owns 80/443; the app port stays loopback. `deploy/Caddyfile` is generic; domain and basic auth
+come from `.env` (`{$AGENTERO_DOMAIN}` / `{$AGENTERO_BASIC_AUTH_*}`). The reverse proxy must support
+WebSocket (`/api/events` Upgrade).
 
-- The reverse proxy **must support WebSocket** (`Upgrade` on `/api/events`), otherwise streaming/task
-  progress break.
-- Back up `AGENTERO_VAULT_DIR` plus the XDG data dir (`AGENTERO_DATA_DIR`).
-- Public MCP: set `AGENTERO_MCP_ENABLED=1`, `AGENTERO_MCP_BIND=0.0.0.0:8765`, uncomment the MCP port
-  mapping in the compose file, add the public host to `AGENTERO_MCP_ALLOWED_HOSTS`, and protect it with
+**Vault path parity**: if host tools need exactly the same absolute Vault path, set both:
+
+```dotenv
+AGENTERO_VAULT_DIR=/srv/agentero/vault
+AGENTERO_VAULT_CONTAINER_PATH=/srv/agentero/vault
+```
+
+Key points:
+- `AGENTERO_VAULT_DIR` is the Vault (Markdown/PDF/`.agentero/catalog.sqlite`); `AGENTERO_DATA_DIR`
+  holds XDG settings/records/sync/RAG state. Back both up.
+- `AGENTERO_IMAGE` in `.env` selects the image. For forks use
+  `ghcr.io/<your-account>/agentero-web:latest`; for a local build use
+  `AGENTERO_IMAGE=agentero-web:local` and `docker compose up -d --build`. GHCR packages may be
+  private: make the package public or run `docker login ghcr.io`.
+- Public MCP: set `AGENTERO_MCP_ENABLED=1`, `AGENTERO_MCP_BIND=0.0.0.0:8765`, uncomment the MCP
+  port mapping in compose, add the public host to `AGENTERO_MCP_ALLOWED_HOSTS`, and protect it with
   the reverse proxy (MCP has no auth).
-- Agent CLIs must be installed inside the image/container (Node 22 is included); pass credentials via
-  `.env` (`DEEPSEEK_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`) or mount `~/.dsh/.env`.
 
 ### 5.2 From source
 
@@ -213,6 +204,7 @@ automatically; `.env` and the real compose files are git-ignored.
 | `AGENTERO_WEB_ALLOW_ROOTS` | empty | extra file-API roots |
 | `AGENTERO_MCP_ENABLED` / `AGENTERO_MCP_BIND` / `AGENTERO_MCP_ALLOWED_HOSTS` | empty | optional MCP listener / bind / Host allow-list |
 | `AGENTERO_DOMAIN` / `AGENTERO_BASIC_AUTH_USER` / `AGENTERO_BASIC_AUTH_HASH` | production only | Caddy domain and basic auth (quote the hash to protect `$`) |
+| `AGENTERO_DSH_HOME` | `${HOME}/.dsh` | host Dsh credentials/profile dir mounted at `/data/home/.dsh` |
 | `DEEPSEEK_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | empty | optional server-side agent CLI credentials |
 | `RUST_LOG` | `info` | log level |
 
@@ -235,60 +227,6 @@ See [`.env.example`](.env.example) for the full template.
 
 > GHCR packages may default to private; make the package public in GitHub Packages or
 > `docker login ghcr.io` with a PAT that has `read:packages`.
-
-### 5.5 Use the host's ACP agent inside the container (recommended; Dsh tested)
-
-The default GHCR image does **not** bundle an agent CLI. If the Docker host already has a configured
-Dsh (`~/.dsh` exists), you do not need to add an agent manually: `scripts/docker-up.sh` detects the
-host Dsh, writes the host-agent mounts, and the web host auto-registers `Dsh` through Agentero's
-own agent registry at startup.
-
-```bash
-# host has Dsh installed and authenticated (~/.dsh exists)
-./scripts/docker-up.sh
-
-# production stack (docker-compose.prod.yml + the same host ACP)
-./scripts/docker-up.sh prod
-```
-
-Manual compose equivalent:
-
-```bash
-cp docker-compose.host-agent.yml.example docker-compose.host-agent.yml
-docker compose -f docker-compose.yml -f docker-compose.host-agent.yml up -d
-# or -f docker-compose.prod.yml ...
-```
-
-`Dsh` appears in Settings → Agent automatically (command = the image's Node, args = the mounted
-real `dsh/lib/bin.js --profile acp`). No manual command entry is needed. Context turns work because
-the web host also acts as the `agentero-context` MCP worker
-(`agentero-web --agentero-context-mcp <grant>`), so the previous
-`mcp-client(agentero-context) initial connection failed` error is gone.
-
-**Vault path parity**: the container Vault defaults to `/vault`. If the host ACP (or your scripts) must
-see exactly the same absolute Vault path as the host, set both variables in `.env` to that host path:
-
-```dotenv
-AGENTERO_VAULT_DIR=/srv/agentero/vault
-AGENTERO_VAULT_CONTAINER_PATH=/srv/agentero/vault
-```
-
-The Compose file mounts the host directory at the same absolute container path. The default
-`./vault` + `/vault` also works, but the paths differ inside/outside the container.
-
-Notes:
-- The container mounts the host `@deepseek-ai/dsh` package and `~/.dsh`; use this only on a trusted host.
-- For nvm/volta/custom prefixes, `scripts/docker-up.sh` resolves `readlink -f "$(which dsh)"`; you can
-  also set `AGENTERO_HOST_DSH_PKG` / `AGENTERO_DSH_HOME` in `.env`.
-- Without a host ACP, install the CLI into a custom image instead (see below); other agents are untested.
-- This requires the container to read host Dsh files (same Docker host + bind mounts); remote Docker is
-  not supported. For **source/bare-metal** runs on the same computer, a `dsh` on PATH plus `~/.dsh` is
-  auto-registered at startup too.
-- **Dsh is recognized in the Dsh catalog row and can be removed**: the auto-registered agent shows
-  the Dsh icon/name (no extra custom row), and the catalog uninstall/remove action is enabled on Web.
-  A deleted host agent is not re-added on restart (`/data/config/agentero/.host-agent-auto.flag` is
-  written); delete that marker and restart to re-enable auto-registration. The command/args are
-  derived from the host mount, so there is no edit form; adjust the mount/`.env` and recreate instead.
 
 ---
 

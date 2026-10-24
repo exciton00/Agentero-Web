@@ -45,8 +45,17 @@ function normalizePaperKey(paperAbsPath: string): string {
  * Register the renderer-side `layoutAnalyze` executor. Call before
  * `startTaskRuntime` (see `use-app-bootstrap`).
  */
+let layoutQueue: Promise<void> = Promise.resolve();
+
 export function registerLayoutTaskExecutor(): void {
-	registerTaskExecutor("layoutAnalyze", runLayoutAnalyzeExecutor);
+	// A bulk Clear & reparse can enqueue one layout job per paper. Run them
+	// serially per tab; self-hosted MinerU (especially forced OCR) is easily
+	// saturated by several concurrent PDFs and then looks "stuck".
+	registerTaskExecutor("layoutAnalyze", (ctx) => {
+		const run = layoutQueue.then(() => runLayoutAnalyzeExecutor(ctx));
+		layoutQueue = run.catch(() => undefined);
+		return run;
+	});
 }
 
 async function runLayoutAnalyzeExecutor(
