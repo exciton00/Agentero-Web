@@ -1,192 +1,346 @@
 <p align="center">
-  <img src="docs/assets/hero.png" alt="Agentero" width="100%" />
+  <img src="docs/assets/hero.png" alt="Agentero-Web" width="100%" />
 </p>
 
-<h3 align="center">为人与 Agent 协作而生的一站式科研工作台</h3>
+<h2 align="center">Agentero-Web</h2>
 
 <p align="center">
-  保留人类舒适的 PDF 阅读习惯，为模型提供纯净的结构化上下文；文献、笔记与交互记录统一沉淀于本地。
+  可自部署的 Agentero Web 分支：在 NAS / VPS / 小主机上用浏览器打开完整科研工作台。
 </p>
 
 <p align="center">
-  <a href="https://github.com/poco-ai/agentero/stargazers"><img src="https://img.shields.io/github/stars/poco-ai/agentero?style=flat&logo=github" alt="GitHub stars" /></a>
-  <a href="https://github.com/poco-ai/agentero/releases"><img src="https://img.shields.io/github/v/release/poco-ai/agentero?include_prereleases&style=flat" alt="Release" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT" /></a>
-  <a href="https://agentero.app/"><img src="https://img.shields.io/badge/官网-agentero.app-5319E7" alt="Website" /></a>
-  <a href="https://agentero-docs.poco-ai.com"><img src="https://img.shields.io/badge/文档-在线查看-5319E7?logo=mkdocs&logoColor=white" alt="Documentation" /></a>
+  <img src="https://img.shields.io/badge/AI--generated-code-8b5cf6" alt="AI-generated code" />
+  <img src="https://img.shields.io/badge/maintenance-best--effort-lightgrey" alt="Maintenance: best effort" />
 </p>
 
 <p align="center">
-  <b>中文</b> | <a href="README.en.md">English</a>
+  <a href="README.en.md">English</a> | <b>中文</b>
 </p>
 
-如果本项目对你有帮助，请在右上角**给个 star** 吧！
-
-<p align="center">
-  <a href="https://github.com/poco-ai/agentero/stargazers"><img src="https://github.com/user-attachments/assets/1d49b049-89ae-4992-a92d-d2411c8053b6" alt="Give me a star" width="480" /></a>
-</p>
+> **这是一个 fork，不是 Agentero 官方仓库。** 本仓库继承自 Agentero 的 `main` 分支 commit
+> `be2d49ed00a1d7665f07af54a38f9602395f827d`（2026-10-21），在其之上做了 Web 化、MCP、RAG
+> 等适配。上游桌面版文档与完整介绍请见 [Original Agentero](https://github.com/poco-ai/agentero)。
 
 ---
 
-## 背景与设计初衷
+## 1. 继承关系（Provenance）
 
-Zotero 是学术管理领域非常优秀的软件。它功能成熟、生态稳定，帮助许多科研人员建立了最初的文献归档体系。
+| 项目 | 值 |
+|---|---|
+| fork 来源 | `exciton00/Agentero`（Agentero 的 fork） |
+| 原始上游 | [`poco-ai/agentero`](https://github.com/poco-ai/agentero) |
+| **继承基线 commit** | **`be2d49ed00a1d7665f07af54a38f9602395f827d`**（Agentero `main`，2026-10-21，PR #808） |
+| 本仓库基线 tag | `agentero-base`（指向上述 commit） |
+| 本仓库改动 | 基线之后约 40+ 个 Web 相关提交（`git log agentero-base..main`） |
+| 本仓库 HEAD | 见 `git log -1` |
 
-但在当下日常科研与深度使用各类 Agent 时，传统的文献工具链暴露出一些断点：
+继承方式：保留 Agentero 的完整 git 历史与桌面版代码；Web 分支主要新增 `crates/agentero-web`、
+`crates/agentero-host`，把设置/搜索等能力迁入 `agentero-core`，并修改前端以支持无 Tauri 的
+HTTP/WebSocket 宿主。桌面 `src-tauri` 除少量 re-export/共享设置外基本未改。
 
-* **上下文严重分散**：论文存储在 Zotero，笔记记在 Obsidian，与模型的推导和分析留在各个网页对话框中。三者数据彼此隔离，当需要 Agent 结合某篇具体论文与历史笔记进行深入推导时，用户必须反复手动复制粘贴。
-* **文献格式对模型不友好**：人类习惯阅读排版良好的 PDF 文件；但对于模型而言，直接解析双栏排版、跨页表格、复杂数学公式和交叉引用的成本极高，极易产生识别错误与幻觉。结构化 Markdown 与 LaTeX 才是模型容易准确理解的格式。
-* **维护成本较高**：AI 伴读、全文翻译、笔记同步等高频需求，往往需要安装和调试多个社区插件，配置门槛高且在版本升级时容易出现兼容性问题。
-* **批量自动化能力有限**：通过 Deep Research 或自动化检索工具发现的大量文献，目前仍需人工在浏览器中逐篇点击保存，难以顺畅衔接批量研究流。
-
-**Agentero 并非旨在替代 Zotero，而是探索一种人与 Agent 协同处理科研上下文的新方式**：
-* **人类负责**：提出研究问题、进行学术价值判断、深度研读与核心结论推导；
-* **Agent 负责**：批量检索筛选、元数据抓取、图表与公式提取、引用关系梳理及基础总结。
-
----
-
-## 核心功能
-
-### 1. 结构化阅读与笔记系统
-* **PDF 阅读与批注**：提供大纲导航、整页与宽度自适应、平滑划词、高亮批注与全文检索。
-* **图表与公式提取**：自动解析论文中的数学公式、算法伪代码及表格，生成结构化 Markdown 与 LaTeX 内容，确保 Agent 调用时上下文准确无误。
-* **双向链接笔记**：内置所见即所得 Markdown 编辑器，支持 `[[双链]]` 引用语法、`/` 快捷指令与 LaTeX 实时渲染，笔记与文献建立原生关联。
-* **多模式翻译服务**：支持划词翻译、按页对照翻译与全文翻译，内置可用翻译通道，并支持配置自定义 API Key（BYOK）。
-
-<p align="center">
-  <img src="docs/assets/agent.png" alt="PDF 阅读与 Agent 伴读" width="90%" />
-  <br/>
-  <sub>分屏阅读与分析：左侧高亮批注，右侧本地 Agent 基于准确的结构化上下文进行答疑与推导</sub>
-</p>
-
-<p align="center">
-  <img src="docs/assets/translate.png" alt="划词翻译与笔记联动" width="90%" />
-  <br/>
-  <sub>划词翻译与实时记录：阅读过程中提取的要点可直接沉淀至本地 Markdown 笔记</sub>
-</p>
-
----
-
-### 2. 开放的 Agent 协议与自动化接口
-* **基于 ACP 协议连接本地 Agent**：底层遵循 Agent Client Protocol，支持连接各类本地运行的 Agent（如 Claude Code、OpenCode、Codex 或本地模型），不绑定特定厂商，上下文完全保留在本地。
-* **内置 MCP (Model Context Protocol)**：可作为 MCP Server 运行，允许 ChatGPT Web、Claude Desktop 等外部客户端直接检索并调用本地文献库作为上下文。
-* **极客 CLI 支持**：内置无头命令行工具，支持通过脚本实现批量导入文献、提取元数据与写入笔记等自动化工作流。
-
-<p align="center">
-  <img src="docs/assets/image.png" alt="内置 MCP 连接" width="90%" />
-  <br/>
-  <sub>内置 MCP 协议服务，支持将本地文献库无缝接入各类外部 AI 客户端</sub>
-</p>
-
----
-
-### 3. 学术雷达与文献发现
-* **多渠道抓取**：内置集成 [Cool Papers](https://papers.cool/) 与魔搭社区，支持在软件内直接浏览并一键归档文献；支持学术 RSS 订阅。
-* **个性化推荐**：基于本地已有文献库的内容特征，自动推荐每日 arXiv 的相关最新论文。
-* **引用关系自动梳理**：自动解析文献末尾的参考文献列表，支持一键批量抓取入库；支持获取出版商元数据并追踪后续被引动态。
-
-<p align="center">
-  <img src="docs/assets/coolpaper.png" alt="Cool Papers 集成" width="90%" />
-  <br/>
-  <sub>应用内直接浏览 Cool Papers 热门论文并一键导入本地知识库</sub>
-</p>
-
----
-
-### 4. 兼容 Zotero 生态与本地透明存储
-* **Zotero 书库无缝迁移**：支持一键导入整个 Zotero 数据库，保留已有标签、笔记与附件；兼容 Zotero 浏览器扩展直接保存网页论文；支持导出 BibTeX / BibLaTeX。
-* **本地文件夹透明管理**：不使用私有数据库或散列混淆目录，所有文献与笔记均以标准文件（PDF、Markdown）保存在本地规范文件夹中，可自由使用外部编辑器读取。
-* **多端同步与远程访问**：支持与 S3 兼容的云存储服务进行同步；支持通过 SSH 隧道访问部署在远程服务器上的文献库。
-
----
-
-## 界面与功能预览
-
-<details>
-<summary><b>点击展开：查看更多界面截图（RSS 订阅、技能扩展、Agent 配置、S3 云同步、主题风格）</b></summary>
-<br/>
-
-#### 1. 学术 RSS 订阅
-追踪关注的学术博客、实验室主页与前沿动态：
-<p align="center">
-  <img src="docs/assets/rss.png" alt="RSS 订阅" width="85%" />
-</p>
-
-#### 2. Agent 技能（Skill）扩展
-浏览并安装社区提供的科研技能，扩展论文精读与写作分析能力：
-<p align="center">
-  <img src="docs/assets/skill-import.png" alt="Skill 扩展" width="85%" />
-</p>
-
-#### 3. Agent 与连接配置
-通过 ACP 协议管理、升级和切换本地 Agent：
-<p align="center">
-  <img src="docs/assets/agent-setting.png" alt="Agent 设置" width="85%" />
-</p>
-
-#### 4. S3 兼容云存储同步
-配置私有或商业 S3 存储，实现多设备间知识库同步：
-<p align="center">
-  <img src="docs/assets/s3-sync.png" alt="S3 同步设置" width="85%" />
-</p>
-
-#### 5. 多套界面主题
-支持亮色/暗色及多种配色风格，支持自适应系统外观设置：
-<p align="center">
-  <img src="docs/assets/theme.png" alt="主题配置" width="85%" />
-</p>
-
-</details>
-
----
-
-## 快速开始
-
-### 桌面客户端安装 (macOS / Windows / Linux)
-
-可前往 **[官网 agentero.app](https://agentero.app/)** 或 **[GitHub Releases](https://github.com/poco-ai/agentero/releases)** 下载适用于各平台的预编译安装包。
-
-#### macOS (Homebrew)
-```bash
-brew tap poco-ai/agentero
-brew install --cask agentero
-
-```
-
-> **Linux 用户须知**：系统环境要求 Ubuntu 22.04+（依赖 `webkit2gtk 4.1`），详细依赖说明请参考 [安装文档](docs/usage/getting-started.md)。
-
----
-
-### 命令行工具 (CLI)
-
-如需在终端或通过脚本自动化管理文献：
+### 与上游同步
 
 ```bash
-brew tap poco-ai/agentero
-brew install agentero
-
-# 查看常用命令与参数
-agentero --help
-
+git remote add upstream git@github.com:exciton00/Agentero.git   # 若尚未添加
+git fetch upstream
+git merge upstream/main   # 或 rebase；Web 改动较多，冲突需自行解决
 ```
 
 ---
 
-## 致谢与社区
+## 2. 功能清单（相对继承基线新增/适配）
 
-* 感谢 [LinuxDo](https://linux.do/) 与 [ModelScope 魔搭社区](https://modelscope.cn/) 成员在项目早期测试阶段提供的建议与反馈。
-* 感谢 [AtomGit](https://gitcode.com/poco-ai/Agentero) 提供的国内镜像支持。
+> 详细分轮说明见 [`docs/development/webui.md`](docs/development/webui.md)，部署运维见
+> [`docs/usage/web-self-host.md`](docs/usage/web-self-host.md)。
 
-如果 Agentero 对你的日常学术研究有所帮助，欢迎在 GitHub 上为本项目点亮一个 **⭐ Star**。
+### 2.1 Headless Web 宿主
 
-感谢所有贡献者！
+- 新增 `crates/agentero-web`：axum HTTP/WebSocket 服务端，浏览器直接使用现有 React SPA。
+- `POST /api/rpc/<command>` 兼容桌面 Host command（RPC 100+ 条：settings / vault / paper /
+  trash / wiki / search / marks / import / jobs / sync / agent / doctor 等）。
+- `GET /api/events` WebSocket 事件总线，多标签页独立窗口 label 与定向事件路由。
+- `/api/file`、`/api/upload`、`/api/dir|mkdir|rename` 文件端点；Vault watcher；服务端任务中心；
+  `/api/healthz` 健康检查；SPA 静态托管。
+- 前端新增浏览器 transport 垫片（`@tauri-apps/*` → web transport），新增
+  `pnpm build:web`；`isTauri()` 分诊逐步改为 `hasHostTransport()`；服务端 Vault 在 web 启动时权威生效。
+- 服务端 PDF 导入 / 标识符导入 / BibTeX 导入 / `PAPER.md` 正文解析 / 引用解析；PDFium worker
+  提前到 tokio 启动前 dispatch。
+- 单用户设计：**无内置鉴权**，请放在 TLS + 鉴权的反向代理之后。
 
-![contributors img Made with contrib.rocks](https://contrib.rocks/image?repo=poco-ai/Agentero)
+### 2.2 Agent（ACP，服务端运行）
 
-## Star History
+- 新增 tauri-free 的 `crates/agentero-host`（约 20K LOC）：ACP agent 域从桌面移植，
+  Host/HostSink 接缝抽象；覆盖 agent 探测/目录/配置、`agent_run_once`、流式
+  `agent:status/stream/tool/usage/completed`、会话 history/load/resume、warm pool、权限/elicitation 门。
+- 真实 Agent 已在浏览器端到端验证：服务器安装 CLI（本仓库实测 Dsh）→ 设置页注册 →
+  Chat 面板中文提问 → 真实模型流式返回（含 reasoning/工具事件与论文上下文）。
+- 每个标签页的 agent 事件只投递到发起标签；支持后台 workflow（paper-reader 等）。
 
-[![Star History Chart](https://api.star-history.com/chart?repos=poco-ai/agentero&type=date&legend=top-left&sealed_token=dKsoXrNYkG3u-nEL3OLp0_aTrlN-GjDpvVEVJvC3xjH13q3viEwwkkB5m6LYT3iKu6LZXtZpQAXalvBwaFQdYgVTjTA1Dzp6NGe_BUQXA1cMt57wNdrYvA)](https://www.star-history.com/?type=date&repos=poco-ai%2Fagentero)
+### 2.3 文献库 / PDF / 笔记
 
-## 开源许可证
+- 沿用 Agentero 的 Vault / catalog / PDF 阅读 / NOTES 编辑 / 双链 / marks。
+- Web 适配：论文库按标签筛选（服务端 `tag-index.json` 隐藏缓存、AND 语义、目录 scope 叠加）；
+  单击选中 / 双击打开；多选与批量操作；PDF/版面解析状态图标；覆盖上传 PDF；批量删除。
+- 论文右键：添加标签、删除 PDF、删除版面解析文件、覆盖解析等；Library 单元格长按复制
+  （替代会与双击打开冲突的双击复制）；Vault 菜单隐藏桌面专属项。
+- 服务器端导入：本地 PDF、arXiv/DOI 标识符、BibTeX；渲染任务 offer/report 协议（浏览器执行）；
+  `AGENTERO_WEB_IMPORT_SERVER_FALLBACK=1` 可在无浏览器/CI 场景走服务端导入。
 
-本项目基于 [MIT License](LICENSE) 协议开源。第三方组件与许可证清单见 [.github/THIRD_PARTY_NOTICES.md](.github/THIRD_PARTY_NOTICES.md)。
+### 2.4 版面解析（自建 MinerU）
+
+- 设置 → Layout：选择 MinerU（Self-hosted）、填 Base URL / API Key（BYOK，仅运行时 settings）；
+  服务端调用远程 MinerU 解析，写入 `source/layout.json` + `layout-index.json`。
+- PDF 工具栏 Analysis → FIGURES 面板（缩略图 + caption + 页码）；`layout_index` 供 MCP/CLI 使用。
+- 版面解析页数上限 `layout.maxPages`（0 = 不限）：前端超限跳过、后端兜底拒绝；`/api` body
+  limit 默认 64MB（`AGENTERO_WEB_MAX_BODY_MB` 可调），解决大 PDF base64 超限。
+
+### 2.5 MCP Server（Web host 内嵌）
+
+- 桌面版 Streamable HTTP MCP（24 tools + resources）移植到 web：独立 listener，默认
+  `127.0.0.1:8765/mcp`；设置页开关、端口热改、状态事件。
+- 环境变量：`AGENTERO_MCP_ENABLED` / `AGENTERO_MCP_BIND` / `AGENTERO_MCP_ALLOWED_HOSTS`；
+  容器/反代场景可强制开启并放行 Host；非 loopback 会打无鉴权 WARN。
+- 工具含 paper/notes/tags/vault_search/file/layout/page_read 等；`paper_text_get` 仍为
+  opt-in（默认关闭）；ChatGPT Secure MCP Tunnel 不在 Web v1 范围。
+
+### 2.6 RAG（外部知识库，provider 抽象）
+
+- 设置 → RAG：把 Vault 每篇论文渲染为一份合并 Markdown 同步到外部知识库；**PDF 与图片
+  二进制不上传**，内容含正文、图表索引、NOTES、划词/visual 批注文本与 BibTeX 引用索引。
+- provider 抽象：`RagProviderId` / `RagCapabilities` / `RagBackend`；当前实现 **WeKnora**，
+  RAGFlow 槽位预留（未实现）。
+- 每篇文档带 `BibTeX key`、`\cite{}` 与 bibtex + biblatex 两段条目，key 与
+  `/agentero_online.bib` 完全一致；检索结果带 `paper.path/title/tags/bibtexKey/latex`。
+- 同步：手工 Markdown 原地更新、内容哈希增量、managed 文档才删除；映射存 XDG data
+  （不入 Vault/git）；自动同步可选（写入后 60s 防抖 + 30 分钟兜底扫描）。
+- 工具：MCP 动态新增 **`agentero_rag_search` / `agentero_rag_paper_context` /
+  `agentero_rag_sync_status`**（总计 27 个工具；关闭后回到 24）；web agent（ACP）会话自动注入
+  只读 `agentero-rag` stdio MCP，可直接问“库里有没有讨论 X 的笔记/图注、引用怎么写”。
+- Provider 扩展：新增 RAGFlow 等只需实现 `RagBackend`/capabilities，详见
+  [`docs/backend/rag.md`](docs/backend/rag.md)。
+
+### 2.7 同步、BibTeX 挂载与稳定性
+
+- 云同步（git/S3/WebDAV）在 headless host 完整可用；服务端自动同步调度器。
+- `GET /agentero_online.bib`：按设置（bibtex/biblatex、tag/dir 过滤）实时输出当前 Vault 的
+  bibliography；本地序列化，不经第三方 translation-server。
+- 自动刷新根因修复：watcher 批量合并 + WriteBurst 延迟、前端跨帧合并 + 共享刷新协调器
+  （一次导入 96 帧事件 → 2–3 帧、刷新 3 波 → 2 波）。
+- HTTP 缓存/性能：ETag/Last-Modified/304、单区间 Range、媒体 `private,max-age=3600`、
+  sidecar `no-cache`、gzip/br、hashed 静态资源 immutable；首屏约 252KB（br）。
+- MCP listener 端口热改/并发串行化修复；侧边栏隐藏/显示后拖拽宽度修复；设置返回工作台修复。
+
+### 2.8 部署交付
+
+- `Dockerfile` 三阶段构建（Node 22 + PDFium + tesseract 预置，镜像内 `agentero-web` +
+  `dist` + PDFium），非 root runtime、healthcheck。
+- `docker-compose.yml`（开发/内网）、`docker-compose.prod.yml` + `deploy/Caddyfile`
+  （Caddy TLS + basic auth、不直接发布应用端口）。
+- 源码部署支持（Rust + pnpm）；环境变量、数据目录、备份与 MCP/RAG 配置说明见文档。
+
+---
+
+## 3. AI 生成声明
+
+**本仓库绝大部分代码、测试、文档与提交信息由 AI（DeepSeek Harness 的 coding agents）生成，
+经有限的人工审查与运行时验证。** 它**不保证**正确性、安全性、完整性或适用于生产环境；
+请在使用前自行审计代码、限制网络/文件权限，并对数据做好备份。继承自 Agentero 的代码版权与
+许可仍归原作者（见 [LICENSE](LICENSE)）。
+
+---
+
+## 4. 维护声明
+
+- 本仓库**不承诺持续维护**：不保证 issue/PR 会被响应，不提供 SLA、版本节奏或安全修复承诺。
+- 上游 Agentero 更新不保证合并；桌面版/上游文档可能与本 fork 不一致。
+- 你可以自由 fork；修复与改进建议自行保留或向上游回馈。
+
+---
+
+## 5. 部署
+
+### 5.1 Docker Compose（推荐）
+
+前置：Linux（实测 Debian 13 x86_64）、Docker + Compose 插件。
+
+```bash
+git clone https://github.com/exciton00/Agentero-Web.git agentero-web
+cd agentero-web
+
+mkdir -p vault data
+# 默认只绑定 127.0.0.1:8787；单用户、无内置鉴权，请在前方加反向代理
+AGENTERO_VAULT_DIR=$PWD/vault AGENTERO_DATA_DIR=$PWD/data \
+  docker compose up -d --build
+
+# 打开 http://127.0.0.1:8787
+```
+
+生产（Caddy TLS + basic auth，应用端口不直接发布）：
+
+```bash
+# 1) 生成 basic auth 哈希
+docker run --rm caddy:2 caddy hash-password --plaintext 'change-me'
+# 2) 把哈希与域名写进 deploy/Caddyfile
+# 3) 启动（80/443 需可达，Caddy 自动签发证书）
+AGENTERO_VAULT_DIR=/srv/agentero/vault \
+AGENTERO_DATA_DIR=/srv/agentero/data \
+  docker compose -f docker-compose.prod.yml up -d --build
+```
+
+关键点：
+- **必须让反向代理支持 WebSocket**（`/api/events` 的 Upgrade），否则流式输出/任务进度不可用。
+- `AGENTERO_VAULT_DIR`：Vault（Markdown/PDF/`.agentero/catalog.sqlite`）；`AGENTERO_DATA_DIR`：
+  XDG 设置/使用记录/同步状态/RAG state，均需备份。
+- 需要公网 MCP 时：`AGENTERO_MCP_ENABLED=1`、`AGENTERO_MCP_BIND=0.0.0.0:8765`，发布 8765，
+  把外部域名加入 `AGENTERO_MCP_ALLOWED_HOSTS`，并由反代加鉴权（MCP 本身无鉴权）。
+- Agent CLI 需在镜像/容器内额外安装（镜像只含 Node 22）；凭据用环境变量或挂载 `~/.dsh/.env`。
+
+### 5.2 源码部署
+
+前置：Rust stable、Node 22+、pnpm 11、Linux。PDF 解析需要 `libpdfium`（可执行
+`pnpm pdfium:stage` 下载到 `src-tauri/pdfium/`，运行时用 `PDFIUM_LIB_PATH` 指向该目录）；
+可选 tesseract。
+
+```bash
+git clone https://github.com/exciton00/Agentero-Web.git agentero-web
+cd agentero-web
+
+pnpm install
+pnpm build:web
+
+# 可选：为 ACP agent CLI 准备打包适配器（仅使用内置 adapter 时需要）
+pnpm adapters:stage
+
+cargo build --release -p agentero-web
+
+mkdir -p /srv/agentero/{vault,data,config,cache}
+AGENTERO_WEB_ADDR=127.0.0.1:8787 \
+AGENTERO_WEB_VAULT=/srv/agentero/vault \
+AGENTERO_WEB_DIST=$PWD/dist \
+XDG_CONFIG_HOME=/srv/agentero/config \
+XDG_DATA_HOME=/srv/agentero/data \
+XDG_CACHE_HOME=/srv/agentero/cache \
+PDFIUM_LIB_PATH=$PWD/src-tauri/pdfium \
+RUST_LOG=info \
+  ./target/release/agentero-web
+```
+
+用 systemd 托管时把上述环境变量写入 `Environment=`；反向代理配置见
+[`docs/usage/web-self-host.md`](docs/usage/web-self-host.md)。首次访问进入欢迎页，新建/打开 Vault 即可。
+
+### 5.3 环境变量（常用）
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `AGENTERO_WEB_ADDR` | `127.0.0.1:8787` | 监听地址；容器内 `0.0.0.0:8787` |
+| `AGENTERO_WEB_VAULT` | `~/Agentero` | 默认 Vault 根 |
+| `AGENTERO_WEB_DIST` | `./dist` | 前端产物目录（`pnpm build:web`） |
+| `AGENTERO_WEB_ALLOW_ROOTS` | 空 | 文件端点额外根目录（`:`/`,` 分隔） |
+| `AGENTERO_WEB_MAX_BODY_MB` | `64` | `/api` body 上限（8–512 MiB） |
+| `AGENTERO_MCP_ENABLED` / `AGENTERO_MCP_BIND` / `AGENTERO_MCP_ALLOWED_HOSTS` | 空 | MCP 强制开启 / 绑定地址 / Host 白名单 |
+| `XDG_CONFIG_HOME` / `XDG_DATA_HOME` / `XDG_CACHE_HOME` | 系统默认 | 设置、使用记录、模型缓存（容器内建议持久卷） |
+| `RUST_LOG` | `info` | 日志级别 |
+
+---
+
+## 6. 实测环境与未测试事项（请务必阅读）
+
+本 fork 的功能只在以下环境实际跑过；**其他组合未测试、不保证兼容**：
+
+| 类别 | ✅ 已实测 | ❌ 未测试 / 不保证 |
+|---|---|---|
+| **Agent** | **Dsh**（`dsh --profile acp`，0.2.1-rc.2）+ 真实模型对话、工具/流式/历史、paper-reader 精读 | Claude Code、Codex、OpenCode 及其他 ACP agent；其他模型/API key/provider |
+| **版面解析** | **自建 MinerU**（remote API，`layout_remote_probe` 显示 `mineru 4.0.9`；9 页/15 页真实 PDF 解析） | 官方 MinerU 云（mineru.net）、其他 MinerU 版本；PaddleOCR / OpenDataLoader / MarkItDown / 其他版面引擎；Web 端本地 ONNX fallback |
+| **RAG** | **WeKnora**（API 与 v0.8.3 文档对齐的实例；6 篇论文同步、tags、BibTeX 引用、`agentero_rag_*` MCP、provider 迁移） | RAGFlow（仅预留 provider 槽位，未实现）；其他 RAG 系统；其他 WeKnora 版本/旧版 API |
+| **MCP 客户端** | 自带 Python Streamable HTTP 测试客户端（initialize/tools/list/tools/call） | ChatGPT、Claude Desktop、MCP Inspector、Codex 等第三方客户端；Secure MCP Tunnel（Web v1 不提供） |
+| **OS / 容器** | Linux x86_64（Debian 13），Docker 29.7.2 / Docker Compose；开发机 Node 24（镜像 Node 22） | Windows、macOS、ARM、其他 Linux 发行版 |
+| **浏览器** | Chromium（自动化测试）；桌面宽度视口 | Firefox、Safari、移动端浏览器、极端分辨率 |
+| **反向代理** | 开发 compose 直连 8787；生产 Caddy 编排已提供 | Caddy 生产部署未做完整公网验收；nginx/Tailscale/Frp 等未测试 |
+| **数据/规模** | 6 篇测试 Vault、单 Vault、单知识库 | 大规模 Vault（数百/数千篇）、多用户、多 Vault 并发、跨设备同时写 |
+
+> 如果你启用未测试的 Agent/解析引擎/RAG，请先小范围试跑；错误/兼容性问题自行承担。
+
+---
+
+## 7. 配置 WeKnora RAG（API Key 权限说明）
+
+RAG 当前唯一**已实现**的 provider 是 **WeKnora**；RAGFlow 在 UI 中显示为 coming soon。
+以下步骤在 WeKnora 侧完成（测试基于与 v0.8.3 API 文档对齐的实例）：
+
+### 7.1 创建知识库
+
+1. 登录 WeKnora，创建/打开一个用于 Agentero-Web 的知识库（document 类型）。
+2. 确保它已完成初始化（embedding / 检索配置可用；WeKnora 的问答模型不是 Agentero 必需，但
+   索引/向量检索需要 KB 的 embedding 配置正常）。
+3. 记下 **Knowledge Base ID**（KB 页面 URL 或 `GET /api/v1/knowledge-bases` 返回的 `id`）。
+
+### 7.2 创建 API Key（能力与范围）
+
+WeKnora 控制台：**空间设置 → API Key → 新建**（或 API `POST /api/v1/tenants/<tenant>/api-keys`）。
+Agentero-Web 只需要以下两项能力：
+
+| 能力 | 用途（Agentero-Web 实际调用） |
+|---|---|
+| **`retrieve`**（检索/读取） | 读取 KB 列表/详情、知识列表/详情、`knowledge-search`、读取标签 |
+| **`ingest`**（入库/写入） | 创建/更新/删除手工 Markdown 知识、创建标签、批量给知识赋标签 |
+
+**不需要** `manage_kbs`（Agentero-Web 不创建/删除知识库本身）、`chat`（不调用 WeKnora 问答）、
+`manage_models`、`manage_members` 或 `FullAccess`。若 WeKnora 的 API Key 表单支持
+**Knowledge Base allow-list / 可访问知识库**，请只勾选上面创建的这个 KB。
+
+> 最小权限示例：`capabilities = ["retrieve", "ingest"]` + `knowledge_base_ids = ["<KB_ID>"]`。
+> 使用 full-access 也可以工作，但不推荐；使用过宽 key 时请自行做网络侧限制。
+
+### 7.3 填入 Agentero-Web
+
+1. 打开 **Settings → RAG / External knowledge base**。
+2. **Provider** 选择 `WeKnora`。
+3. **Base URL**：`https://<your-weknora-host>/api/v1`（也可只填主域名，客户端会归一化）。
+4. **API Key**：粘贴上一步创建的 key（仅保存在服务端 `settings.json`，前端只显示掩码）。
+5. **Knowledge Base**：从下拉选择知识库（或填 KB ID）。
+6. 点 **Test connection**（应显示 KB 名称/文档数）→ 打开 **Enable RAG** → 选择同步内容 →
+   **Sync now**；同步完成后 KB 中会出现每篇论文一个 Markdown 文档（PDF/图片二进制不上传）。
+7. 需要外部 MCP / web agent 使用 RAG 时，保持 `tools.exposeToMcp` / `tools.exposeToAgent` 打开；
+   关闭会立即移除 `agentero_rag_*` 工具。
+
+### 7.4 注意事项
+
+- WeKnora 的 API Key 必须包含 **retrieve + ingest**；只有 retrieve 时 Test 可能通过，但同步会失败。
+- API Key 只存在服务端 XDG settings（0600），日志/RPC/同步状态不含 key；请勿把 API Key 提交到
+  git 或放进浏览器书签/前端环境变量。
+- 若 WeKnora key scope 不支持按 `knowledge_ids` 限定，Agentero-Web 会退化为 KB 级检索 + 本地
+  过滤（功能正常，结果一致）。
+- RAGFlow/其他 provider 需要自行实现 `RagBackend` 并在 `RagProviderId` 注册；
+  RAGFlow 当前未实现，选择后返回可读的 `not_implemented`。
+
+---
+
+## 8. 已知限制（当前）
+
+- 单用户、**无内置鉴权**；不要把 8787 直接暴露公网；请用反代 + 鉴权。
+- Agent（ACP）依赖服务器安装 CLI 与凭据；本 fork 只实测 Dsh。
+- 版面解析依赖自建 MinerU；本地 ONNX fallback 在 Web 端未做端到端验证。
+- RAG：单 Vault ↔ 单知识库；图片像素/PDF 原件不上传；RAGFlow 未实现；WeKnora 的 rerank 在
+  测试实例上可能很慢（默认关闭，超时降级）。
+- 不支持多用户/租户隔离、自动更新、系统托盘/原生菜单、Zotero Connector、SSH 远程 Vault、
+  LaTeX 编译、站点代理广场（保留基础 PDF 下载）。
+- MCP 无鉴权；公网 MCP 必须由反向代理保护，并使用 `AGENTERO_MCP_ALLOWED_HOSTS` 放行 Host。
+- 桌面版（src-tauri）仍可编译，但本 fork 不再以桌面发布为主要目标。
+
+---
+
+## 9. 文档索引
+
+- 设计 / 里程碑 / 分轮修复：[`docs/development/webui.md`](docs/development/webui.md)
+- 部署与运维：[`docs/usage/web-self-host.md`](docs/usage/web-self-host.md)
+- RAG provider 契约与 WeKnora 实现：[`docs/backend/rag.md`](docs/backend/rag.md)
+- MCP 工具与构建：[`docs/backend/mcp.md`](docs/backend/mcp.md)
+- 原 Agentero 桌面/CLI/数据模型文档：`docs/backend/*`（继承自上游，部分章节可能未覆盖 Web 差异）
+
+---
+
+## 10. License
+
+MIT，继承自 Agentero（见 [LICENSE](LICENSE)）。原项目版权归其作者所有；本 fork 的修改也以 MIT
+发布，不提供任何担保。
