@@ -42,12 +42,18 @@ jobs:
   rust-web:
     name: Rust (agentero-core / agentero-web / agentero-host)
     runs-on: ubuntu-latest
+    env:
+      # liteparse dlopens PDFium at runtime; stage the same build the Docker
+      # image bundles so the PDF tests run in CI too.
+      PDFIUM_LIB_PATH: ${{ github.workspace }}/src-tauri/pdfium
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: .
+      - name: Stage PDFium
+        run: node scripts/prepare-pdfium.mjs
       - name: Core tests
         run: cargo test -p agentero-core --lib
       - name: Web host tests
