@@ -5,107 +5,42 @@
 <h2 align="center">Agentero-Web</h2>
 
 <p align="center">
-  A self-hostable web fork of Agentero: run the full research workbench on a NAS / VPS and use it from a browser.
+  A self-hostable research workbench: run it on a NAS / VPS / mini PC and use the full Agentero workspace from a browser.
 </p>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT" /></a>
-  <img src="https://img.shields.io/badge/AI--generated-code-8b5cf6" alt="AI-generated code" />
-  <img src="https://img.shields.io/badge/maintenance-best--effort-lightgrey" alt="Maintenance: best effort" />
 </p>
 
 <p align="center">
   <b>English</b> | <a href="README.md">中文</a>
 </p>
 
-> **This is a fork, not the official Agentero repository.** It inherits Agentero `main` at commit
-> `be2d49ed00a1d7665f07af54a38f9602395f827d` (2026-10-21) and adds the web host, MCP and RAG work.
-> See [Original Agentero](https://github.com/poco-ai/agentero) for the upstream desktop docs.
-
 ---
 
-## 1. Provenance
+## What it is
 
-| Item | Value |
-|---|---|
-| Forked from | `exciton00/Agentero` (a fork of Agentero) |
-| Original upstream | [`poco-ai/agentero`](https://github.com/poco-ai/agentero) |
-| **Inherited base commit** | **`be2d49ed00a1d7665f07af54a38f9602395f827d`** (Agentero `main`, 2026-10-21, PR #808) |
-| Base tag in this repo | `agentero-base` (points at the commit above) |
-| Changes since base | ~40+ web-related commits (`git log agentero-base..main`) |
+Agentero-Web brings Agentero's research workbench to the browser. Papers, PDFs, notes and annotations live in your own **Vault** (a plain folder); the app runs on an always-on machine and you open the same workspace from a laptop, tablet or phone.
 
-The full upstream git history and desktop code are preserved. The fork adds `crates/agentero-web`,
-`crates/agentero-host`, moves shared settings/search capabilities into `agentero-core`, and adapts the
-frontend to run without Tauri over HTTP/WebSocket. The desktop `src-tauri` is mostly unchanged
-(except re-exports/shared settings).
+- Single-user and self-hosted; data and credentials stay on your machine.
+- **No built-in auth or reverse proxy**: it listens on `127.0.0.1` by default. Add TLS / auth / a reverse proxy yourself for remote access.
+- Vault Markdown, PDFs and `marks/` remain readable by any editor, shell or Git workflow outside the app.
 
----
+## Features
 
-## 2. Features added/adapted over the inherited baseline
+- **Browser workbench**: file tree, paper library, PDF reader, Markdown / NOTES editor, multi-panel workspace and multi-tab windows.
+- **Library & import**: browse/filter by folder and tags; import via DOI / arXiv / BibTeX / local PDF; bulk actions, replace PDF, re-parse.
+- **PDF reading & annotations**: highlights with color switching, margin notes; the right-hand **Annotations** panel groups "Highlights & notes / Conversations / Visual annotations" with jump, expand-note and delete. Annotations live in the paper's `marks/` folder and never modify the original PDF.
+- **Translation**: selection translation and full-document layout translation; **Settings → Translate** lets you adjust body-text and heading font sizes (live, percentage) and reset to defaults.
+- **Layout & body parsing**: connect self-hosted MinerU and other remote layout/body engines to produce `layout.json`, `PAPER.md` and `images/`; set a parsing page cap.
+- **Agent (ACP)**: chat with an Agent CLI installed on the host (Dsh is supported today), with paper and selection context; per-tab event routing.
+- **MCP server**: expose Vault papers/notes/files to external clients over Streamable HTTP MCP; tools and paper text are opt-in.
+- **External knowledge-base RAG**: sync papers as Markdown into external knowledge bases such as WeKnora, and expose read-only retrieval tools to MCP clients and the web agent.
+- **Sync & citations**: Vault cloud sync (git / S3 / WebDAV, optionally automatic); live BibTeX / BibLaTeX mount at `/agentero_online.bib`.
 
-See [`docs/development/webui.md`](docs/development/webui.md) for the detailed round-by-round log.
+## Quick start (Docker Compose)
 
-- **Headless web host** (`crates/agentero-web`): axum HTTP/WebSocket server, `POST /api/rpc/<command>`
-  (100+ desktop-compatible RPCs), `/api/events` WS with per-tab targeted events, `/api/file`,
-  `/api/upload`, `/api/dir|mkdir|rename`, Vault watcher, server-side task center, `/api/healthz`,
-  SPA hosting. Browser transport shims and `pnpm build:web`; server-side PDF/identifier/BibTeX
-  imports and `PAPER.md`/citation parsing; PDFium worker dispatch. Single-user, **no built-in auth**.
-- **ACP agent host** (`crates/agentero-host`, Tauri-free): agent probing/catalog/config,
-  `agent_run_once`, streaming `agent:status/stream/tool/usage/completed`, history/load/resume, warm
-  pool, permission/elicitation gates. Real browser E2E with Dsh (see tested matrix below).
-- **Library/PDF/notes web UX**: tag filters (hidden `tag-index.json`, AND semantics, directory scope),
-  click-to-select/double-click-to-open, multi-select bulk actions, PDF/layout asset status icons,
-  overwrite PDF, batch delete, long-press copy, hidden desktop-only Vault menu entries.
-- **Layout analysis**: self-hosted MinerU via server-side remote call; FIGURES panel; `layout.maxPages`.
-  Analysis engine produces `source/layout.json` + `layout-index.json`; the separate **Body parse engine**
-  now registers MinerU/Paddle/OpenAI-compatible cloud engines and writes `PAPER.md` + `images/`.
-  Choosing a remote Analysis engine auto-follows the Body parse engine when it is still `local`, and a
-  completed layout job enqueues `ParseBody` if no `PAPER.md` exists yet.
-  cap; `/api` body limit raised to 64MB (`AGENTERO_WEB_MAX_BODY_MB`).
-- **MCP server in the web host**: desktop Streamable HTTP MCP (24 tools + resources) ported, own
-  listener at `127.0.0.1:8765/mcp`, settings UI, port hot reload, `AGENTERO_MCP_ENABLED` /
-  `AGENTERO_MCP_BIND` / `AGENTERO_MCP_ALLOWED_HOSTS`; `paper_text_get` remains opt-in.
-- **RAG with a provider abstraction**: currently WeKnora implemented, RAGFlow reserved. Syncs each
-  paper as one merged Markdown document (body + figure index + notes + annotation text + BibTeX
-  citations; **no PDF/image binaries**), in-place updates, content-hash increments, managed-document
-  deletes, optional auto-sync (60s debounce + 30min safety scan). Exposes MCP tools
-  **`agentero_rag_search` / `agentero_rag_paper_context` / `agentero_rag_sync_status`** (27 tools
-  total, 24 when disabled) and injects a read-only `agentero-rag` stdio MCP into web agent sessions.
-  See [`docs/backend/rag.md`](docs/backend/rag.md).
-- **Sync/BibTeX/stability**: cloud sync (git/S3/WebDAV) and auto-sync scheduler; live
-  `/agentero_online.bib` mount; write-burst batching (auto-refresh fix); ETag/304, Range, gzip/br,
-  immutable hashed assets; MCP listener port-change/concurrency fixes; sidebar/settings fixes.
-- **Deployment**: three-stage `Dockerfile` (Node 22 + PDFium + tesseract), `docker-compose.yml`,
-  `docker-compose.yml` (single service) + `.env.example`; no reverse-proxy/auth solution included.
-
----
-
-## 3. AI-generated code
-
-**Most code, tests, docs and commit messages in this repository were generated by AI (DeepSeek
-Harness coding agents), with limited human review and runtime validation.** Correctness, safety,
-completeness and production-readiness are **not guaranteed**. Audit the code, restrict
-network/filesystem permissions, and back up your data before use. Inherited Agentero code remains
-under its original copyright/license (see [LICENSE](LICENSE)).
-
----
-
-## 4. Maintenance
-
-- **No maintenance is promised**: issues/PRs may not be answered, no SLA, release cadence or security
-  fix commitment.
-- Upstream Agentero changes are not guaranteed to be merged; the desktop app/upstream docs may differ
-  from this fork.
-- Fork freely; fixes/improvements can be kept here or sent upstream.
-
----
-
-## 5. Deployment
-
-### 5.1 Docker Compose (single file, no proxy/managed deployment)
-
-Only two templates are committed: `docker-compose.yml.example` and `.env.example`. The copied
-working files are git-ignored. **There is one compose file — no separate prod or host-agent file.**
+Requirements: Linux + the Docker Compose plugin.
 
 ```bash
 git clone https://github.com/exciton00/Agentero-Web.git agentero-web
@@ -113,7 +48,7 @@ cd agentero-web
 
 cp docker-compose.yml.example docker-compose.yml
 cp .env.example .env
-# edit .env (Vault/data paths, port, optional MCP/API keys)
+# edit .env: Vault / data paths, port, host Dsh paths, optional MCP, etc.
 mkdir -p vault data
 
 docker compose pull
@@ -121,179 +56,124 @@ docker compose up -d
 # open http://127.0.0.1:8787
 ```
 
-**Dsh agent (installed on the Linux host, mounted into the container)**: the image does **not**
-bundle Dsh. Compose mounts the host's Dsh package and `~/.dsh`; the Web host runs the mounted
-`lib/bin.js` with its Node 22 and auto-registers the normal `Dsh` catalog row. For this host
-(root + system npm) the `.env` defaults are:
+- The repo ships one `docker-compose.yml.example` plus `.env.example`; the copied working files are not committed. No reverse proxy or production orchestration is included.
+- The published image `ghcr.io/exciton00/agentero-web:latest` is used by default. To build it yourself instead, point `AGENTERO_IMAGE` in `.env` at a local tag and run `docker compose up -d --build`.
+- The first visit shows a welcome page; create or open a Vault to start.
+
+### Dsh agent (mounted from the host)
+
+The image does **not** bundle an agent CLI. To use the Chat panel, use a Dsh that is already installed and logged in on the host:
 
 ```dotenv
+# .env (example: root + system npm install)
 AGENTERO_HOST_DSH_ROOT=/usr/lib/node_modules/@deepseek-ai
 AGENTERO_DSH_HOME=/root/.dsh
 ```
 
-The corresponding compose mounts are:
+Compose mounts these to `/opt/host-agent/@deepseek-ai` (read-only) and `/data/home/.dsh`; the web host auto-registers the normal `Dsh` catalog row at startup.
 
-```yaml
-- ${AGENTERO_HOST_DSH_ROOT}:/opt/host-agent/@deepseek-ai:ro
-- ${AGENTERO_DSH_HOME}:/data/home/.dsh
-```
+- For nvm / volta installs: run `readlink -f "$(command -v dsh)"`, strip the trailing `/dsh/lib/bin.js`, and use the remaining directory as `AGENTERO_HOST_DSH_ROOT`; set `AGENTERO_DSH_HOME` to the absolute `~/.dsh` path.
+- If a `./data` volume reused from an older version hides Dsh, open **Settings → Agent → "Detect host Dsh" → "Redetect"** to clear the stale marker and register again.
+- Other ACP agents must be installed and logged in yourself; the web host reaches them through the same mounts/environment.
 
-For nvm/volta/custom installs run `readlink -f "$(command -v dsh)"`, strip `/dsh/lib/bin.js`,
-and use that as `AGENTERO_HOST_DSH_ROOT`. Do not mount the `/usr/bin/dsh` symlink itself.
-
-For source/bare-metal runs, a `dsh` on PATH plus `~/.dsh` is auto-registered at startup too.
-
-If a reused `./data` volume from an older container hides Dsh (stale
-`.host-agent-auto.flag`), use Settings → Agent → **Detect host Dsh** → **Redetect** to clear the
-marker and register again.
-
-**Vault path parity**: if host tools need exactly the same absolute Vault path, set both:
+**Vault path parity**: the container Vault defaults to `/vault`. If host tools need exactly the same absolute path inside and outside the container, set both in `.env`:
 
 ```dotenv
 AGENTERO_VAULT_DIR=/srv/agentero/vault
 AGENTERO_VAULT_CONTAINER_PATH=/srv/agentero/vault
 ```
 
-Key points:
-- `AGENTERO_VAULT_DIR` is the Vault (Markdown/PDF/`.agentero/catalog.sqlite`); `AGENTERO_DATA_DIR`
-  holds XDG settings/records/sync/RAG state. Back both up.
-- `AGENTERO_IMAGE` in `.env` selects the image. For forks use
-  `ghcr.io/<your-account>/agentero-web:latest`; for a local build use
-  `AGENTERO_IMAGE=agentero-web:local` and `docker compose up -d --build`. GHCR packages may be
-  private: make the package public or run `docker login ghcr.io`.
-- Public MCP: set `AGENTERO_MCP_ENABLED=1`, `AGENTERO_MCP_BIND=0.0.0.0:8765`, uncomment the MCP
-  port mapping in compose, add the public host to `AGENTERO_MCP_ALLOWED_HOSTS`, and protect it with
-  the reverse proxy (MCP has no auth).
-
-### 5.2 From source
-
-Requirements: Rust stable, Node 22+, pnpm 11, Linux. PDF parsing needs `libpdfium` (run
-`pnpm pdfium:stage` and point `PDFIUM_LIB_PATH` at `src-tauri/pdfium`); tesseract is optional.
-
-```bash
-git clone https://github.com/exciton00/Agentero-Web.git agentero-web
-cd agentero-web
-pnpm install
-pnpm build:web
-# optional: pnpm adapters:stage   # bundled ACP adapters
-cargo build --release -p agentero-web
-
-AGENTERO_WEB_ADDR=127.0.0.1:8787 \
-AGENTERO_WEB_VAULT=/srv/agentero/vault \
-AGENTERO_WEB_DIST=$PWD/dist \
-XDG_CONFIG_HOME=/srv/agentero/config \
-XDG_DATA_HOME=/srv/agentero/data \
-XDG_CACHE_HOME=/srv/agentero/cache \
-PDFIUM_LIB_PATH=$PWD/src-tauri/pdfium \
-RUST_LOG=info \
-  ./target/release/agentero-web
-```
-
-Use systemd `Environment=` for the variables above. Reverse-proxy examples are in
-[`docs/usage/web-self-host.md`](docs/usage/web-self-host.md).
-
-### 5.3 Environment variables (`.env`)
-
-All Docker Compose settings live in `.env` (copied from `.env.example`). Compose reads it
-automatically; `.env` and the real compose files are git-ignored.
+### Common environment variables
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `AGENTERO_IMAGE` | `ghcr.io/exciton00/agentero-web:latest` | image; set `agentero-web:local` for a local build |
-| `AGENTERO_VAULT_DIR` / `AGENTERO_DATA_DIR` | `./vault` / `./data` | host Vault / XDG data |
-| `AGENTERO_VAULT_CONTAINER_PATH` | `/vault` | container Vault path; use the same absolute path as `AGENTERO_VAULT_DIR` to mirror host paths |
-| `AGENTERO_WEB_BIND` / `AGENTERO_WEB_PORT` | `127.0.0.1` / `8787` | host bind and port |
+| `AGENTERO_IMAGE` | `ghcr.io/exciton00/agentero-web:latest` | image to run |
+| `AGENTERO_VAULT_DIR` / `AGENTERO_DATA_DIR` | `./vault` / `./data` | host Vault / app data (XDG) directories |
+| `AGENTERO_VAULT_CONTAINER_PATH` | `/vault` | Vault path inside the container |
+| `AGENTERO_WEB_BIND` / `AGENTERO_WEB_PORT` | `127.0.0.1` / `8787` | host bind address and port |
+| `AGENTERO_HOST_DSH_ROOT` | `/usr/lib/node_modules/@deepseek-ai` | host Dsh package root (mounted into the container) |
+| `AGENTERO_DSH_HOME` | `${HOME}/.dsh` | host Dsh credentials / profile directory |
+| `AGENTERO_MCP_ENABLED` / `AGENTERO_MCP_BIND` / `AGENTERO_MCP_ALLOWED_HOSTS` | empty | force MCP on / listen address / `Host` allow-list |
 | `AGENTERO_WEB_MAX_BODY_MB` | `64` | `/api` body limit (8–512 MiB) |
-| `AGENTERO_WEB_ALLOW_ROOTS` | empty | extra file-API roots |
-| `AGENTERO_MCP_ENABLED` / `AGENTERO_MCP_BIND` / `AGENTERO_MCP_ALLOWED_HOSTS` | empty | optional MCP listener / bind / Host allow-list |
-| `AGENTERO_DSH_HOME` | `${HOME}/.dsh` | host Dsh credentials/profile dir mounted at `/data/home/.dsh` |
+| `AGENTERO_WEB_ALLOW_ROOTS` | empty | extra roots for the file API |
+| `AGENTERO_SYNC_ACCESS_KEY` / `AGENTERO_SYNC_SECRET_KEY` | empty | optional cloud-sync credentials |
 | `DEEPSEEK_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | empty | optional server-side agent CLI credentials |
 | `RUST_LOG` | `info` | log level |
 
 See [`.env.example`](.env.example) for the full template.
 
-### 5.4 Image build (GitHub Actions → GHCR)
+## Data & backup
 
-[`.github/workflows/docker-image.yml`](.github/workflows/docker-image.yml):
+| Content | Location |
+|---|---|
+| Vault (Markdown / PDF / `marks/` / `.agentero/catalog.sqlite`) | host `AGENTERO_VAULT_DIR` |
+| Settings, sync / RAG state, usage records, cache | host `AGENTERO_DATA_DIR` (XDG `/data` in the container) |
 
-- Triggers on pushes to `main`, tags `v*`, and `workflow_dispatch`;
-- Builds a `linux/amd64` image and pushes to **`ghcr.io/<repository-owner>/agentero-web`**
-  (this repo: `ghcr.io/exciton00/agentero-web`): `latest` (default branch), branch name, semver tag,
-  `sha-<short>`;
-- Logs in with `GITHUB_TOKEN` (`packages: write`), caches layers with the GitHub Actions cache
-  (`type=gha`); the image bundles the frontend `dist`, PDFium and Node 22;
-- To deploy a built image, set `AGENTERO_IMAGE=ghcr.io/exciton00/agentero-web:latest` in `.env` and run
-  `docker compose pull && docker compose up -d --no-build`;
-- Local build/debug: `docker build -t agentero-web:local .` (then set that image in `.env` and add
-  `--build` to `docker compose up`).
+Backup = copy the Vault directory plus the data directory. The Vault stays readable by external tools; back it up before upgrading the image.
 
-> GHCR packages may default to private; make the package public in GitHub Packages or
-> `docker login ghcr.io` with a PAT that has `read:packages`.
+## Common settings
 
----
+- **Settings → Agent**: detect host Dsh; use "Redetect" when Dsh is missing or an old data volume is reused.
+- **Settings → Translate**: pick a translation service; adjust full-document body / heading font sizes and reset to defaults.
+- **Settings → Layout**: choose layout-analysis and body-parse engines (e.g. self-hosted MinerU) and set the parsing page cap.
+- **Settings → Sync**: git / S3 / WebDAV cloud sync; optional automatic sync.
+- **Settings → General → MCP server**: enable/disable the MCP listener port.
+- **Settings → RAG / External knowledge base**: configure an external knowledge base (see below).
 
-## 6. Tested environment (important)
+## MCP clients
 
-Only the following combinations were actually exercised. Everything else is **untested**:
+Enable **Settings → General → MCP server** to serve Streamable HTTP MCP on its own port (default):
 
-| Area | ✅ Tested | ❌ Untested / no guarantee |
-|---|---|---|
-| **Agent** | **Dsh** (`dsh --profile acp`, 0.2.1-rc.2) with real model chat, tools/streaming/history, paper-reader | Claude Code, Codex, OpenCode or any other ACP agent; other model providers/API keys |
-| **Layout analysis** | **Self-hosted MinerU** via remote API (`mineru 4.0.9`; 9-page and 15-page PDFs) | Official MinerU Cloud (mineru.net), other MinerU versions; PaddleOCR / OpenDataLoader / MarkItDown / other engines; browser ONNX fallback |
-| **RAG** | **WeKnora** (API aligned with v0.8.3 docs; 6-paper sync, tags, BibTeX, `agentero_rag_*` MCP, provider migration) | RAGFlow (reserved, not implemented); any other RAG system; other WeKnora versions |
-| **MCP clients** | Built-in Python Streamable HTTP test client (initialize/tools/list/tools/call) | ChatGPT, Claude Desktop, Inspector, Codex and other clients; Secure MCP Tunnel (not in Web v1) |
-| **OS/container** | Linux x86_64 (Debian 13), Docker 29.7.2 / Compose; dev Node 24 (image Node 22) | Windows, macOS, ARM, other distros |
-| **Browser** | Chromium (automation), desktop viewport | Firefox, Safari, mobile browsers, extreme viewports |
-| **Reverse proxy** | Not provided | This project does not include a reverse proxy/auth solution; bring your own if exposing it |
-| **Scale** | 6-paper test Vault, single Vault, single KB | Large Vaults, multi-user, concurrent Vaults/devices |
+```
+http://127.0.0.1:8765/mcp
+```
 
----
+- Local clients (MCP Inspector, Codex, …) can connect directly. The in-app Agent panel uses ACP, not MCP.
+- For containerized / remote clients: set `AGENTERO_MCP_ENABLED=1`, `AGENTERO_MCP_BIND=0.0.0.0:8765`, publish port 8765, and add the external host to `AGENTERO_MCP_ALLOWED_HOSTS`.
+- MCP has **no built-in auth**; put it behind a reverse proxy with auth when exposed.
+- Paper text is not returned by default; enable "Expose paper text" in **Settings → General** to allow it.
+- Tools, protocol and security boundaries: [MCP tool docs](docs/backend/mcp.md) (advanced).
 
-## 7. WeKnora RAG API setup (required permissions)
+## External knowledge-base RAG
 
-WeKnora is the only implemented provider today; RAGFlow is shown as "coming soon".
+Sync Vault papers into an external knowledge base for read-only semantic retrieval by MCP clients and the web agent. **WeKnora** is supported today (RAGFlow is reserved and shown as "coming soon").
 
-1. **Create a knowledge base** in WeKnora (document type) and initialize it (embedding/retrieval must
-   work). Copy its **Knowledge Base ID** (KB URL or `GET /api/v1/knowledge-bases`).
-2. **Create an API key**: WeKnora console → **Space Settings → API Key → New** (or
-   `POST /api/v1/tenants/<tenant>/api-keys`). Grant exactly:
-   - **`retrieve`** — read KB lists/details, knowledge list/detail, `knowledge-search`, tags.
-   - **`ingest`** — create/update/delete manual Markdown knowledge, create tags, bulk-assign tags.
-   - **Not needed**: `manage_kbs` (Agentero-Web does not create/delete KBs), `chat`,
-     `manage_models`, `manage_members`, or `FullAccess`.
-   - If the key form supports a **KB allow-list**, select only the target knowledge base.
-3. **Configure Agentero-Web**: Settings → RAG / External knowledge base → Provider `WeKnora`,
-   Base URL `https://<host>/api/v1`, the API key, and the KB (dropdown or ID). Click
-   **Test connection**, enable RAG, then **Sync now**.
-4. Keys are stored server-side only (`settings.json`, 0600; masked in the UI). Never commit the key
-   or expose it to the browser.
+1. Create and initialize a knowledge base (document type) in WeKnora and note its **Knowledge Base ID**.
+2. Create an API key with **`retrieve` + `ingest`** permissions (no KB management, chat or full access required). If the key form supports a KB allow-list, select only that KB.
+3. In **Settings → RAG / External knowledge base**: choose Provider `WeKnora`, enter the Base URL (e.g. `https://<host>/api/v1`), API key and KB ID, then **Test connection**.
+4. Enable **Enable RAG**, pick what to sync (body / notes / annotations / figure index / BibTeX citations) and click **Sync now**; auto-sync is optional.
 
-Recommended minimal scope: `capabilities = ["retrieve", "ingest"]` and
-`knowledge_base_ids = ["<KB_ID>"]`. A key without `ingest` may pass the connection test but sync will fail.
+Notes:
 
----
+- Only text is uploaded: body, notes, annotation text, figure index and BibTeX citations — **no PDF/image binaries**.
+- The API key is stored server-side only (`settings.json`, 0600); the UI shows a mask and logs/sync state never contain it.
+- One Vault maps to one knowledge base; changing the KB rebuilds the mapping. Enable the tool switches if external MCP clients or the web agent should use RAG.
+- Other providers (e.g. RAGFlow) are not implemented. See [RAG docs](docs/backend/rag.md) (advanced).
 
-## 8. Known limitations
+## Remote access & security
 
-- Single-user, **no built-in auth**; do not expose port 8787 directly.
-- Agent (ACP) requires a CLI + credentials on the server; only Dsh was tested here.
-- Layout analysis depends on self-hosted MinerU; the browser ONNX fallback is not E2E-validated in web.
-- RAG: one Vault ↔ one KB; no image/PDF binaries; RAGFlow not implemented; WeKnora rerank can be very
-  slow on the tested instance (disabled by default with timeout fallback).
-- No multi-user/tenant isolation, auto-update, tray/native menus, Zotero Connector, SSH remote Vault,
-  LaTeX compilation, or site proxy. MCP has no auth; protect it with a reverse proxy and the
-  `AGENTERO_MCP_ALLOWED_HOSTS` allow-list.
+- It listens on `127.0.0.1` by default — fine for local or NAS LAN access.
+- For internet or cross-network access, terminate TLS and add authentication in your own reverse proxy; the proxy must pass WebSocket `/api/events` through, otherwise the UI receives no live events.
+- MCP has no built-in auth either; do not expose it directly. Enable it only when needed and restrict `Host` with `AGENTERO_MCP_ALLOWED_HOSTS`.
+- The file API only allows the Vault and data directories by default; allow other paths explicitly with `AGENTERO_WEB_ALLOW_ROOTS`.
+
+## Known limits
+
+- Single-user design: no multi-tenancy, permission isolation or concurrent multi-Vault writes.
+- The recommended deployment target is Linux x86_64 + Docker; Windows, macOS, ARM and very large Vaults are not fully supported yet — try them on a small scope first.
+- Agent support centres on Dsh; other ACP agents need their own install/config. Layout analysis relies on self-hosted MinerU and the browser ONNX fallback is not fully validated on the web host.
+- RAG: one Vault ↔ one knowledge base; image-based retrieval and PDF-original upload are out of scope; WeKnora rerank is off by default (slow on some instances).
+- MCP has no auth. The web build does not provide a system tray, auto-update, Zotero Connector, SSH remote Vault, LaTeX compilation or a site-proxy gallery.
+
+## Docs
+
+- Deployment & operations: [`docs/usage/web-self-host.md`](docs/usage/web-self-host.md)
+- User guides (desktop and shared features): [`docs/usage/index.md`](docs/usage/index.md)
+- MCP tools & protocol: [`docs/backend/mcp.md`](docs/backend/mcp.md) (advanced)
+- RAG providers & API: [`docs/backend/rag.md`](docs/backend/rag.md) (advanced)
 
 ---
 
-## 9. Docs
+## License
 
-- Design/milestones/fix log: [`docs/development/webui.md`](docs/development/webui.md)
-- Deployment/ops: [`docs/usage/web-self-host.md`](docs/usage/web-self-host.md)
-- RAG provider contract + WeKnora: [`docs/backend/rag.md`](docs/backend/rag.md)
-- MCP tools/build: [`docs/backend/mcp.md`](docs/backend/mcp.md)
-
-## 10. License
-
-MIT, inherited from Agentero (see [LICENSE](LICENSE)). Upstream copyright remains with its authors;
-this fork's changes are also MIT without warranty.
+MIT (see [LICENSE](LICENSE)). This project is a derivative of Agentero; upstream copyright remains with its authors, and this repository's changes are released under MIT as well.

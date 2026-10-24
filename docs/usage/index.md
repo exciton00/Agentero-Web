@@ -22,6 +22,7 @@
 | 把 Vault 接到 ChatGPT / Codex MCP | [用 MCP 连接外部 Agent](mcp.md) |
 | 用 iPhone 连接桌面 Vault | [移动端](mobile.md) |
 | 用浏览器 Zotero Connector 保存 | [使用 Zotero Connector](zotero.md) |
+| 在 NAS / 服务器上运行 Web 版 | [自部署 Web 版](web-self-host.md) |
 | 打开服务器上的研究资料库 | [打开远程 Vault](remote-vault.md) |
 
 ## 三个概念
@@ -44,7 +45,7 @@ Agentero **不**捆绑 Agent，也**不**代管 Agent 的模型 API Key。通过
 
 ## 使用边界（当前）
 
-- 内置模型服务只在**构建时注入了凭证**的安装包里出现（官方 Release 有）。自己从源码构建或 CI 产物没有该凭证时，设置里的「Agentero 内置」选项隐藏或禁用，翻译回落免费引擎、正文解析回落本地 liteparse、arXiv 每日推荐在没填自定义 embedding 端点时不运行。
+- 内置模型服务只在官方发布包中可用。源码构建或自部署版本不包含这套凭证时，设置里的「Agentero 内置」选项会隐藏或禁用，翻译回落到免费引擎或你自己的服务，正文解析回落本地 liteparse，arXiv 每日推荐在未配置自定义 embedding 端点时不运行。
 - 桌面平台：macOS 12.0+；Linux 需 Ubuntu **22.04+**（webkit2gtk 4.1）。详见 [安装与首次使用](getting-started.md)。
 - 远程 Vault：macOS / Linux 客户端可用；Windows 客户端暂不支持打开远程 Vault。
 - Zotero Connector 与 Zotero 桌面端不能同时占用本机 `23119` 端口。
