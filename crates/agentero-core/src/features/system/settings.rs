@@ -13,6 +13,7 @@
 use crate::decision::{SystemOneCredentials, DEFAULT_SYSTEM_ONE_MODEL};
 use crate::error::AppError;
 use crate::features::system::builtin;
+use crate::features::weknora::settings::WeKnoraSettings;
 use crate::paths::{self, settings_path};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -212,6 +213,9 @@ pub struct AppSettings {
     /// Experimental bibtex/biblatex network mount (served by the Web host).
     #[serde(default)]
     pub bibtex_mount: BibtexMountSettings,
+    /// WeKnora RAG integration (headless Web host sync engine). Default off.
+    #[serde(default)]
+    pub weknora: WeKnoraSettings,
     /// PostHog product analytics opt-out (applies from the next launch).
     #[serde(default = "default_true")]
     pub telemetry_enabled: bool,
@@ -527,6 +531,7 @@ impl Default for AppSettings {
             translate: TranslateSettings::default(),
             layout: LayoutSettings::default(),
             bibtex_mount: BibtexMountSettings::default(),
+            weknora: WeKnoraSettings::default(),
             telemetry_enabled: default_true(),
             plaza_enabled: default_true(),
             plaza_hidden_sources: Vec::new(),
@@ -767,6 +772,14 @@ impl AppSettingsStore {
         self.inner
             .lock()
             .map(|settings| settings.bibtex_mount.clone())
+            .unwrap_or_default()
+    }
+
+    /// WeKnora RAG settings (cloned; never contains a mask-only key).
+    pub fn weknora(&self) -> WeKnoraSettings {
+        self.inner
+            .lock()
+            .map(|settings| settings.weknora.clone())
             .unwrap_or_default()
     }
 
@@ -1178,6 +1191,9 @@ fn redact_secrets(mut settings: AppSettings) -> AppSettings {
     if !settings.decision.api_key.trim().is_empty() {
         settings.decision.api_key = mask_translate_api_key(&settings.decision.api_key);
     }
+    if !settings.weknora.api_key.trim().is_empty() {
+        settings.weknora.api_key = mask_translate_api_key(&settings.weknora.api_key);
+    }
     settings
 }
 
@@ -1213,6 +1229,9 @@ fn merge_secrets(incoming: &mut AppSettings, previous: &AppSettings) {
     }
     if is_translate_api_key_mask(&incoming.decision.api_key) {
         incoming.decision.api_key = previous.decision.api_key.clone();
+    }
+    if is_translate_api_key_mask(&incoming.weknora.api_key) {
+        incoming.weknora.api_key = previous.weknora.api_key.clone();
     }
 }
 
@@ -1283,6 +1302,7 @@ fn normalize_mount_dirs(values: &[String]) -> Vec<String> {
 
 fn normalize(s: &mut AppSettings) {
     normalize_bibtex_mount(&mut s.bibtex_mount);
+    s.weknora.normalize();
     if s.connector_port == 0 {
         s.connector_port = default_connector_port();
     }
@@ -1663,7 +1683,7 @@ mod tests {
 
     #[test]
     fn bibtex_mount_defaults_off_and_normalizes_scope() {
-        let mut mount = BibtexMountSettings::default();
+        let mount = BibtexMountSettings::default();
         assert!(!mount.enabled);
         assert_eq!(mount.format, "bibtex");
         assert!(mount.tags.is_empty() && mount.dirs.is_empty());

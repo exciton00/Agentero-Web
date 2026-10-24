@@ -8,7 +8,7 @@
 use serde_json::Value;
 
 use crate::error::HandlerResult;
-use crate::handlers::{agent, layout, markdown, mcp, paper, search, tags, vault};
+use crate::handlers::{agent, layout, markdown, mcp, paper, search, tags, vault, weknora};
 use crate::rpc::RpcCtx;
 
 pub async fn dispatch(ctx: &RpcCtx, command: &str, args: &Value) -> Option<HandlerResult> {
@@ -28,6 +28,16 @@ pub async fn dispatch(ctx: &RpcCtx, command: &str, args: &Value) -> Option<Handl
         "mcp_tunnel_status" => mcp::tunnel_status(ctx).await,
         "mcp_tunnel_start" => mcp::tunnel_start(ctx).await,
         "mcp_tunnel_stop" => mcp::tunnel_stop(ctx).await,
+
+        // ---- WeKnora RAG sync / retrieval (headless Web host) ----
+        "weknora_status" => weknora::status(ctx).await,
+        "weknora_test" => weknora::test(ctx, args).await,
+        "weknora_list_kbs" => weknora::list_kbs(ctx, args).await,
+        "weknora_sync_start" => weknora::sync_start(ctx, args).await,
+        "weknora_sync_cancel" => weknora::sync_cancel(ctx).await,
+        "weknora_reconcile" => weknora::reconcile(ctx, args).await,
+        "weknora_clear_mapping" => weknora::clear_mapping(ctx, args).await,
+        "weknora_search" => weknora::search(ctx, args).await,
 
         // ---- Vault file search ----
         "vault_search" => search::vault_search(ctx, args).await,

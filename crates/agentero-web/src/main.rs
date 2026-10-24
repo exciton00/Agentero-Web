@@ -18,6 +18,7 @@ mod state;
 mod static_files;
 mod tasks;
 mod watcher;
+mod weknora;
 
 use std::sync::Arc;
 
@@ -168,6 +169,10 @@ async fn run() {
     // asks for it; a bind failure is surfaced through `mcp_get_status` /
     // `mcp:status` instead of aborting startup.
     state.mcp.clone().start_if_configured().await;
+
+    // WeKnora RAG: listens for settings changes / Vault writes to run the
+    // optional debounced auto-sync (60s) and the 30-minute fallback scan.
+    state.weknora.clone().start();
 
     // axum caps `Bytes` bodies at 2 MB by default, which a 15-page PDF blows
     // past once base64-encoded (`layout_remote_analyze_pdf`). The same cap

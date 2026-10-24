@@ -66,25 +66,32 @@ pub struct RenderedBib {
     pub generated_at: String,
 }
 
+/// One catalog record with its mount-scoped citation data.
+///
+/// `key` matches the `/agentero_online.bib` entry for the same mount scope;
+/// both dialects are rendered from the same key so a `\cite{key}` is valid in
+/// either bibliography style.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BibEntry {
+    /// Vault-relative paper folder path (same as the catalog `path`).
+    pub path: String,
+    pub key: String,
+    pub bibtex: String,
+    pub biblatex: String,
+}
+
 /// Serve the mount: render every catalog paper matching the configured scope.
 pub fn render(
     vault_root: &Path,
     format: BibFormat,
     mount: &BibtexMountSettings,
 ) -> Result<RenderedBib, AppError> {
-    let records = papers::list_all(vault_root)?;
-    let mut matched: Vec<PaperRecord> = records
+    let matched = matched_records(vault_root, mount)?;
+    let count = matched.len();
+    let mut entries: Vec<(String, String)> = matched
         .into_iter()
-        .filter(|record| record_matches(record, &mount.tags, &mount.dirs))
+        .map(|(record, key)| (key.clone(), render_entry(&record, format, &key)))
         .collect();
-    matched.sort_by(|left, right| left.path.cmp(&right.path));
-
-    let mut used_keys: HashSet<String> = HashSet::new();
-    let mut entries: Vec<(String, String)> = Vec::with_capacity(matched.len());
-    for record in &matched {
-        let key = unique_entry_key(record, &mut used_keys);
-        entries.push((key.clone(), render_entry(record, format, &key)));
-    }
     entries.sort_by(|left, right| left.0.cmp(&right.0));
     let body = entries
         .into_iter()
@@ -98,9 +105,50 @@ pub fn render(
     };
     Ok(RenderedBib {
         body,
-        count: matched.len(),
+        count,
         generated_at: now_rfc3339_millis(),
     })
+}
+
+/// Mount-scoped citation data for every matching paper, both dialects at once.
+///
+/// Used by the WeKnora renderer so a synced document always carries the exact
+/// same key / entry as the mounted `.bib` URL (including mount filters and the
+/// duplicate-key suffix assignment).
+pub fn entries(
+    vault_root: &Path,
+    mount: &BibtexMountSettings,
+) -> Result<Vec<BibEntry>, AppError> {
+    Ok(matched_records(vault_root, mount)?
+        .into_iter()
+        .map(|(record, key)| BibEntry {
+            path: record.path.clone(),
+            bibtex: render_entry(&record, BibFormat::Bibtex, &key),
+            biblatex: render_entry(&record, BibFormat::Biblatex, &key),
+            key,
+        })
+        .collect())
+}
+
+/// Matching records sorted by path with their unique mount-scoped keys.
+fn matched_records(
+    vault_root: &Path,
+    mount: &BibtexMountSettings,
+) -> Result<Vec<(PaperRecord, String)>, AppError> {
+    let records = papers::list_all(vault_root)?;
+    let mut matched: Vec<PaperRecord> = records
+        .into_iter()
+        .filter(|record| record_matches(record, &mount.tags, &mount.dirs))
+        .collect();
+    matched.sort_by(|left, right| left.path.cmp(&right.path));
+    let mut used_keys: HashSet<String> = HashSet::new();
+    Ok(matched
+        .into_iter()
+        .map(|record| {
+            let key = unique_entry_key(&record, &mut used_keys);
+            (record, key)
+        })
+        .collect())
 }
 
 fn normalize_path_for_match(path: &str) -> String {

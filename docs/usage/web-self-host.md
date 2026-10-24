@@ -127,6 +127,16 @@ AGENTERO_WEB_DIST=$PWD/dist \
 
 设置 → Layout → 选择 **MinerU**、打开 **Self-hosted**、填 Base URL 与 API Key（BYOK，只写入服务器 `settings.json`，不进镜像/仓库）。之后新入库或手动 Force re-parse 的论文由**服务端**调用 MinerU 解析，写 `source/layout.json` + `layout-index.json`；PDF 工具栏「Analysis」里的 FIGURES 面板展示检测到的图/表/算法/公式（缩略图 + caption + 页码跳转）。未配置远程服务时回退到浏览器本地 ONNX 模型。
 
+## WeKnora RAG（可选，仅 Web host）
+
+设置 → RAG / WeKnora：打开开关、填 Base URL（可带/不带 `/api/v1`）、API Key、选择知识库（`weknora_list_kbs` 下拉），可先「测试连接」。开启后服务端把当前 Vault 的每篇论文渲染成一份合并 Markdown 同步到该知识库（正文 + 图表索引 + NOTES + 批注文本；**PDF 与图片二进制不上传**），检索结果带论文路径/BibTeX `\cite{}`。
+
+- **隐私**：显式 opt-in；笔记、批注、图注文本会发送到你配置的外部 WeKnora。API Key 只保存在服务端 `settings.json`（0600），前端只见掩码，重启后状态保持。
+- **同步方式**：设置页「立即同步」（可取消、可看进度/失败项）或自动同步（默认关；开启后 Vault 写入 **60s 防抖** + 每 **30 分钟**兜底扫描）。内容按哈希增量更新，删除论文后下次同步清理对应 managed 文档；`weknora_reconcile` 可从 KB `custom_metadata` 重建映射，「清理 Agentero 文档」需二次确认。
+- **状态**：同步映射存 `$XDG_DATA_HOME/agentero/weknora/<vault-key>.json`（不在 Vault、不进 git、无密钥）；设置页显示已同步/待同步/失败计数与 `weknora:sync` 进度。
+- **单 Vault / 单知识库**（v1）：更换知识库会重置映射；同一 KB 多部署同时写属于未支持场景。出站请求遵循设置里的网络代理。
+- **限制**：图片语义检索、PDF 原件上传、WeKnora 侧聊天/Agent 调用不在 v1；检索默认关闭 rerank（该实例开启时可能 20–40s 不返回）。API 细节与 RPC/事件契约见 [backend/weknora.md](../backend/weknora.md)。
+
 ## Vault 同步（NAS 友好）
 
 设置 → Sync 支持 **git 远程**（本地路径或 SSH URL）、S3 兼容存储、WebDAV：
