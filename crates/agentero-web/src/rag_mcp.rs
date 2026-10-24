@@ -41,7 +41,7 @@ impl AgenteroRagMcp {
 fn tool_err(error: impl std::fmt::Display) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(
         serde_json::json!({
-            "code": "weknora_error",
+            "code": "rag_error",
             "message": error.to_string(),
         })
         .to_string(),
@@ -51,10 +51,10 @@ fn tool_err(error: impl std::fmt::Display) -> CallToolResult {
 #[tool_router]
 impl AgenteroRagMcp {
     #[tool(
-        description = "Read-only semantic + keyword search across the WeKnora RAG library synced from this Vault (paper bodies, NOTES, figure captions, annotations). Use it for cross-library questions like 'do my notes discuss X?'. Hits carry paper.path (usable as `ref`) and a BibTeX key with latex '\\\\cite{key}'. For reading one specific paper use paper_get / page_read instead.",
+        description = "Read-only semantic + keyword search across the RAG knowledge base synced from this Vault (paper bodies, NOTES, figure captions, annotations). Use it for cross-library questions like 'do my notes discuss X?'. Hits carry paper.path (usable as `ref`) and a BibTeX key with latex '\\\\cite{key}'. For reading one specific paper use paper_get / page_read instead.",
         annotations(read_only_hint = true)
     )]
-    async fn weknora_search(
+    async fn agentero_rag_search(
         &self,
         Parameters(args): Parameters<RagSearchArgs>,
     ) -> Result<Json<RagSearchOut>, CallToolResult> {
@@ -65,7 +65,7 @@ impl AgenteroRagMcp {
         description = "Read-only search restricted to ONE synced paper (its body, user notes, annotations and figure/table captions). Returns the section each hit came from. Use paper_get/page_read to read the paper itself.",
         annotations(read_only_hint = true)
     )]
-    async fn weknora_paper_context(
+    async fn agentero_rag_paper_context(
         &self,
         Parameters(args): Parameters<RagPaperContextArgs>,
     ) -> Result<Json<RagPaperContextOut>, CallToolResult> {
@@ -77,10 +77,10 @@ impl AgenteroRagMcp {
     }
 
     #[tool(
-        description = "Report whether the WeKnora RAG library is usable for this Vault: enabled/configured, synced x/y, last sync time, and (with `paper`) that paper's sync status/lastError. Read-only; no network call.",
+        description = "Report whether the RAG knowledge base is usable for this Vault: enabled/configured, synced x/y, last sync time, and (with `paper`) that paper's sync status/lastError. Read-only; no network call.",
         annotations(read_only_hint = true)
     )]
-    async fn weknora_sync_status(
+    async fn agentero_rag_sync_status(
         &self,
         Parameters(args): Parameters<RagSyncStatusArgs>,
     ) -> Result<Json<RagSyncStatusOut>, CallToolResult> {
@@ -93,11 +93,11 @@ impl ServerHandler for AgenteroRagMcp {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_instructions(
-                "agentero-rag is a read-only, session-scoped WeKnora RAG server for this Vault. \
-                 Use weknora_search for cross-library semantic questions and weknora_paper_context \
+                "agentero-rag is a read-only, session-scoped RAG server for this Vault. \
+                 Use rag_search for cross-library semantic questions and agentero_rag_paper_context \
                  for one paper's notes/figures/annotations; both return paper.path and the BibTeX \
                  key/\\cite{} to quote. Use paper_get/page_read (Agentero vault tools) to read a \
-                 paper directly. It never writes to WeKnora.",
+                 paper directly. It never writes to the provider.",
             )
             .with_server_info(Implementation::new(
                 "agentero-rag",
@@ -159,13 +159,13 @@ fn serve(config_path: PathBuf) -> Result<(), String> {
 mod tests {
     use super::AgenteroRagMcp;
     use crate::mcp::rag_tools::RagRuntime;
-    use agentero_core::features::weknora::settings::WeKnoraSettings;
+    use agentero_core::features::rag::settings::RagSettings;
     use rmcp::model::CallToolRequestParams;
     use rmcp::ServiceExt;
 
     fn enabled_runtime(vault: &std::path::Path) -> RagRuntime {
         RagRuntime::new(
-            WeKnoraSettings {
+            RagSettings {
                 enabled: true,
                 base_url: "https://kb.example.com".into(),
                 knowledge_base_id: "kb-1".into(),
@@ -197,11 +197,11 @@ mod tests {
         let tools = client.list_all_tools().await.unwrap();
         let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_ref()).collect();
         assert_eq!(tools.len(), 3, "{names:?}");
-        for name in ["weknora_search", "weknora_paper_context", "weknora_sync_status"] {
+        for name in ["agentero_rag_search", "agentero_rag_paper_context", "agentero_rag_sync_status"] {
             assert!(names.contains(&name), "missing {name}");
         }
         let status = client
-            .call_tool(CallToolRequestParams::new("weknora_sync_status"))
+            .call_tool(CallToolRequestParams::new("agentero_rag_sync_status"))
             .await
             .unwrap();
         assert_ne!(status.is_error, Some(true), "{status:?}");

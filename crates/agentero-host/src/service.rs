@@ -621,6 +621,7 @@ mod rag_mcp_tests {
 
     fn spec(kb: &str) -> RagMcpSpec {
         RagMcpSpec {
+            provider: "weknora".into(),
             base_url: "https://kb.example.com".into(),
             api_key: "secret".into(),
             knowledge_base_id: kb.into(),

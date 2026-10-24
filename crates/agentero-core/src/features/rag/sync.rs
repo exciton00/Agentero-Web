@@ -1,9 +1,9 @@
-//! WeKnora sync engine: scan → render → diff → execute → tags → index wait →
+//! RAG sync engine: scan → render → diff → execute → tags → index wait →
 //! delete, plus reconcile / clear-mapping maintenance.
 //!
-//! The engine is host-agnostic: it talks to a [`KnowledgeApi`] (implemented by
-//! [`WeKnoraClient`], mocked in tests) and persists [`WeKnoraSyncState`] after
-//! every document, so a crash leaves a resumable mapping.
+//! The engine is provider-agnostic: it talks to a [`KnowledgeApi`] (implemented
+//! by [`RagBackend`], mocked in tests) and persists [`RagSyncState`] after every
+//! document, so a crash leaves a resumable mapping.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
@@ -17,22 +17,22 @@ use crate::error::AppError;
 use crate::features::paper::catalog::bibtex_export::{self, BibEntry};
 use crate::features::paper::catalog::papers::{self, PaperRecord};
 use crate::features::system::settings::BibtexMountSettings;
-use crate::features::weknora::client::{
-    KnowledgeInfo, SearchHit, TagInfo, WeKnoraClient, WeKnoraError,
+use crate::features::rag::providers::{
+    KnowledgeInfo, RagBackend, RagProviderId, SearchHit, TagInfo, WeKnoraError,
 };
-use crate::features::weknora::render::{
+use crate::features::rag::render::{
     content_hash, render_paper, user_tags, RenderOptions, RenderOutput,
 };
-use crate::features::weknora::settings::WeKnoraSettings;
-use crate::features::weknora::state::{
-    self, vault_key, WeKnoraDocState, WeKnoraSyncState, STATUS_FAILED, STATUS_INDEXING,
+use crate::features::rag::settings::RagSettings;
+use crate::features::rag::state::{
+    self, vault_key, RagDocState, RagSyncState, STATUS_FAILED, STATUS_INDEXING,
     STATUS_READY,
 };
-use crate::features::weknora::RENDERER_VERSION;
+use crate::features::rag::RENDERER_VERSION;
 use crate::time::now_rfc3339_millis;
 
-/// WeKnora REST operations the sync engine needs. Implemented by
-/// [`WeKnoraClient`]; tests use an in-memory mock.
+/// Provider operations the sync engine needs. Implemented by [`RagBackend`];
+/// tests use an in-memory mock.
 #[async_trait]
 pub trait KnowledgeApi: Send + Sync {
     async fn create_manual(
@@ -81,12 +81,12 @@ pub trait KnowledgeApi: Send + Sync {
     ) -> Result<Vec<KnowledgeInfo>, WeKnoraError>;
     async fn search(
         &self,
-        request: &crate::features::weknora::client::SearchRequest,
+        request: &crate::features::rag::providers::SearchRequest,
     ) -> Result<Vec<SearchHit>, WeKnoraError>;
 }
 
 #[async_trait]
-impl KnowledgeApi for WeKnoraClient {
+impl KnowledgeApi for RagBackend {
     async fn create_manual(
         &self,
         knowledge_base_id: &str,
@@ -94,7 +94,14 @@ impl KnowledgeApi for WeKnoraClient {
         content: &str,
         tag_ids: &[String],
     ) -> Result<String, WeKnoraError> {
-        WeKnoraClient::create_manual(self, knowledge_base_id, title, content, tag_ids).await
+        match self {
+            RagBackend::WeKnora(client) => {
+                client
+                    .create_manual(knowledge_base_id, title, content, tag_ids)
+                    .await
+            }
+            RagBackend::RagFlow => Err(self.not_implemented_error()),
+        }
     }
     async fn update_manual(
         &self,
@@ -103,7 +110,14 @@ impl KnowledgeApi for WeKnoraClient {
         content: &str,
         tag_ids: &[String],
     ) -> Result<(), WeKnoraError> {
-        WeKnoraClient::update_manual(self, knowledge_id, title, content, tag_ids).await
+        match self {
+            RagBackend::WeKnora(client) => {
+                client
+                    .update_manual(knowledge_id, title, content, tag_ids)
+                    .await
+            }
+            RagBackend::RagFlow => Err(self.not_implemented_error()),
+        }
     }
     async fn update_metadata(
         &self,
@@ -111,37 +125,70 @@ impl KnowledgeApi for WeKnoraClient {
         title: &str,
         custom_metadata: &Map<String, Value>,
     ) -> Result<(), WeKnoraError> {
-        WeKnoraClient::update_metadata(self, knowledge_id, title, custom_metadata).await
+        match self {
+            RagBackend::WeKnora(client) => {
+                client
+                    .update_metadata(knowledge_id, title, custom_metadata)
+                    .await
+            }
+            RagBackend::RagFlow => Err(self.not_implemented_error()),
+        }
     }
     async fn get_knowledge(&self, knowledge_id: &str) -> Result<KnowledgeInfo, WeKnoraError> {
-        WeKnoraClient::get_knowledge(self, knowledge_id).await
+        match self {
+            RagBackend::WeKnora(client) => client.get_knowledge(knowledge_id).await,
+            RagBackend::RagFlow => Err(self.not_implemented_error()),
+        }
     }
     async fn delete_knowledge(&self, knowledge_id: &str) -> Result<(), WeKnoraError> {
-        WeKnoraClient::delete_knowledge(self, knowledge_id).await
+        match self {
+            RagBackend::WeKnora(client) => client.delete_knowledge(knowledge_id).await,
+            RagBackend::RagFlow => Err(self.not_implemented_error()),
+        }
     }
     async fn batch_delete_knowledge(
         &self,
         knowledge_base_id: &str,
         ids: &[String],
     ) -> Result<usize, WeKnoraError> {
-        WeKnoraClient::batch_delete_knowledge(self, knowledge_base_id, ids).await
+        match self {
+            RagBackend::WeKnora(client) => {
+                client
+                    .batch_delete_knowledge(knowledge_base_id, ids)
+                    .await
+            }
+            RagBackend::RagFlow => Err(self.not_implemented_error()),
+        }
     }
     async fn list_tags(&self, knowledge_base_id: &str) -> Result<Vec<TagInfo>, WeKnoraError> {
-        WeKnoraClient::list_tags(self, knowledge_base_id).await
+        match self {
+            RagBackend::WeKnora(client) => client.list_tags(knowledge_base_id).await,
+            RagBackend::RagFlow => Err(self.not_implemented_error()),
+        }
     }
     async fn create_tag(
         &self,
         knowledge_base_id: &str,
         name: &str,
     ) -> Result<TagInfo, WeKnoraError> {
-        WeKnoraClient::create_tag(self, knowledge_base_id, name).await
+        match self {
+            RagBackend::WeKnora(client) => client.create_tag(knowledge_base_id, name).await,
+            RagBackend::RagFlow => Err(self.not_implemented_error()),
+        }
     }
     async fn set_knowledge_tags(
         &self,
         knowledge_base_id: &str,
         updates: &HashMap<String, Vec<String>>,
     ) -> Result<(), WeKnoraError> {
-        WeKnoraClient::set_knowledge_tags(self, knowledge_base_id, updates).await
+        match self {
+            RagBackend::WeKnora(client) => {
+                client
+                    .set_knowledge_tags(knowledge_base_id, updates)
+                    .await
+            }
+            RagBackend::RagFlow => Err(self.not_implemented_error()),
+        }
     }
     async fn list_knowledge(
         &self,
@@ -149,19 +196,31 @@ impl KnowledgeApi for WeKnoraClient {
         page: u32,
         page_size: u32,
     ) -> Result<Vec<KnowledgeInfo>, WeKnoraError> {
-        WeKnoraClient::list_knowledge(self, knowledge_base_id, page, page_size).await
+        match self {
+            RagBackend::WeKnora(client) => {
+                client
+                    .list_knowledge(knowledge_base_id, page, page_size)
+                    .await
+            }
+            RagBackend::RagFlow => Err(self.not_implemented_error()),
+        }
     }
     async fn search(
         &self,
-        request: &crate::features::weknora::client::SearchRequest,
+        request: &crate::features::rag::providers::SearchRequest,
     ) -> Result<Vec<SearchHit>, WeKnoraError> {
-        WeKnoraClient::search(self, request).await
+        match self {
+            RagBackend::WeKnora(client) => client.search(request).await,
+            RagBackend::RagFlow => Err(self.not_implemented_error()),
+        }
     }
 }
 
 /// One sync trigger's options.
 #[derive(Debug, Clone)]
 pub struct SyncOptions {
+    /// Provider this run writes to (part of state path + custom_metadata).
+    pub provider: RagProviderId,
     /// Ignore stored hashes and update every rendered document.
     pub force: bool,
     /// Limit the run to one paper (id or vault-relative path). Deletions are
@@ -174,11 +233,12 @@ pub struct SyncOptions {
 }
 
 impl SyncOptions {
-    pub fn from_settings(settings: &WeKnoraSettings, force: bool, paper: Option<String>) -> Self {
+    pub fn from_settings(settings: &RagSettings, force: bool, paper: Option<String>) -> Self {
         Self {
+            provider: settings.provider(),
             force,
             paper,
-            max_bytes: crate::features::weknora::MAX_DOCUMENT_BYTES,
+            max_bytes: crate::features::rag::MAX_DOCUMENT_BYTES,
             index_timeout: Duration::from_secs(settings.advanced.index_timeout_secs.max(10)),
             index_poll_interval: Duration::from_secs(1),
             concurrency: settings.advanced.concurrency.clamp(1, 4) as usize,
@@ -286,7 +346,7 @@ pub struct RenderedDoc {
 /// stored docs that no longer exist in `rendered` (only when `allow_delete`).
 pub fn diff(
     rendered: &BTreeMap<String, RenderedDoc>,
-    state: &WeKnoraSyncState,
+    state: &RagSyncState,
     force: bool,
     allow_delete: bool,
 ) -> SyncDiff {
@@ -311,10 +371,18 @@ pub fn diff(
 }
 
 /// `custom_metadata` written to every managed knowledge document.
-pub fn custom_metadata(vault: &Path, doc: &RenderedDoc) -> Map<String, Value> {
+pub fn custom_metadata(
+    vault: &Path,
+    doc: &RenderedDoc,
+    provider: RagProviderId,
+) -> Map<String, Value> {
     let record = &doc.record;
     let mut metadata = Map::new();
     metadata.insert("agentero_managed".into(), Value::String("true".into()));
+    metadata.insert(
+        "agentero_rag_provider".into(),
+        Value::String(provider.id().into()),
+    );
     metadata.insert(
         "agentero_vault".into(),
         Value::String(vault_key(vault)),
@@ -389,7 +457,7 @@ fn document_title(doc: &RenderedDoc) -> String {
 /// synchronous and should not stall the async runtime.
 fn scan_and_render(
     vault: &Path,
-    settings: &WeKnoraSettings,
+    settings: &RagSettings,
     mount: &BibtexMountSettings,
     options: &SyncOptions,
     paper_filter: Option<&str>,
@@ -492,7 +560,7 @@ async fn wait_for_index(
                         .unwrap_or_else(|| "failed".into());
                     return (
                         STATUS_FAILED.into(),
-                        Some(format!("WeKnora indexing failed ({status})")),
+                        Some(format!("RAG indexing failed ({status})")),
                     );
                 }
                 if info.is_indexed() {
@@ -524,12 +592,12 @@ async fn execute_doc(
     vault: &Path,
     knowledge_base_id: &str,
     doc: &RenderedDoc,
-    existing: Option<&WeKnoraDocState>,
+    existing: Option<&RagDocState>,
     tag_ids: &[String],
     options: &SyncOptions,
     cancel: &AtomicBool,
-) -> WeKnoraDocState {
-    let metadata = custom_metadata(vault, doc);
+) -> RagDocState {
+    let metadata = custom_metadata(vault, doc, options.provider);
     let title = document_title(doc);
     let created = existing.is_none();
     let outcome: Result<String, WeKnoraError> = if created {
@@ -558,7 +626,7 @@ async fn execute_doc(
     let knowledge_id = match outcome {
         Ok(id) => id,
         Err(error) => {
-            return WeKnoraDocState {
+            return RagDocState {
                 knowledge_id: existing
                     .map(|doc| doc.knowledge_id.clone())
                     .unwrap_or_default(),
@@ -592,7 +660,7 @@ async fn execute_doc(
         cancel,
     )
     .await;
-    WeKnoraDocState {
+    RagDocState {
         knowledge_id,
         content_hash: doc.hash.clone(),
         bibtex_key: doc.rendered.bibtex_key.clone(),
@@ -607,20 +675,21 @@ async fn execute_doc(
 pub async fn run(
     api: &dyn KnowledgeApi,
     vault: &Path,
-    settings: &WeKnoraSettings,
+    settings: &RagSettings,
     mount: &BibtexMountSettings,
-    state: &mut WeKnoraSyncState,
+    state: &mut RagSyncState,
     options: SyncOptions,
     cancel: &AtomicBool,
     progress: ProgressFn<'_>,
 ) -> Result<SyncReport, AppError> {
     if !settings.is_configured() {
         return Err(AppError::domain(
-            "weknora_not_configured",
-            "configure the WeKnora base URL and knowledge base id first",
+            "rag_not_configured",
+            "configure the RAG provider base URL and knowledge base id first",
         ));
     }
     let knowledge_base_id = settings.knowledge_base_id().to_string();
+    state.prepare_for_provider(settings.provider());
     state.prepare_for_kb(&knowledge_base_id);
     state.renderer_version = RENDERER_VERSION;
     let mut report = SyncReport::default();
@@ -743,7 +812,7 @@ pub async fn run(
                 tag_updates.insert(mapping.knowledge_id.clone(), tag_ids);
             }
             state.docs.insert(path.clone(), mapping);
-            state.save(vault)?;
+            state.save(vault, options.provider)?;
         }
         current.done = done;
         current.created = report.created;
@@ -794,11 +863,11 @@ pub async fn run(
         for path in &plan.delete {
             state.docs.remove(path);
         }
-        state.save(vault)?;
+        state.save(vault, options.provider)?;
     }
 
     state.last_sync_at = Some(now_rfc3339_millis());
-    state.save(vault)?;
+    state.save(vault, options.provider)?;
     report.errors = errors;
     current.phase = SyncPhase::Done;
     current.running = false;
@@ -813,8 +882,9 @@ pub async fn run(
 pub async fn reconcile(
     api: &dyn KnowledgeApi,
     vault: &Path,
+    provider: RagProviderId,
     knowledge_base_id: &str,
-    state: &mut WeKnoraSyncState,
+    state: &mut RagSyncState,
     prune: bool,
 ) -> Result<ReconcileReport, AppError> {
     let catalog: HashSet<String> = papers::list_all(vault)?
@@ -830,17 +900,23 @@ pub async fn reconcile(
             .map_err(AppError::from)?;
         let fetched = rows.len();
         managed.extend(rows.into_iter().filter(|info| {
-            info.custom_metadata
-                .as_ref()
+            let metadata = info.custom_metadata.as_ref();
+            let managed = metadata
                 .and_then(|metadata| metadata.get("agentero_managed"))
                 .and_then(Value::as_str)
-                == Some("true")
-                && info
-                    .custom_metadata
-                    .as_ref()
-                    .and_then(|metadata| metadata.get("agentero_vault"))
-                    .and_then(Value::as_str)
-                    .is_some_and(|key| key == vault_key)
+                == Some("true");
+            let same_vault = metadata
+                .and_then(|metadata| metadata.get("agentero_vault"))
+                .and_then(Value::as_str)
+                .is_some_and(|key| key == vault_key);
+            // v2.0 documents have no provider field; they belong to WeKnora.
+            let same_provider = metadata
+                .and_then(|metadata| metadata.get("agentero_rag_provider"))
+                .and_then(Value::as_str)
+                .map_or(provider == RagProviderId::WeKnora, |value| {
+                    value == provider.id()
+                });
+            managed && same_vault && same_provider
         }));
         if fetched < 100 {
             break;
@@ -875,7 +951,7 @@ pub async fn reconcile(
             };
             state.docs.insert(
                 path.clone(),
-                WeKnoraDocState {
+                RagDocState {
                     knowledge_id: info.id.clone(),
                     content_hash: hash,
                     bibtex_key: existing
@@ -915,7 +991,7 @@ pub async fn reconcile(
     if state.kb_id != knowledge_base_id {
         state.prepare_for_kb(knowledge_base_id);
     }
-    state.save(vault)?;
+    state.save(vault, provider)?;
     Ok(report)
 }
 
@@ -933,8 +1009,9 @@ pub struct ReconcileReport {
 pub async fn clear_mapping(
     api: &dyn KnowledgeApi,
     vault: &Path,
+    provider: RagProviderId,
     knowledge_base_id: &str,
-    state: &mut WeKnoraSyncState,
+    state: &mut RagSyncState,
     delete_docs: bool,
 ) -> Result<ClearMappingReport, AppError> {
     let mut deleted = 0usize;
@@ -955,7 +1032,13 @@ pub async fn clear_mapping(
                     .get("agentero_vault")
                     .and_then(Value::as_str)
                     .is_some_and(|key| key == vault_key);
-                (managed && same_vault).then_some(info.id)
+                let same_provider = metadata
+                    .get("agentero_rag_provider")
+                    .and_then(Value::as_str)
+                    .map_or(provider == RagProviderId::WeKnora, |value| {
+                        value == provider.id()
+                    });
+                (managed && same_vault && same_provider).then_some(info.id)
             }));
             if fetched < 100 {
                 break;
@@ -974,7 +1057,7 @@ pub async fn clear_mapping(
     let cleared = state.docs.len();
     state.docs.clear();
     state.last_sync_at = None;
-    state.save(vault)?;
+    state.save(vault, provider)?;
     Ok(ClearMappingReport { cleared, deleted })
 }
 
@@ -989,7 +1072,7 @@ pub struct ClearMappingReport {
 // ---------------------------------------------------------------------------
 
 /// Count of papers that currently have a synced/indexing/failed document.
-pub fn state_counts(state: &WeKnoraSyncState) -> state::WeKnoraStateCounts {
+pub fn state_counts(state: &RagSyncState) -> state::RagStateCounts {
     state.counts()
 }
 
@@ -997,7 +1080,7 @@ pub fn state_counts(state: &WeKnoraSyncState) -> state::WeKnoraStateCounts {
 mod tests {
     use super::*;
     use crate::features::paper::catalog::papers::PaperKind;
-    use crate::features::weknora::client::SearchRequest;
+    use crate::features::rag::providers::SearchRequest;
     use std::sync::Mutex;
 
     fn record(path: &str, title: &str) -> PaperRecord {
@@ -1032,11 +1115,11 @@ mod tests {
         rendered.insert("papers/changed".into(), rendered_doc("papers/changed", "h2"));
         rendered.insert("papers/same".into(), rendered_doc("papers/same", "h3"));
 
-        let mut state = WeKnoraSyncState::default();
+        let mut state = RagSyncState::default();
         state.prepare_for_kb("kb");
         state.docs.insert(
             "papers/changed".into(),
-            WeKnoraDocState {
+            RagDocState {
                 knowledge_id: "doc-changed".into(),
                 content_hash: "old".into(),
                 bibtex_key: String::new(),
@@ -1048,7 +1131,7 @@ mod tests {
         );
         state.docs.insert(
             "papers/same".into(),
-            WeKnoraDocState {
+            RagDocState {
                 knowledge_id: "doc-same".into(),
                 content_hash: "h3".into(),
                 bibtex_key: String::new(),
@@ -1060,7 +1143,7 @@ mod tests {
         );
         state.docs.insert(
             "papers/gone".into(),
-            WeKnoraDocState {
+            RagDocState {
                 knowledge_id: "doc-gone".into(),
                 content_hash: "h4".into(),
                 bibtex_key: String::new(),
@@ -1090,10 +1173,11 @@ mod tests {
     fn custom_metadata_has_the_documented_fields() {
         let vault = tempfile::tempdir().unwrap();
         let doc = rendered_doc("papers/demo", "hash-1");
-        let metadata = custom_metadata(vault.path(), &doc);
-        assert!(metadata.len() <= crate::features::weknora::client::MAX_CUSTOM_METADATA_FIELDS);
+        let metadata = custom_metadata(vault.path(), &doc, RagProviderId::WeKnora);
+        assert!(metadata.len() <= crate::features::rag::providers::weknora::MAX_CUSTOM_METADATA_FIELDS);
         for key in [
             "agentero_managed",
+            "agentero_rag_provider",
             "agentero_vault",
             "agentero_paper_id",
             "agentero_path",
@@ -1111,6 +1195,7 @@ mod tests {
             assert!(metadata.contains_key(key), "missing {key}");
         }
         assert_eq!(metadata["agentero_managed"], "true");
+        assert_eq!(metadata["agentero_rag_provider"], "weknora");
         assert_eq!(metadata["agentero_pdf_excluded"], "true");
         assert_eq!(metadata["agentero_vault"], vault_key(vault.path()));
         let raw = serde_json::to_string(&metadata).unwrap();
@@ -1186,7 +1271,7 @@ mod tests {
             let mut inner = self.inner.lock().unwrap();
             if !inner.docs.contains_key(knowledge_id) {
                 return Err(WeKnoraError::new(
-                    crate::features::weknora::client::WeKnoraErrorKind::NotFound,
+                    crate::features::rag::providers::WeKnoraErrorKind::NotFound,
                     "missing doc",
                 ));
             }
@@ -1273,8 +1358,8 @@ mod tests {
         }
     }
 
-    fn settings() -> WeKnoraSettings {
-        WeKnoraSettings {
+    fn settings() -> RagSettings {
+        RagSettings {
             enabled: true,
             base_url: "https://kb.example.com".into(),
             knowledge_base_id: "kb-1".into(),
@@ -1308,7 +1393,7 @@ mod tests {
     async fn full_sync_creates_then_skips_then_updates_and_deletes() {
         let vault = fixture_vault();
         let api = MockApi::new();
-        let mut state = WeKnoraSyncState::default();
+        let mut state = RagSyncState::default();
         let settings = settings();
         let mount = BibtexMountSettings::default();
         let cancel = AtomicBool::new(false);
@@ -1409,7 +1494,7 @@ mod tests {
             let mut inner = api.inner.lock().unwrap();
             inner.index_ready = false;
         }
-        let mut state = WeKnoraSyncState::default();
+        let mut state = RagSyncState::default();
         let settings = settings();
         let mount = BibtexMountSettings::default();
         let mut options = SyncOptions::from_settings(&settings, false, None);
@@ -1443,7 +1528,7 @@ mod tests {
     async fn cancellation_stops_before_creating_documents() {
         let vault = fixture_vault();
         let api = MockApi::new();
-        let mut state = WeKnoraSyncState::default();
+        let mut state = RagSyncState::default();
         let settings = settings();
         let mount = BibtexMountSettings::default();
         let cancel = AtomicBool::new(true);
@@ -1491,11 +1576,11 @@ mod tests {
                 inner.docs.insert(id.to_string(), info);
             }
         }
-        let mut state = WeKnoraSyncState::default();
+        let mut state = RagSyncState::default();
         state.prepare_for_kb("kb-1");
         state.docs.insert(
             "papers/stale".into(),
-            WeKnoraDocState {
+            RagDocState {
                 knowledge_id: "doc-stale".into(),
                 content_hash: "h".into(),
                 bibtex_key: String::new(),
@@ -1505,7 +1590,7 @@ mod tests {
                 last_error: None,
             },
         );
-        let report = reconcile(&api, vault.path(), "kb-1", &mut state, false)
+        let report = reconcile(&api, vault.path(), RagProviderId::WeKnora, "kb-1", &mut state, false)
             .await
             .unwrap();
         assert_eq!(report.adopted, 1);
@@ -1529,7 +1614,7 @@ mod tests {
             info.custom_metadata = Some(metadata);
             inner.docs.insert("doc-orphan".into(), info);
         }
-        let report = reconcile(&api, vault.path(), "kb-1", &mut state, true)
+        let report = reconcile(&api, vault.path(), RagProviderId::WeKnora, "kb-1", &mut state, true)
             .await
             .unwrap();
         assert_eq!(report.deleted, 1);
@@ -1555,10 +1640,10 @@ mod tests {
             foreign.custom_metadata = Some(Map::new());
             inner.docs.insert("doc-foreign".into(), foreign);
         }
-        let mut state = WeKnoraSyncState::default();
+        let mut state = RagSyncState::default();
         state.docs.insert(
             "papers/a".into(),
-            WeKnoraDocState {
+            RagDocState {
                 knowledge_id: "doc-1".into(),
                 content_hash: "h".into(),
                 bibtex_key: String::new(),
@@ -1568,7 +1653,7 @@ mod tests {
                 last_error: None,
             },
         );
-        let report = clear_mapping(&api, vault.path(), "kb-1", &mut state, true)
+        let report = clear_mapping(&api, vault.path(), RagProviderId::WeKnora, "kb-1", &mut state, true)
             .await
             .unwrap();
         assert_eq!(report.cleared, 1);

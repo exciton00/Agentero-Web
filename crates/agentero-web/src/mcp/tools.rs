@@ -14,7 +14,7 @@ use agentero_core::error::AppError;
 use agentero_core::features::paper::catalog::{self, papers};
 use agentero_core::features::paper::discovery::discover;
 use agentero_core::features::paper::import::{self, LookupImportArgs, NoteShellMode};
-use agentero_core::features::weknora::settings::WeKnoraSettings;
+use agentero_core::features::rag::settings::RagSettings;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::tool::ToolCallContext;
 use rmcp::handler::server::wrapper::{Json, Parameters};
@@ -45,19 +45,19 @@ impl AgenteroMcp {
         }
     }
 
-    /// Live gate for the read-only WeKnora RAG tools.
+    /// Live gate for the read-only RAG knowledge tools.
     fn rag_tools_visible(&self) -> bool {
-        rag_tools::mcp_tools_enabled(&self.ctrl.weknora_settings())
+        rag_tools::mcp_tools_enabled(&self.ctrl.rag_settings())
     }
 
     /// Runtime for the RAG tools; errors with a readable MCP error when the
     /// feature is off/unconfigured.
     fn rag_runtime(&self) -> Result<rag_tools::RagRuntime, CallToolResult> {
-        let settings: WeKnoraSettings = self.ctrl.weknora_settings();
+        let settings: RagSettings = self.ctrl.rag_settings();
         if !rag_tools::mcp_tools_enabled(&settings) {
             return Err(tool_err(AppError::domain(
-                "weknora_disabled",
-                "WeKnora RAG tools are disabled: enable Settings → RAG and expose them to MCP",
+                "rag_disabled",
+                "RAG tools are disabled: enable Settings → RAG and expose them to MCP",
             )));
         }
         Ok(rag_tools::RagRuntime::new(
@@ -68,7 +68,7 @@ impl AgenteroMcp {
 
     /// Hide `weknora_*` tools when the live settings gate is off.
     fn tool_visible(&self, name: &str, rag_visible: bool) -> bool {
-        rag_visible || !name.starts_with("weknora_")
+        rag_visible || !name.starts_with("agentero_rag_")
     }
 }
 
@@ -1177,13 +1177,13 @@ impl AgenteroMcp {
             Err(e) => Err(tool_err(e)),
         }
     }
-    // ---- read-only WeKnora RAG tools (dynamic; see `rag_tools`) -----------
+    // ---- read-only RAG knowledge tools (dynamic; see `rag_tools`) -----------
 
     #[tool(
-        description = "Read-only semantic + keyword search across the WeKnora RAG library synced from this Vault (paper bodies, NOTES, figure captions, annotations). Use it for cross-library questions like 'do my notes discuss X?'. Hits carry paper.path (usable as `ref`) and a BibTeX key with latex '\\cite{key}'. For reading one specific paper use paper_get / page_read instead. Only available when Settings → RAG is enabled + configured + exposed to MCP.",
+        description = "Read-only semantic + keyword search across the RAG knowledge base synced from this Vault (paper bodies, NOTES, figure captions, annotations). Use it for cross-library questions like 'do my notes discuss X?'. Hits carry paper.path (usable as `ref`) and a BibTeX key with latex '\\cite{key}'. For reading one specific paper use paper_get / page_read instead. Only available when Settings → RAG is enabled + configured + exposed to MCP.",
         annotations(read_only_hint = true)
     )]
-    async fn weknora_search(
+    async fn agentero_rag_search(
         &self,
         Parameters(args): Parameters<rag_tools::RagSearchArgs>,
     ) -> Result<Json<rag_tools::RagSearchOut>, CallToolResult> {
@@ -1195,7 +1195,7 @@ impl AgenteroMcp {
         description = "Read-only search restricted to ONE synced paper (its body, user notes, annotations and figure/table captions). Returns the section each hit came from. Use paper_get/page_read to read the paper itself. Only available when Settings → RAG is enabled + configured + exposed to MCP.",
         annotations(read_only_hint = true)
     )]
-    async fn weknora_paper_context(
+    async fn agentero_rag_paper_context(
         &self,
         Parameters(args): Parameters<rag_tools::RagPaperContextArgs>,
     ) -> Result<Json<rag_tools::RagPaperContextOut>, CallToolResult> {
@@ -1208,10 +1208,10 @@ impl AgenteroMcp {
     }
 
     #[tool(
-        description = "Report whether the WeKnora RAG library is usable for this Vault: enabled/configured, synced x/y, last sync time, and (with `paper`) that paper's sync status/lastError. Read-only; no network call.",
+        description = "Report whether the RAG knowledge base is usable for this Vault: enabled/configured, synced x/y, last sync time, and (with `paper`) that paper's sync status/lastError. Read-only; no network call.",
         annotations(read_only_hint = true)
     )]
-    async fn weknora_sync_status(
+    async fn agentero_rag_sync_status(
         &self,
         Parameters(args): Parameters<rag_tools::RagSyncStatusArgs>,
     ) -> Result<Json<rag_tools::RagSyncStatusOut>, CallToolResult> {
@@ -1289,7 +1289,7 @@ impl ServerHandler for AgenteroMcp {
         )
     }
 
-    /// Dynamic tool list: the read-only `weknora_*` tools only appear while the
+    /// Dynamic tool list: the read-only `agentero_rag_*` tools only appear while the
     /// live settings gate (`enabled && configured && tools.exposeToMcp`) is on.
     async fn list_tools(
         &self,
@@ -1318,11 +1318,11 @@ impl ServerHandler for AgenteroMcp {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
-        if request.name.starts_with("weknora_") && !self.rag_tools_visible() {
+        if request.name.starts_with("agentero_rag_") && !self.rag_tools_visible() {
             return Ok(CallToolResult::error(vec![ContentBlock::text(
                 serde_json::json!({
-                    "code": "weknora_disabled",
-                    "message": "WeKnora RAG tools are disabled: enable Settings → RAG and expose them to MCP",
+                    "code": "rag_disabled",
+                    "message": "RAG tools are disabled: enable Settings → RAG and expose them to MCP",
                 })
                 .to_string(),
             )])
@@ -2006,7 +2006,7 @@ mod schema_tests {
     > {
         let mut settings =
             agentero_core::features::system::settings::AppSettings::default();
-        settings.weknora = agentero_core::features::weknora::settings::WeKnoraSettings {
+        settings.rag = agentero_core::features::rag::settings::RagSettings {
             enabled: true,
             base_url: "https://kb.example.com".into(),
             knowledge_base_id: "kb-1".into(),
@@ -2018,12 +2018,12 @@ mod schema_tests {
     }
 
     #[test]
-    fn weknora_tools_are_registered_and_live_gated() {
+    fn rag_tools_are_registered_and_live_gated() {
         let router = AgenteroMcp::tool_router();
         for name in [
-            "weknora_search",
-            "weknora_paper_context",
-            "weknora_sync_status",
+            "agentero_rag_search",
+            "agentero_rag_paper_context",
+            "agentero_rag_sync_status",
         ] {
             assert!(
                 router.list_all().iter().any(|tool| tool.name == name),
@@ -2034,7 +2034,7 @@ mod schema_tests {
         let disabled = std::sync::Arc::new(McpController::for_tests());
         let mcp = AgenteroMcp::new(disabled);
         assert!(!mcp.rag_tools_visible(), "RAG off by default");
-        assert!(!mcp.tool_visible("weknora_search", false));
+        assert!(!mcp.tool_visible("agentero_rag_search", false));
         assert!(mcp.tool_visible("vault_search", false));
         let visible: Vec<String> = AgenteroMcp::tool_router()
             .list_all()
@@ -2042,22 +2042,22 @@ mod schema_tests {
             .filter(|tool| mcp.tool_visible(tool.name.as_ref(), false))
             .map(|tool| tool.name.to_string())
             .collect();
-        assert!(!visible.iter().any(|name| name.starts_with("weknora_")));
+        assert!(!visible.iter().any(|name| name.starts_with("agentero_rag_")));
         assert_eq!(visible.len(), 24, "existing tool surface unchanged");
 
         let store = settings_store_with_rag();
         let enabled = enabled_controller(vault.path(), &store);
         let mcp = AgenteroMcp::new(enabled);
         assert!(mcp.rag_tools_visible(), "enabled + configured + exposed");
-        assert!(mcp.tool_visible("weknora_search", true));
+        assert!(mcp.tool_visible("agentero_rag_search", true));
     }
 
     #[test]
-    fn weknora_search_schema_advertises_read_only_and_inputs() {
+    fn agentero_rag_search_schema_advertises_read_only_and_inputs() {
         let tool = AgenteroMcp::tool_router()
             .list_all()
             .into_iter()
-            .find(|tool| tool.name == "weknora_search")
+            .find(|tool| tool.name == "agentero_rag_search")
             .expect("registered");
         assert_eq!(
             tool.annotations.as_ref().and_then(|a| a.read_only_hint),
@@ -2096,17 +2096,17 @@ mod schema_tests {
         let tools = client.list_all_tools().await.unwrap();
         let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_ref()).collect();
         for name in [
-            "weknora_search",
-            "weknora_paper_context",
-            "weknora_sync_status",
+            "agentero_rag_search",
+            "agentero_rag_paper_context",
+            "agentero_rag_sync_status",
         ] {
             assert!(names.contains(&name), "missing {name}: {names:?}");
         }
         assert_eq!(tools.len(), 27);
 
-        // Local-only sync status works without talking to WeKnora.
+        // Local-only sync status works without talking to the provider.
         let status = client
-            .call_tool(CallToolRequestParams::new("weknora_sync_status"))
+            .call_tool(CallToolRequestParams::new("agentero_rag_sync_status"))
             .await
             .unwrap();
         assert_ne!(status.is_error, Some(true), "{status:?}");
@@ -2119,13 +2119,13 @@ mod schema_tests {
         // Turning the gate off hides the tools live and call_tool reports a
         // readable tool-level error.
         let mut settings = store.get().unwrap().settings;
-        settings.weknora.tools.expose_to_mcp = false;
+        settings.rag.tools.expose_to_mcp = false;
         store.set(settings).unwrap();
         let tools = client.list_all_tools().await.unwrap();
         assert_eq!(tools.len(), 24, "RAG tools hidden after the toggle");
         let denied = client
             .call_tool(
-                CallToolRequestParams::new("weknora_search").with_arguments(
+                CallToolRequestParams::new("agentero_rag_search").with_arguments(
                     serde_json::json!({"query": "trapping"})
                         .as_object()
                         .unwrap()
@@ -2136,7 +2136,7 @@ mod schema_tests {
             .unwrap();
         assert_eq!(denied.is_error, Some(true));
         let text = format!("{:?}", denied.content);
-        assert!(text.contains("weknora_disabled"), "{text}");
+        assert!(text.contains("rag_disabled"), "{text}");
 
         client.close().await.unwrap();
         server.close().await.unwrap();

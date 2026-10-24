@@ -13,7 +13,7 @@ use crate::mcp::McpController;
 use crate::handlers::runtime::sync::SyncService;
 use crate::tasks::TaskCenter;
 use crate::watcher::FsWatchService;
-use crate::weknora::WeKnoraService;
+use crate::rag::RagService;
 
 pub struct AppState {
     pub config: Config,
@@ -35,7 +35,7 @@ pub struct AppState {
     /// Headless Streamable HTTP MCP server (Settings → MCP server).
     pub mcp: Arc<McpController>,
     /// WeKnora RAG sync service (Settings → RAG; headless-only in v1).
-    pub weknora: Arc<WeKnoraService>,
+    pub rag: Arc<RagService>,
 }
 
 impl AppState {
@@ -53,7 +53,7 @@ impl AppState {
             caps.clone(),
             config.vault_root.clone(),
         ));
-        let weknora = WeKnoraService::new(
+        let rag = RagService::new(
             settings.clone(),
             events.clone(),
             config.vault_root.clone(),
@@ -69,7 +69,7 @@ impl AppState {
             connections: Mutex::new(HashMap::new()),
             agents,
             mcp,
-            weknora,
+            rag,
         }
     }
 

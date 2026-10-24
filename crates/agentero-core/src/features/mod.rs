@@ -14,7 +14,7 @@ pub mod sync;
 pub mod system;
 pub mod translate;
 pub mod vault;
-pub mod weknora;
+pub mod rag;
 
 // Stable historical `features::` paths, backed by the semantic module tree.
 pub use markdown::wiki;

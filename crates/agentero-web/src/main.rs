@@ -19,7 +19,7 @@ mod state;
 mod static_files;
 mod tasks;
 mod watcher;
-mod weknora;
+mod rag;
 
 use std::sync::Arc;
 
@@ -178,7 +178,7 @@ async fn run() {
 
     // WeKnora RAG: listens for settings changes / Vault writes to run the
     // optional debounced auto-sync (60s) and the 30-minute fallback scan.
-    state.weknora.clone().start();
+    state.rag.clone().start();
 
     // RAG MCP injection for ACP agent turns: keep AgentHost's spec in sync with
     // settings (enabled + configured + tools.exposeToAgent). Skipped while off.
@@ -246,21 +246,25 @@ async fn run() {
     }
 }
 
-/// Build the per-turn RAG MCP spec from live settings.
+/// Build the per-turn RAG MCP spec from live settings (provider-aware).
 ///
 /// `None` when the feature is off/unconfigured or the user did not expose the
 /// tools to agents — the ACP tool surface then stays byte-identical to before.
 fn rag_mcp_spec(state: &AppState) -> Option<agentero_host::models::RagMcpSpec> {
-    let settings = state.settings.weknora();
+    let settings = state.settings.rag();
     if !mcp::rag_tools::agent_tools_enabled(&settings) {
         return None;
     }
     Some(agentero_host::models::RagMcpSpec {
+        provider: settings.provider().id().to_string(),
         base_url: settings.base_url().to_string(),
         api_key: settings.api_key().unwrap_or_default().to_string(),
         knowledge_base_id: settings.knowledge_base_id().to_string(),
         vault_path: state.config.vault_root.to_string_lossy().into_owned(),
-        state_path: agentero_core::features::weknora::state::state_path(&state.config.vault_root)
+        state_path: agentero_core::features::rag::state::state_path(
+            &state.config.vault_root,
+            settings.provider(),
+        )
             .to_string_lossy()
             .into_owned(),
         rerank: settings.retrieval.rerank,

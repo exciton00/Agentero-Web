@@ -18,8 +18,8 @@ use crate::features::paper::catalog::bibtex_export::BibEntry;
 use crate::features::paper::catalog::papers::{self, PaperRecord};
 use crate::features::system::settings::BibtexMountSettings;
 use crate::features::pdf::layout_index;
-use crate::features::weknora::{
-    settings::WeKnoraSyncSettings, MAX_DOCUMENT_BYTES, RENDERER_VERSION,
+use crate::features::rag::{
+    settings::RagSyncSettings, MAX_DOCUMENT_BYTES, RENDERER_VERSION,
 };
 
 /// Which sections the user opted into syncing.
@@ -47,7 +47,7 @@ impl Default for RenderOptions {
 }
 
 impl RenderOptions {
-    pub fn from_settings(settings: &WeKnoraSyncSettings) -> Self {
+    pub fn from_settings(settings: &RagSyncSettings) -> Self {
         Self {
             include_paper_body: settings.include_paper_body,
             include_notes: settings.include_notes,

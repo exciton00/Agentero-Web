@@ -3,6 +3,7 @@ import type {
 	PaperTreeSortMode,
 } from "@/lib/paper/tree-modes";
 import type { LayoutSettings } from "@/lib/pdf/layout/settings";
+import type { RagSettings } from "@/lib/rag/types";
 import type {
 	CommercialTranslateProviderId,
 	TranslateProviderConfig,
@@ -10,7 +11,6 @@ import type {
 	TranslateSettings,
 	TranslateTargetLang,
 } from "@/lib/translate/types";
-import type { WeKnoraSettings } from "@/lib/weknora/types";
 
 export type {
 	LayoutBackend,
@@ -377,11 +377,12 @@ export type AppSettings = {
 	 */
 	bibtexMount?: BibtexMountSettings;
 	/**
-	 * WeKnora RAG integration (headless web host). Optional so a Host that
-	 * predates the field still loads; the RAG settings pane normalizes it and
+	 * RAG integration (headless web host): external knowledge-base provider,
+	 * connection, sync scope, tools and retrieval knobs. Optional so a Host
+	 * that predates the field still loads; the settings pane normalizes it and
 	 * the Host keeps the real API key behind the mask.
 	 */
-	weknora?: WeKnoraSettings;
+	rag?: RagSettings;
 };
 
 /**

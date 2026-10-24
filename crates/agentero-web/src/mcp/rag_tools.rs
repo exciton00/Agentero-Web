@@ -1,9 +1,9 @@
 //! Read-only WeKnora RAG tools shared by the loopback MCP server
 //! (`agentero-web` `/mcp`) and the per-session stdio `agentero-rag` worker.
 //!
-//! The tools never write to WeKnora: they resolve the local sync-state mapping
-//! (`agentero-core::features::weknora::state`) and issue `POST /knowledge-search`.
-//! The tested API-key scope rejects `knowledge_ids` filters (403 code 1002), so
+//! The tools never write to the provider: they resolve the local sync-state mapping
+//! (`agentero-core::features::rag::state`) and issue `POST /knowledge-search`.
+//! The tested WeKnora API-key scope rejects `knowledge_ids` filters (403 code 1002), so
 //! single-paper lookups search KB-wide and filter locally by `knowledge_id`.
 
 use std::collections::HashSet;
@@ -15,28 +15,34 @@ use serde_json::Value;
 
 use agentero_core::error::AppError;
 use agentero_core::features::paper::catalog::papers::{self, PaperRecord};
-use agentero_core::features::weknora::client::{
-    SearchMode, SearchRequest, WeKnoraClient, WeKnoraErrorKind,
+use agentero_core::features::rag::providers::{
+    RagBackend, RagProviderId, SearchMode, SearchRequest, WeKnoraErrorKind,
 };
-use agentero_core::features::weknora::render::user_tags;
-use agentero_core::features::weknora::settings::WeKnoraSettings;
-use agentero_core::features::weknora::state::{self as sync_state, WeKnoraSyncState};
+use agentero_core::features::rag::render::user_tags;
+use agentero_core::features::rag::settings::RagSettings;
+use agentero_core::features::rag::state::{self as sync_state, RagSyncState};
 
 /// One search hit content cap returned to agents.
 pub const MAX_HIT_CONTENT_CHARS: usize = 4_000;
-/// Default `topK` for `weknora_search`.
+/// Default `topK` for `rag_search`.
 pub const DEFAULT_SEARCH_TOP_K: u32 = 8;
-/// Default `topK` for `weknora_paper_context`.
+/// Default `topK` for `agentero_rag_paper_context`.
 pub const DEFAULT_CONTEXT_TOP_K: u32 = 6;
 
 /// True when the loopback MCP server should advertise the RAG tools.
-pub fn mcp_tools_enabled(settings: &WeKnoraSettings) -> bool {
-    settings.enabled && settings.is_configured() && settings.tools.expose_to_mcp
+pub fn mcp_tools_enabled(settings: &RagSettings) -> bool {
+    settings.enabled
+        && settings.is_configured()
+        && settings.provider().is_implemented()
+        && settings.tools.expose_to_mcp
 }
 
 /// True when the Web host should inject `agentero-rag` into ACP turns.
-pub fn agent_tools_enabled(settings: &WeKnoraSettings) -> bool {
-    settings.enabled && settings.is_configured() && settings.tools.expose_to_agent
+pub fn agent_tools_enabled(settings: &RagSettings) -> bool {
+    settings.enabled
+        && settings.is_configured()
+        && settings.provider().is_implemented()
+        && settings.tools.expose_to_agent
 }
 
 // ---------------------------------------------------------------------------
@@ -50,6 +56,8 @@ pub fn agent_tools_enabled(settings: &WeKnoraSettings) -> bool {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RagWorkerConfig {
+    #[serde(default)]
+    pub provider: RagProviderId,
     pub base_url: String,
     #[serde(default)]
     pub api_key: String,
@@ -73,8 +81,9 @@ fn default_top_k() -> u32 {
 }
 
 impl RagWorkerConfig {
-    pub fn settings(&self) -> WeKnoraSettings {
-        let mut settings = WeKnoraSettings {
+    pub fn settings(&self) -> RagSettings {
+        let mut settings = RagSettings {
+            provider: self.provider,
             enabled: true,
             base_url: self.base_url.trim().to_string(),
             api_key: self.api_key.trim().to_string(),
@@ -112,7 +121,7 @@ pub struct RagSearchArgs {
     /// Rerank is off by default (the tested instance can stall 25-40s with it).
     #[serde(default)]
     pub rerank: Option<bool>,
-    /// Include WeKnora auto-summary chunks (default false: they repeat content).
+    /// Include provider auto-summary chunks (default false: they repeat content).
     #[serde(default)]
     pub include_summaries: bool,
 }
@@ -154,6 +163,8 @@ pub struct RagPaperOut {
 #[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct RagHitOut {
+    /// Provider id (`weknora` / `ragflow`).
+    pub provider: String,
     pub paper: RagPaperOut,
     pub knowledge_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -170,6 +181,8 @@ pub struct RagHitOut {
 #[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct RagSearchOut {
+    pub provider: String,
+    pub provider_label: String,
     pub query: String,
     pub hits: Vec<RagHitOut>,
     pub count: usize,
@@ -195,6 +208,8 @@ pub struct RagContextHitOut {
 #[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct RagPaperContextOut {
+    pub provider: String,
+    pub provider_label: String,
     pub paper: RagPaperOut,
     pub query: String,
     pub hits: Vec<RagContextHitOut>,
@@ -223,6 +238,8 @@ pub struct RagPaperStatusOut {
 #[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct RagSyncStatusOut {
+    pub provider: String,
+    pub provider_label: String,
     pub enabled: bool,
     pub configured: bool,
     pub total: usize,
@@ -240,17 +257,17 @@ pub struct RagSyncStatusOut {
 // runtime
 // ---------------------------------------------------------------------------
 
-/// One process/session view of the WeKnora library: settings + Vault + mapping.
+/// One process/session view of the RAG library: settings + Vault + mapping.
 #[derive(Debug, Clone)]
 pub struct RagRuntime {
-    settings: WeKnoraSettings,
+    settings: RagSettings,
     vault: PathBuf,
     state_path: PathBuf,
 }
 
 impl RagRuntime {
-    pub fn new(settings: WeKnoraSettings, vault: &Path) -> Self {
-        let state_path = sync_state::state_path(vault);
+    pub fn new(settings: RagSettings, vault: &Path) -> Self {
+        let state_path = sync_state::state_path(vault, settings.provider());
         Self {
             settings,
             vault: vault.to_path_buf(),
@@ -270,7 +287,7 @@ impl RagRuntime {
         }
         let vault = PathBuf::from(vault_path);
         let state_path = if config.state_path.trim().is_empty() {
-            sync_state::state_path(&vault)
+            sync_state::state_path(&vault, config.settings().provider())
         } else {
             PathBuf::from(config.state_path.trim())
         };
@@ -281,7 +298,7 @@ impl RagRuntime {
         })
     }
 
-    pub fn settings(&self) -> &WeKnoraSettings {
+    pub fn settings(&self) -> &RagSettings {
         &self.settings
     }
 
@@ -289,31 +306,48 @@ impl RagRuntime {
         &self.vault
     }
 
-    /// RAG tools require an explicit opt-in + a configured KB.
+    /// RAG tools require an explicit opt-in + a configured, implemented provider.
     pub fn enabled(&self) -> bool {
-        self.settings.enabled && self.settings.is_configured()
+        self.settings.enabled
+            && self.settings.is_configured()
+            && self.settings.provider().is_implemented()
     }
 
     fn ensure_enabled(&self) -> Result<(), AppError> {
         if !self.settings.enabled {
             return Err(AppError::domain(
-                "weknora_disabled",
-                "WeKnora RAG is disabled in Settings → RAG",
+                "rag_disabled",
+                "RAG is disabled in Settings → RAG",
+            ));
+        }
+        if !self.settings.provider().is_implemented() {
+            return Err(AppError::domain(
+                "rag_provider_not_implemented",
+                format!(
+                    "RAG provider '{}' is not implemented yet; choose WeKnora in Settings → RAG",
+                    self.settings.provider().label()
+                ),
             ));
         }
         if !self.settings.is_configured() {
             return Err(AppError::domain(
-                "weknora_not_configured",
-                "configure the WeKnora base URL and knowledge base id first (Settings → RAG)",
+                "rag_not_configured",
+                "configure the RAG provider base URL and knowledge base id first (Settings → RAG)",
             ));
         }
         Ok(())
     }
 
-    fn state(&self) -> WeKnoraSyncState {
-        match std::fs::read_to_string(&self.state_path) {
-            Ok(raw) => serde_json::from_str(&raw).unwrap_or_default(),
-            Err(_) => WeKnoraSyncState::default(),
+    fn state(&self) -> RagSyncState {
+        let provider = self.settings.provider();
+        if self.state_path == sync_state::state_path(&self.vault, provider) {
+            // Default location: use the loader for v2.0 `weknora/` fallback.
+            RagSyncState::load(&self.vault, provider)
+        } else {
+            match std::fs::read_to_string(&self.state_path) {
+                Ok(raw) => serde_json::from_str(&raw).unwrap_or_default(),
+                Err(_) => RagSyncState::default(),
+            }
         }
     }
 
@@ -321,8 +355,8 @@ impl RagRuntime {
         papers::list_all(&self.vault).unwrap_or_default()
     }
 
-    fn client(&self) -> Result<WeKnoraClient, AppError> {
-        let client = WeKnoraClient::from_settings(&self.settings)?;
+    fn client(&self) -> Result<RagBackend, AppError> {
+        let client = RagBackend::from_settings(&self.settings)?;
         client
             .with_timeout(Duration::from_millis(
                 self.settings.retrieval.timeout_ms.max(1_000),
@@ -345,7 +379,7 @@ impl RagRuntime {
         }
     }
 
-    /// `weknora_search` implementation.
+    /// `rag_search` implementation.
     pub async fn search(&self, args: RagSearchArgs) -> Result<RagSearchOut, AppError> {
         self.ensure_enabled()?;
         let query = args.query.trim().to_string();
@@ -379,12 +413,15 @@ impl RagRuntime {
         if query_split.paper_filter_requested && query_split.knowledge_id.is_none() {
             let path = paper.map(|record| record.path).unwrap_or_default();
             return Err(AppError::message(format!(
-                "paper is not synced to WeKnora yet: {path}"
+                "paper is not synced to the RAG library yet: {path}"
             )));
         }
         // A requested-but-unknown tag yields no hits (same as the P1 RPC).
+        let provider = self.settings.provider();
         if query_split.tag_filter_requested && query_split.tag_ids.is_empty() {
             return Ok(RagSearchOut {
+                provider: provider.id().to_string(),
+                provider_label: provider.label().to_string(),
                 query,
                 hits: Vec::new(),
                 count: 0,
@@ -417,8 +454,11 @@ impl RagRuntime {
             &catalog,
             query_split.knowledge_id.as_deref(),
             args.include_summaries,
+            provider,
         );
         Ok(RagSearchOut {
+            provider: provider.id().to_string(),
+            provider_label: provider.label().to_string(),
             query,
             count: mapped.len(),
             hits: mapped,
@@ -426,7 +466,7 @@ impl RagRuntime {
         })
     }
 
-    /// `weknora_paper_context` implementation: KB-wide search filtered to one
+    /// `agentero_rag_paper_context` implementation: KB-wide search filtered to one
     /// synced paper (API-key scope does not allow `knowledge_ids` filters).
     pub async fn paper_context(
         &self,
@@ -446,7 +486,7 @@ impl RagRuntime {
             .filter(|id| !id.is_empty())
             .ok_or_else(|| {
                 AppError::message(format!(
-                    "paper is not synced to WeKnora yet: {}",
+                    "paper is not synced to the RAG library yet: {}",
                     record.path
                 ))
             })?;
@@ -496,8 +536,11 @@ impl RagRuntime {
             });
         }
         context_hits.truncate(top_k);
+        let provider = self.settings.provider();
         let count = context_hits.len();
         Ok(RagPaperContextOut {
+            provider: provider.id().to_string(),
+            provider_label: provider.label().to_string(),
             paper: paper_out,
             query,
             hits: context_hits,
@@ -505,7 +548,7 @@ impl RagRuntime {
         })
     }
 
-    /// `weknora_sync_status` implementation (local state only, no HTTP).
+    /// `agentero_rag_sync_status` implementation (local state only, no HTTP).
     pub fn sync_status(&self, args: RagSyncStatusArgs) -> Result<RagSyncStatusOut, AppError> {
         let state = self.state();
         let catalog = self.catalog();
@@ -532,7 +575,10 @@ impl RagRuntime {
             }
             None => None,
         };
+        let provider = self.settings.provider();
         Ok(RagSyncStatusOut {
+            provider: provider.id().to_string(),
+            provider_label: provider.label().to_string(),
             enabled: self.settings.enabled,
             configured: self.settings.is_configured(),
             total,
@@ -547,7 +593,7 @@ impl RagRuntime {
 
     async fn resolve_tag_ids(
         &self,
-        client: &WeKnoraClient,
+        client: &RagBackend,
         tag: Option<&str>,
     ) -> Result<Vec<String>, AppError> {
         let Some(tag) = tag.map(str::trim).filter(|tag| !tag.is_empty()) else {
@@ -575,10 +621,10 @@ struct QuerySplit {
 
 /// Run one search, degrading to un-reranked results on a rerank timeout.
 async fn run_search(
-    client: &WeKnoraClient,
+    client: &RagBackend,
     request: SearchRequest,
     rerank: bool,
-) -> Result<(Vec<agentero_core::features::weknora::client::SearchHit>, Option<bool>), AppError> {
+) -> Result<(Vec<agentero_core::features::rag::providers::SearchHit>, Option<bool>), AppError> {
     match client.search(&request).await {
         Ok(hits) => Ok((hits, None)),
         Err(error) if rerank && error.kind == WeKnoraErrorKind::Timeout => {
@@ -595,11 +641,12 @@ async fn run_search(
 
 /// Map WeKnora hits into agent-facing rows (paper mapping + section + key).
 fn map_hits(
-    hits: &[agentero_core::features::weknora::client::SearchHit],
-    state: &WeKnoraSyncState,
+    hits: &[agentero_core::features::rag::providers::SearchHit],
+    state: &RagSyncState,
     catalog: &[PaperRecord],
     knowledge_filter: Option<&str>,
     include_summaries: bool,
+    provider: RagProviderId,
 ) -> Vec<RagHitOut> {
     let by_path: std::collections::HashMap<&str, &PaperRecord> =
         catalog.iter().map(|record| (record.path.as_str(), record)).collect();
@@ -649,6 +696,7 @@ fn map_hits(
             .as_deref()
             .map(|key| format!("\\cite{{{key}}}"));
         out.push(RagHitOut {
+            provider: provider.id().to_string(),
             paper,
             knowledge_id: hit.knowledge_id.clone(),
             chunk_type: hit.chunk_type.clone(),
@@ -661,7 +709,7 @@ fn map_hits(
     out
 }
 
-fn paper_out(record: &PaperRecord, state: &WeKnoraSyncState) -> RagPaperOut {
+fn paper_out(record: &PaperRecord, state: &RagSyncState) -> RagPaperOut {
     let bibtex_key = state
         .docs
         .get(&record.path)
@@ -726,8 +774,8 @@ pub fn to_json_value<T: Serialize>(value: &T) -> Result<Value, AppError> {
 mod tests {
     use super::*;
     use agentero_core::features::paper::catalog::papers::{PaperKind, PaperTag};
-    use agentero_core::features::weknora::client::SearchHit;
-    use agentero_core::features::weknora::state::WeKnoraDocState;
+    use agentero_core::features::rag::providers::SearchHit;
+    use agentero_core::features::rag::state::RagDocState;
 
     fn record(path: &str) -> PaperRecord {
         let mut record = PaperRecord::local_pdf(
@@ -740,11 +788,11 @@ mod tests {
         record
     }
 
-    fn state_with(path: &str, knowledge_id: &str, key: &str) -> WeKnoraSyncState {
-        let mut state = WeKnoraSyncState::default();
+    fn state_with(path: &str, knowledge_id: &str, key: &str) -> RagSyncState {
+        let mut state = RagSyncState::default();
         state.docs.insert(
             path.into(),
-            WeKnoraDocState {
+            RagDocState {
                 knowledge_id: knowledge_id.into(),
                 content_hash: "h".into(),
                 bibtex_key: key.into(),
@@ -770,7 +818,8 @@ mod tests {
 
     #[test]
     fn mcp_and_agent_tool_gates_follow_settings() {
-        let mut settings = WeKnoraSettings {
+        let mut settings = RagSettings {
+            provider: RagProviderId::WeKnora,
             enabled: true,
             base_url: "https://kb.example.com".into(),
             knowledge_base_id: "kb".into(),
@@ -794,7 +843,7 @@ mod tests {
             hit("doc-1", "summary", "auto summary duplicate"),
             hit("doc-1", "text", "## User notes\n用户笔记提到 trapping"),
         ];
-        let mapped = map_hits(&hits, &state, &catalog, Some("doc-1"), false);
+        let mapped = map_hits(&hits, &state, &catalog, Some("doc-1"), false, RagProviderId::WeKnora);
         assert_eq!(mapped.len(), 1, "summary chunks are filtered by default");
         let out = &mapped[0];
         assert_eq!(out.paper.reference, "gan");
@@ -815,7 +864,7 @@ mod tests {
             hit("doc-1", "summary", "summary two"),
             hit("doc-1", "text", "text chunk"),
         ];
-        let mapped = map_hits(&hits, &state, &catalog, None, true);
+        let mapped = map_hits(&hits, &state, &catalog, None, true, RagProviderId::WeKnora);
         assert_eq!(mapped.len(), 2, "one summary + one text chunk");
         assert!(mapped.iter().any(|hit| hit.chunk_type.as_deref() == Some("summary")));
     }
@@ -825,10 +874,11 @@ mod tests {
         let long = "x".repeat(MAX_HIT_CONTENT_CHARS + 100);
         let mapped = map_hits(
             &[hit("doc-1", "text", &long)],
-            &WeKnoraSyncState::default(),
+            &RagSyncState::default(),
             &[],
             None,
             false,
+            RagProviderId::WeKnora,
         );
         assert_eq!(mapped[0].content.chars().count(), MAX_HIT_CONTENT_CHARS + 1);
         assert!(mapped[0].content.ends_with('…'));
@@ -837,7 +887,8 @@ mod tests {
     #[test]
     fn sync_status_reports_counts_and_paper_state() {
         let dir = tempfile::tempdir().unwrap();
-        let mut settings = WeKnoraSettings {
+        let mut settings = RagSettings {
+            provider: RagProviderId::WeKnora,
             enabled: true,
             base_url: "https://kb.example.com".into(),
             knowledge_base_id: "kb".into(),
@@ -846,7 +897,7 @@ mod tests {
         settings.retrieval.rerank = false;
         let runtime = RagRuntime::new(settings, dir.path());
         // State file is loaded via the configured path; write one mapping row.
-        let state_path = agentero_core::features::weknora::state::state_path(dir.path());
+        let state_path = agentero_core::features::rag::state::state_path(dir.path(), agentero_core::features::rag::providers::RagProviderId::WeKnora);
         std::fs::create_dir_all(state_path.parent().unwrap()).unwrap();
         let state = state_with("papers/gan", "doc-1", "joh");
         std::fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
@@ -859,6 +910,7 @@ mod tests {
     #[test]
     fn worker_config_roundtrip_and_validation() {
         let config = RagWorkerConfig {
+            provider: RagProviderId::WeKnora,
             base_url: "https://kb.example.com".into(),
             api_key: "secret".into(),
             knowledge_base_id: "kb".into(),

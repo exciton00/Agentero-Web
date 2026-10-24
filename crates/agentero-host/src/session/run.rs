@@ -1297,6 +1297,7 @@ mod rag_injection_tests {
 
     fn spec() -> RagMcpSpec {
         RagMcpSpec {
+            provider: "weknora".into(),
             base_url: "https://kb.example.com".into(),
             api_key: "secret".into(),
             knowledge_base_id: "kb-1".into(),
@@ -1322,7 +1323,7 @@ mod rag_injection_tests {
     async fn rag_spec_injects_stdio_server_prompt_hint_and_skips_warm_pool() {
         let prep = prepare_run_turn(&params(Some(spec()))).await.unwrap();
         assert!(has_agentero_rag(&prep), "{:?}", prep.mcp_servers.len());
-        assert!(prep.full_prompt.contains("weknora_search"));
+        assert!(prep.full_prompt.contains("agentero_rag_search"));
         assert!(prep.skip_warm_pool, "pooled sessions lack the RAG server");
         let guard = prep.rag_config.expect("worker config guard");
         drop(guard);
@@ -1332,7 +1333,7 @@ mod rag_injection_tests {
     async fn without_rag_spec_the_turn_surface_is_unchanged() {
         let prep = prepare_run_turn(&params(None)).await.unwrap();
         assert!(!has_agentero_rag(&prep));
-        assert!(!prep.full_prompt.contains("weknora_search"));
+        assert!(!prep.full_prompt.contains("agentero_rag_search"));
         assert!(prep.rag_config.is_none());
     }
 }

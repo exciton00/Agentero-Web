@@ -10,7 +10,7 @@
 		"agent": "Agent",
 		"translate": "Translate",
 		"layout": "Layout",
-		"rag": "RAG / WeKnora",
+		"rag": "RAG",
 		"experimental": "Experimental",
 		"doctor": "Doctor",
 		"keyboard": "Keyboard",
@@ -640,29 +640,36 @@
 			}
 		}
 	},
-	"weknora": {
-		"title": "RAG / WeKnora",
+	"rag": {
+		"title": "RAG / External knowledge base",
+		"subtitle": "Sync papers into an external knowledge base and expose read-only RAG search to the web agent and MCP clients. WeKnora is supported today; RAGFlow is coming soon.",
+		"provider": {
+			"label": "Provider",
+			"help": "External knowledge-base provider used for syncing and retrieval.",
+			"comingSoon": "Coming soon",
+			"unavailable": "This provider is reserved but not implemented yet. Test connection, sync and tools are unavailable; switch back to WeKnora to use RAG."
+		},
 		"desktopOnly": "WeKnora RAG sync runs in the headless web host only. It is not available in the desktop app.",
 		"loading": "Loading WeKnora status…",
 		"unavailable": {
-			"title": "WeKnora backend not ready",
-			"errorTitle": "Could not load WeKnora status",
-			"body": "This web host build does not expose the WeKnora RPCs yet. Controls stay disabled until the backend is updated; no data is sent.",
+			"title": "RAG backend not ready",
+			"errorTitle": "Could not load RAG status",
+			"body": "This web host build does not expose the RAG RPCs yet. Controls stay disabled until the backend is updated; no data is sent.",
 			"retry": "Retry"
 		},
 		"enable": {
-			"label": "Enable WeKnora RAG",
-			"description": "Sync papers into an external WeKnora knowledge base and expose read-only RAG search to the web agent and MCP clients."
+			"label": "Enable RAG",
+			"description": "Sync papers into the selected external knowledge base and expose read-only RAG search to the web agent and MCP clients."
 		},
 		"baseUrl": {
 			"label": "Base URL",
-			"help": "WeKnora API root, e.g. https://weknora.example.com/api/v1."
+			"help": "Provider API root, e.g. https://weknora.example.com/api/v1."
 		},
 		"apiKey": {
 			"label": "API key",
 			"help": "Stored on the server; the UI never reads it back.",
 			"stored": "A key is stored on the server. Type a new key only to replace it.",
-			"placeholder": "Paste the WeKnora API key",
+			"placeholder": "Paste the provider API key",
 			"placeholderStored": "Stored key — leave empty to keep it"
 		},
 		"test": {
@@ -701,7 +708,7 @@
 		},
 		"privacy": {
 			"pdf": "PDF and image binaries are never uploaded — only extracted text and captions.",
-			"notes": "Notes and annotations are sent as text to the external WeKnora knowledge base."
+			"notes": "Notes and annotations are sent as text to the external knowledge base."
 		},
 		"autoSync": {
 			"label": "Auto sync",
@@ -736,6 +743,8 @@
 		},
 		"status": {
 			"label": "Synced",
+			"label": "Synced",
+			"provider": "Provider",
 			"synced": "{{synced}} / {{total}} synced",
 			"indexing": "{{count}} indexing",
 			"pending": "{{count}} pending",
@@ -746,6 +755,7 @@
 			"lastSyncAt": "Last sync {{time}}",
 			"lastError": "Last error: {{error}}",
 			"backendUnavailable": "Backend not ready",
+			"providerUnavailable": "Coming soon",
 			"connected": "Connected",
 			"syncing": "Syncing",
 			"unconfigured": "Not configured",

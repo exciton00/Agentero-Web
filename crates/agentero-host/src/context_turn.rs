@@ -150,7 +150,7 @@ fn attach_mcp(
 }
 
 /// Short per-turn hint appended only when the RAG MCP server is injected.
-pub(crate) const RAG_PROMPT_HINT: &str = "RAG tools (weknora_search / weknora_paper_context / weknora_sync_status) are available read-only over the WeKnora knowledge base synced from this Vault. Use them for cross-library questions such as \"do my notes or figure captions discuss X?\"; every hit carries paper.path (usable as `ref`) and a BibTeX key/\\cite{}. Do not use them to read one specific paper (use paper_get/page_read).";
+pub(crate) const RAG_PROMPT_HINT: &str = "RAG tools (agentero_rag_search / agentero_rag_paper_context / agentero_rag_sync_status) are available read-only over the RAG knowledge base synced from this Vault. Use them for cross-library questions such as \"do my notes or figure captions discuss X?\"; every hit carries paper.path (usable as `ref`), a provider id and a BibTeX key/\\cite{}. Do not use them to read one specific paper (use paper_get/page_read).";
 
 /// 0600 worker config written per ACP turn and removed when the turn ends.
 pub(crate) struct RagConfigGuard {
@@ -166,6 +166,7 @@ impl Drop for RagConfigGuard {
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RagWorkerConfig<'a> {
+    provider: &'a str,
     base_url: &'a str,
     api_key: &'a str,
     knowledge_base_id: &'a str,
@@ -190,6 +191,7 @@ pub(crate) fn attach_rag_mcp(
     })?;
     let path = dir.join(format!("{runtime_session_id}.json"));
     let config = RagWorkerConfig {
+        provider: spec.provider.trim(),
         base_url: spec.base_url.trim(),
         api_key: spec.api_key.trim(),
         knowledge_base_id: spec.knowledge_base_id.trim(),
@@ -299,6 +301,7 @@ mod tests {
 
     fn spec() -> RagMcpSpec {
         RagMcpSpec {
+            provider: "weknora".into(),
             base_url: "https://kb.example.com".into(),
             api_key: "test-secret".into(),
             knowledge_base_id: "kb-1".into(),

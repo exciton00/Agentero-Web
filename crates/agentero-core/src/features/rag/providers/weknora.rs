@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use serde_json::{Map, Value};
 
-use crate::features::weknora::settings::WeKnoraSettings;
+use crate::features::rag::settings::RagSettings;
 use crate::http::{client_with, DEFAULT_REDIRECT_LIMIT};
 
 /// WeKnora's REST prefix; the configured base URL may already include it.
@@ -35,6 +35,8 @@ pub enum WeKnoraErrorKind {
     RateLimited,
     Timeout,
     Transport,
+    /// Reserved provider/integration path is not implemented yet.
+    NotImplemented,
     Api,
     Malformed,
     Metadata,
@@ -87,6 +89,7 @@ impl WeKnoraError {
             WeKnoraErrorKind::RateLimited => "weknora_rate_limited",
             WeKnoraErrorKind::Timeout => "weknora_timeout",
             WeKnoraErrorKind::Transport => "weknora_transport",
+            WeKnoraErrorKind::NotImplemented => "rag_provider_not_implemented",
             WeKnoraErrorKind::Api => "weknora_api",
             WeKnoraErrorKind::Malformed => "weknora_malformed",
             WeKnoraErrorKind::Metadata => "weknora_metadata_invalid",
@@ -130,6 +133,7 @@ impl WeKnoraError {
             WeKnoraErrorKind::RateLimited => "WeKnora rate limit",
             WeKnoraErrorKind::Timeout => "WeKnora request timed out",
             WeKnoraErrorKind::Transport => "cannot reach WeKnora",
+            WeKnoraErrorKind::NotImplemented => "RAG provider not implemented",
             WeKnoraErrorKind::Api => "WeKnora API error",
             WeKnoraErrorKind::Malformed => "malformed WeKnora response",
             WeKnoraErrorKind::Metadata => "invalid WeKnora metadata",
@@ -333,7 +337,7 @@ impl std::fmt::Debug for WeKnoraClient {
 impl WeKnoraClient {
     /// Build a client from settings. The knowledge-base id is not part of the
     /// client; calls pass it explicitly.
-    pub fn from_settings(settings: &WeKnoraSettings) -> Result<Self, WeKnoraError> {
+    pub fn from_settings(settings: &RagSettings) -> Result<Self, WeKnoraError> {
         let base_url = normalize_base_url(settings.base_url())?;
         let timeout = Duration::from_millis(settings.retrieval.timeout_ms.max(1_000));
         Self::build(base_url, settings.api_key().map(str::to_string), timeout)
@@ -915,7 +919,7 @@ fn parse_search_hit(value: &Value) -> SearchHit {
 
 /// JSON body used by tests / diagnostics: serialize a settings snapshot without
 /// the key (never expose the secret through debug helpers).
-pub fn redacted_settings_json(settings: &WeKnoraSettings) -> Value {
+pub fn redacted_settings_json(settings: &RagSettings) -> Value {
     let mut value = serde_json::to_value(settings).unwrap_or(Value::Null);
     if let Some(api_key) = value.get_mut("apiKey") {
         *api_key = Value::String(if settings.api_key().is_some() {
@@ -1011,7 +1015,7 @@ mod tests {
     }
 
     fn client(url: &str) -> WeKnoraClient {
-        let settings = WeKnoraSettings {
+        let settings = RagSettings {
             base_url: url.to_string(),
             api_key: "test-key".into(),
             knowledge_base_id: "kb-1".into(),
@@ -1194,7 +1198,7 @@ mod tests {
 
     #[test]
     fn debug_output_never_contains_the_api_key() {
-        let settings = WeKnoraSettings {
+        let settings = RagSettings {
             base_url: "https://kb.example.com".into(),
             api_key: "super-secret".into(),
             ..Default::default()

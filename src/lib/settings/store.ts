@@ -21,6 +21,7 @@ import {
 	type LayoutSettings,
 	layoutMaxPages,
 } from "@/lib/pdf/layout/settings";
+import { defaultRagSettings, normalizeRagSettings } from "@/lib/rag/types";
 import {
 	clampEditorLineHeight,
 	clampMarkdownMaxWidth,
@@ -66,10 +67,6 @@ import {
 	type TranslationDisplayMode,
 } from "@/lib/translate/types";
 import { isKnownUiTheme } from "@/lib/ui/theme";
-import {
-	defaultWeKnoraSettings,
-	normalizeWeKnoraSettings,
-} from "@/lib/weknora/types";
 
 /** Legacy browser key — only used once to migrate into Host `settings.json`. */
 const LEGACY_SETTINGS_KEY = "agentero-settings";
@@ -95,7 +92,7 @@ let cache: AppSettings = {
 	libraryColumns: DEFAULT_LIBRARY_COLUMNS.map((c) => ({ ...c })),
 	translate: { ...DEFAULT_TRANSLATE_SETTINGS },
 	layout: { ...DEFAULT_SETTINGS.layout, providerConfigs: {} },
-	weknora: defaultWeKnoraSettings(),
+	rag: defaultRagSettings(),
 	pdfAsk: { ...DEFAULT_PDF_ASK_SETTINGS },
 	embedding: { ...DEFAULT_EMBEDDING_SETTINGS },
 	dismissedReminders: [],
@@ -112,7 +109,7 @@ function cloneSettings(s: AppSettings): AppSettings {
 		embedding: { ...s.embedding },
 		translate: { ...s.translate },
 		layout: { ...s.layout, providerConfigs: { ...s.layout.providerConfigs } },
-		weknora: normalizeWeKnoraSettings(s.weknora),
+		rag: normalizeRagSettings(s.rag),
 		dismissedReminders: [...s.dismissedReminders],
 		decision: { ...s.decision },
 	};
@@ -525,7 +522,10 @@ function normalizePartial(
 	);
 	merged.translate = normalizeTranslateSettings(parsed.translate);
 	merged.layout = normalizeLayoutSettings(parsed.layout);
-	merged.weknora = normalizeWeKnoraSettings(parsed.weknora);
+	// v2.1: settings moved from `weknora` to the generic `rag` object. Read the
+	// legacy key once so an old settings.json (or a pre-v2.1 Host) still loads.
+	const legacyRag = (parsed as { weknora?: unknown }).weknora;
+	merged.rag = normalizeRagSettings(parsed.rag ?? legacyRag);
 	// Legacy key `jev` → `decision` (pre-provider-selection storage).
 	merged.decision = normalizeDecisionSettings(
 		(parsed as { decision?: Partial<DecisionSettings> }).decision ??

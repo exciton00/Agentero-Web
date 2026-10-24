@@ -13,7 +13,7 @@
 use crate::decision::{SystemOneCredentials, DEFAULT_SYSTEM_ONE_MODEL};
 use crate::error::AppError;
 use crate::features::system::builtin;
-use crate::features::weknora::settings::WeKnoraSettings;
+use crate::features::rag::settings::RagSettings;
 use crate::paths::{self, settings_path};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -214,8 +214,10 @@ pub struct AppSettings {
     #[serde(default)]
     pub bibtex_mount: BibtexMountSettings,
     /// WeKnora RAG integration (headless Web host sync engine). Default off.
-    #[serde(default)]
-    pub weknora: WeKnoraSettings,
+    /// RAG provider settings. `weknora` is the legacy field name (v2.0);
+    /// `alias` keeps old settings.json readable while new writes use `rag`.
+    #[serde(default, alias = "weknora")]
+    pub rag: RagSettings,
     /// PostHog product analytics opt-out (applies from the next launch).
     #[serde(default = "default_true")]
     pub telemetry_enabled: bool,
@@ -531,7 +533,7 @@ impl Default for AppSettings {
             translate: TranslateSettings::default(),
             layout: LayoutSettings::default(),
             bibtex_mount: BibtexMountSettings::default(),
-            weknora: WeKnoraSettings::default(),
+            rag: RagSettings::default(),
             telemetry_enabled: default_true(),
             plaza_enabled: default_true(),
             plaza_hidden_sources: Vec::new(),
@@ -776,10 +778,10 @@ impl AppSettingsStore {
     }
 
     /// WeKnora RAG settings (cloned; never contains a mask-only key).
-    pub fn weknora(&self) -> WeKnoraSettings {
+    pub fn rag(&self) -> RagSettings {
         self.inner
             .lock()
-            .map(|settings| settings.weknora.clone())
+            .map(|settings| settings.rag.clone())
             .unwrap_or_default()
     }
 
@@ -1191,8 +1193,8 @@ fn redact_secrets(mut settings: AppSettings) -> AppSettings {
     if !settings.decision.api_key.trim().is_empty() {
         settings.decision.api_key = mask_translate_api_key(&settings.decision.api_key);
     }
-    if !settings.weknora.api_key.trim().is_empty() {
-        settings.weknora.api_key = mask_translate_api_key(&settings.weknora.api_key);
+    if !settings.rag.api_key.trim().is_empty() {
+        settings.rag.api_key = mask_translate_api_key(&settings.rag.api_key);
     }
     settings
 }
@@ -1230,8 +1232,8 @@ fn merge_secrets(incoming: &mut AppSettings, previous: &AppSettings) {
     if is_translate_api_key_mask(&incoming.decision.api_key) {
         incoming.decision.api_key = previous.decision.api_key.clone();
     }
-    if is_translate_api_key_mask(&incoming.weknora.api_key) {
-        incoming.weknora.api_key = previous.weknora.api_key.clone();
+    if is_translate_api_key_mask(&incoming.rag.api_key) {
+        incoming.rag.api_key = previous.rag.api_key.clone();
     }
 }
 
@@ -1302,7 +1304,7 @@ fn normalize_mount_dirs(values: &[String]) -> Vec<String> {
 
 fn normalize(s: &mut AppSettings) {
     normalize_bibtex_mount(&mut s.bibtex_mount);
-    s.weknora.normalize();
+    s.rag.normalize();
     if s.connector_port == 0 {
         s.connector_port = default_connector_port();
     }
@@ -2483,6 +2485,49 @@ mod tests {
         });
         let masked_store = AppSettingsStore::for_tests(redacted);
         assert!(masked_store.decision_config().is_none());
+    }
+
+    #[test]
+    fn legacy_weknora_settings_alias_migrates_to_rag() {
+        let raw = r#"{"weknora":{"enabled":true,"baseUrl":"https://kb.example.com","apiKey":"secret-key","knowledgeBaseId":"kb-1"}}"#;
+        let mut settings: AppSettings = serde_json::from_str(raw).expect("legacy settings parse");
+        assert!(settings.rag.enabled);
+        assert_eq!(settings.rag.base_url(), "https://kb.example.com");
+        assert_eq!(settings.rag.knowledge_base_id(), "kb-1");
+        assert_eq!(
+            settings.rag.provider(),
+            crate::features::rag::providers::RagProviderId::WeKnora
+        );
+        // New writes use `rag` only; the legacy key is not emitted.
+        let wire = serde_json::to_value(&settings).unwrap();
+        assert!(wire.get("rag").is_some(), "{wire}");
+        assert!(wire.get("weknora").is_none(), "{wire}");
+
+        // Masked write-back keeps the stored API key.
+        settings = redact_secrets(settings);
+        assert!(is_translate_api_key_mask(&settings.rag.api_key));
+        let mut incoming = settings.clone();
+        merge_secrets(&mut incoming, &AppSettings {
+            rag: crate::features::rag::settings::RagSettings {
+                api_key: "secret-key".into(),
+                ..Default::default()
+            },
+            ..AppSettings::default()
+        });
+        assert_eq!(incoming.rag.api_key, "secret-key");
+    }
+
+    #[test]
+    fn rag_provider_id_roundtrips_and_defaults_to_weknora() {
+        use crate::features::rag::providers::RagProviderId;
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"rag":{"enabled":true,"provider":"ragflow"}}"#).unwrap();
+        assert_eq!(settings.rag.provider(), RagProviderId::RagFlow);
+        assert!(!settings.rag.provider().is_implemented());
+        let default: AppSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(default.rag.provider(), RagProviderId::WeKnora);
+        let wire = serde_json::to_value(&default.rag).unwrap();
+        assert_eq!(wire["provider"], "weknora");
     }
 
     #[test]

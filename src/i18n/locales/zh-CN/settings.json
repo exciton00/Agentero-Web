@@ -10,7 +10,7 @@
 		"agent": "Agent",
 		"translate": "翻译",
 		"layout": "版面解析",
-		"rag": "RAG / WeKnora",
+		"rag": "RAG",
 		"experimental": "实验功能",
 		"doctor": "问题诊断",
 		"keyboard": "快捷键",
@@ -640,29 +640,36 @@
 			}
 		}
 	},
-	"weknora": {
-		"title": "RAG / WeKnora",
+	"rag": {
+		"title": "RAG / 外部知识库",
+		"subtitle": "把论文同步到外部知识库，并向 web agent 与 MCP 客户端提供只读 RAG 检索。当前支持 WeKnora，RAGFlow 即将支持。",
+		"provider": {
+			"label": "服务商",
+			"help": "用于同步与检索的外部知识库服务商。",
+			"comingSoon": "即将支持",
+			"unavailable": "该服务商为预留实现，当前不可用：测试连接、同步与工具均未开放；如需使用 RAG 请切回 WeKnora。"
+		},
 		"desktopOnly": "WeKnora RAG 同步仅在 headless web 服务端运行，桌面版不可用。",
 		"loading": "正在读取 WeKnora 状态…",
 		"unavailable": {
-			"title": "WeKnora 后端尚未就绪",
-			"errorTitle": "无法读取 WeKnora 状态",
-			"body": "当前 web host 版本还未提供 WeKnora RPC；后端更新前这些控件保持禁用，不会发送任何数据。",
+			"title": "RAG 后端尚未就绪",
+			"errorTitle": "无法读取 RAG 状态",
+			"body": "当前 web host 版本还未提供 RAG RPC；后端更新前这些控件保持禁用，不会发送任何数据。",
 			"retry": "重试"
 		},
 		"enable": {
-			"label": "启用 WeKnora RAG",
-			"description": "把论文同步到外部 WeKnora 知识库，并向 web agent 与 MCP 客户端提供只读 RAG 检索。"
+			"label": "启用 RAG",
+			"description": "把论文同步到所选的外部知识库，并向 web agent 与 MCP 客户端提供只读 RAG 检索。"
 		},
 		"baseUrl": {
 			"label": "Base URL",
-			"help": "WeKnora API 根地址，例如 https://weknora.example.com/api/v1。"
+			"help": "Provider API 根地址，例如 https://weknora.example.com/api/v1。"
 		},
 		"apiKey": {
 			"label": "API Key",
 			"help": "仅保存在服务端，前端不回读明文。",
 			"stored": "服务端已保存密钥；仅在需要更换时输入新 Key。",
-			"placeholder": "粘贴 WeKnora API Key",
+			"placeholder": "粘贴 Provider API Key",
 			"placeholderStored": "已保存密钥 —— 留空表示保持不变"
 		},
 		"test": {
@@ -701,7 +708,7 @@
 		},
 		"privacy": {
 			"pdf": "PDF 与图片二进制不会上传 —— 只同步提取出的文字与图注。",
-			"notes": "笔记与批注会以文本形式发送到外部 WeKnora 知识库。"
+			"notes": "笔记与批注会以文本形式发送到外部知识库。"
 		},
 		"autoSync": {
 			"label": "自动同步",
@@ -736,6 +743,8 @@
 		},
 		"status": {
 			"label": "已同步",
+			"label": "已同步",
+			"provider": "服务商",
 			"synced": "{{synced}} / {{total}} 已同步",
 			"indexing": "{{count}} 篇索引中",
 			"pending": "{{count}} 篇待同步",
@@ -746,6 +755,7 @@
 			"lastSyncAt": "最近同步 {{time}}",
 			"lastError": "最近错误：{{error}}",
 			"backendUnavailable": "后端未就绪",
+			"providerUnavailable": "即将支持",
 			"connected": "已连接",
 			"syncing": "同步中",
 			"unconfigured": "未配置",

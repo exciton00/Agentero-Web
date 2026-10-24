@@ -33,7 +33,7 @@ use agentero_core::app_handle::AppHandle;
 use agentero_core::error::AppError;
 use agentero_core::features::paper::capabilities::CapsCache;
 use agentero_core::features::system::settings::{AppSettingsStore, DEFAULT_MCP_PORT};
-use agentero_core::features::weknora::settings::WeKnoraSettings;
+use agentero_core::features::rag::settings::RagSettings;
 use serde::Serialize;
 use tokio::sync::oneshot;
 
@@ -193,9 +193,9 @@ impl McpController {
         &self.caps
     }
 
-    /// Live WeKnora RAG settings (dynamic tool gating + rag runtime).
-    pub fn weknora_settings(&self) -> WeKnoraSettings {
-        self.settings.weknora()
+    /// Live RAG settings (dynamic tool gating + rag runtime).
+    pub fn rag_settings(&self) -> RagSettings {
+        self.settings.rag()
     }
 
     /// Vault served by the Web host (RAG tool scope).

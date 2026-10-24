@@ -1,10 +1,11 @@
 /**
- * Settings → RAG / WeKnora (headless web host).
+ * Settings → RAG / External knowledge base (headless web host).
  *
- * P1 surface for the WeKnora sync engine: connection + KB picker, what gets
- * rendered into the KB, auto-sync, tool exposure, sync actions and live
- * progress. The `weknora_*` RPCs only exist on the web host; on a desktop
- * build the pane explains that instead of calling them.
+ * Provider-agnostic surface for the RAG sync engine: provider + connection +
+ * KB picker, what gets rendered into the KB, auto-sync, tool exposure, sync
+ * actions and live progress. WeKnora is the supported provider in v2.1;
+ * RAGFlow is reserved. The `rag_*` RPCs only exist on the web host; on a
+ * desktop build the pane explains that instead of calling them.
  *
  * Backend-not-ready tolerance: a missing/unknown RPC renders an "unavailable"
  * banner and disables the form — never an uncaught error.
@@ -46,7 +47,15 @@ import {
 	DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
+import {
+	Select,
+	SelectContent,
+	SelectItem,
+	SelectTrigger,
+	SelectValue,
+} from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { formatLocaleTimestamp } from "@/i18n";
 import {
@@ -57,31 +66,34 @@ import {
 } from "@/lib/core/notify";
 import { isWebHost } from "@/lib/core/tauri";
 import { cn } from "@/lib/core/utils";
+import {
+	isRagUnavailableError,
+	listenRagChanged,
+	listenRagSync,
+	ragClearMapping,
+	ragListKbs,
+	ragReconcile,
+	ragStatus,
+	ragSyncCancel,
+	ragSyncStart,
+	ragTest,
+} from "@/lib/rag/api";
+import {
+	hasStoredRagApiKey,
+	isRagProviderId,
+	normalizeRagSettings,
+	providerLabel,
+	RAG_PROVIDER_CHOICES,
+	type RagKnowledgeBase,
+	type RagSettings,
+	type RagStatus,
+	type RagStatusProgress,
+	type RagSyncProgress,
+	type RagSyncSettings,
+	type RagTestResult,
+	type RagToolsSettings,
+} from "@/lib/rag/types";
 import type { AppSettings } from "@/lib/settings";
-import {
-	isWeKnoraUnavailableError,
-	listenWeKnoraChanged,
-	listenWeKnoraSync,
-	weknoraClearMapping,
-	weknoraListKbs,
-	weknoraReconcile,
-	weknoraStatus,
-	weknoraSyncCancel,
-	weknoraSyncStart,
-	weknoraTest,
-} from "@/lib/weknora/api";
-import {
-	hasStoredWeKnoraApiKey,
-	normalizeWeKnoraSettings,
-	type WeKnoraKnowledgeBase,
-	type WeKnoraSettings,
-	type WeKnoraStatus,
-	type WeKnoraStatusProgress,
-	type WeKnoraSyncProgress,
-	type WeKnoraSyncSettings,
-	type WeKnoraTestResult,
-	type WeKnoraToolsSettings,
-} from "@/lib/weknora/types";
 
 type ActionKind = "sync" | "cancel" | "reconcile" | "clear" | null;
 
@@ -110,6 +122,40 @@ function ToggleRow({
 	);
 }
 
+/** Full-width field row: label/description on top, wide control row below. */
+function WideFieldRow({
+	label,
+	description,
+	htmlFor,
+	children,
+}: {
+	label: string;
+	description?: string;
+	htmlFor: string;
+	children: React.ReactNode;
+}) {
+	return (
+		<div className="border-border/50 border-b px-3.5 py-2.5 last:border-b-0">
+			<div className="min-w-0">
+				<Label
+					htmlFor={htmlFor}
+					className="font-normal text-foreground text-sm leading-snug"
+				>
+					{label}
+				</Label>
+				{description ? (
+					<p className="mt-0.5 text-muted-foreground text-xs leading-relaxed">
+						{description}
+					</p>
+				) : null}
+			</div>
+			<div className="mt-1.5 flex w-full min-w-0 items-center gap-2">
+				{children}
+			</div>
+		</div>
+	);
+}
+
 export function RagPane({
 	settings,
 	patch,
@@ -119,56 +165,53 @@ export function RagPane({
 }) {
 	const { t } = useTranslation(["settings", "common"]);
 	const webHost = isWebHost();
-	const weknora = useMemo(
-		() => normalizeWeKnoraSettings(settings.weknora),
-		[settings.weknora],
-	);
+	const rag = useMemo(() => normalizeRagSettings(settings.rag), [settings.rag]);
 
-	const [status, setStatus] = useState<WeKnoraStatus | null>(null);
+	const [status, setStatus] = useState<RagStatus | null>(null);
 	const [statusError, setStatusError] = useState<string | null>(null);
 	const [loading, setLoading] = useState(true);
 	const [testState, setTestState] = useState<"idle" | "testing" | "done">(
 		"idle",
 	);
-	const [testResult, setTestResult] = useState<WeKnoraTestResult | null>(null);
+	const [testResult, setTestResult] = useState<RagTestResult | null>(null);
 	const [testError, setTestError] = useState<string | null>(null);
-	const [kbs, setKbs] = useState<WeKnoraKnowledgeBase[] | null>(null);
+	const [kbs, setKbs] = useState<RagKnowledgeBase[] | null>(null);
 	const [kbLoading, setKbLoading] = useState(false);
 	const [kbError, setKbError] = useState<string | null>(null);
 	const [progress, setProgress] = useState<
-		WeKnoraSyncProgress | WeKnoraStatusProgress | null
+		RagSyncProgress | RagStatusProgress | null
 	>(null);
 	const [busy, setBusy] = useState<ActionKind>(null);
 	const [errorsOpen, setErrorsOpen] = useState(false);
 	const [clearOpen, setClearOpen] = useState(false);
 	const [clearDeleteDocs, setClearDeleteDocs] = useState(false);
 
-	const [baseUrlDraft, setBaseUrlDraft] = useState(weknora.baseUrl);
+	const [baseUrlDraft, setBaseUrlDraft] = useState(rag.baseUrl);
 	const [apiKeyDraft, setApiKeyDraft] = useState("");
-	const [kbIdDraft, setKbIdDraft] = useState(weknora.knowledgeBaseId);
+	const [kbIdDraft, setKbIdDraft] = useState(rag.knowledgeBaseId);
 	const [minutesDraft, setMinutesDraft] = useState(
-		String(weknora.sync.autoSyncMinutes),
+		String(rag.sync.autoSyncMinutes),
 	);
 
 	const kbsAutoLoadedRef = useRef(false);
 
-	const patchWeKnora = useCallback(
-		(update: Partial<WeKnoraSettings>) => {
-			patch({ weknora: { ...weknora, ...update } });
+	const patchRag = useCallback(
+		(update: Partial<RagSettings>) => {
+			patch({ rag: { ...rag, ...update } });
 		},
-		[patch, weknora],
+		[patch, rag],
 	);
 	const updateSync = useCallback(
-		(update: Partial<WeKnoraSyncSettings>) => {
-			patchWeKnora({ sync: { ...weknora.sync, ...update } });
+		(update: Partial<RagSyncSettings>) => {
+			patchRag({ sync: { ...rag.sync, ...update } });
 		},
-		[patchWeKnora, weknora.sync],
+		[patchRag, rag.sync],
 	);
 	const updateTools = useCallback(
-		(update: Partial<WeKnoraToolsSettings>) => {
-			patchWeKnora({ tools: { ...weknora.tools, ...update } });
+		(update: Partial<RagToolsSettings>) => {
+			patchRag({ tools: { ...rag.tools, ...update } });
 		},
-		[patchWeKnora, weknora.tools],
+		[patchRag, rag.tools],
 	);
 
 	/* ----------------------------- status load ----------------------------- */
@@ -176,7 +219,7 @@ export function RagPane({
 	const loadStatus = useCallback(async () => {
 		if (!webHost) return;
 		try {
-			const next = await weknoraStatus();
+			const next = await ragStatus();
 			setStatus(next);
 			setStatusError(null);
 			if (next.sync?.progress) setProgress(next.sync.progress);
@@ -205,11 +248,11 @@ export function RagPane({
 	useEffect(() => {
 		if (!webHost) return;
 		const offs = [
-			listenWeKnoraChanged((payload) => {
+			listenRagChanged((payload) => {
 				setStatus(payload);
 				setStatusError(null);
 			}),
-			listenWeKnoraSync((payload) => {
+			listenRagSync((payload) => {
 				setProgress(payload);
 				if (!payload.running) void loadStatus();
 			}),
@@ -221,24 +264,35 @@ export function RagPane({
 
 	// Keep text drafts in sync with persistent settings (never the API key).
 	useEffect(() => {
-		setBaseUrlDraft(weknora.baseUrl);
-	}, [weknora.baseUrl]);
+		setBaseUrlDraft(rag.baseUrl);
+	}, [rag.baseUrl]);
 	useEffect(() => {
-		setKbIdDraft(weknora.knowledgeBaseId);
-	}, [weknora.knowledgeBaseId]);
+		setKbIdDraft(rag.knowledgeBaseId);
+	}, [rag.knowledgeBaseId]);
 	useEffect(() => {
-		setMinutesDraft(String(weknora.sync.autoSyncMinutes));
-	}, [weknora.sync.autoSyncMinutes]);
+		setMinutesDraft(String(rag.sync.autoSyncMinutes));
+	}, [rag.sync.autoSyncMinutes]);
 
+	const statusProviderId =
+		typeof status?.provider === "string" && status.provider.trim()
+			? status.provider.trim()
+			: null;
+	const currentProviderLabel =
+		status?.providerLabel?.trim() ||
+		providerLabel(statusProviderId ?? rag.provider);
 	const ready = webHost && status !== null;
+	/**
+	 * Reserved providers (RAGFlow in v2.1) can be stored in settings but have no
+	 * backend implementation yet: keep the provider picker usable so the user can
+	 * switch back, but disable everything that would call the provider.
+	 */
+	const providerUnsupported = status?.providerImplemented === false;
 	const configured =
 		status?.configured ??
 		Boolean(
-			weknora.baseUrl.trim() &&
-				weknora.apiKey.trim() &&
-				weknora.knowledgeBaseId.trim(),
+			rag.baseUrl.trim() && rag.apiKey.trim() && rag.knowledgeBaseId.trim(),
 		);
-	const apiKeyStored = hasStoredWeKnoraApiKey(weknora.apiKey);
+	const apiKeyStored = hasStoredRagApiKey(rag.apiKey);
 	const running = Boolean(
 		status?.sync.running ||
 			(progress !== null && "running" in progress && progress.running),
@@ -252,7 +306,7 @@ export function RagPane({
 		setKbLoading(true);
 		setKbError(null);
 		try {
-			const result = await weknoraListKbs({
+			const result = await ragListKbs({
 				baseUrl: baseUrlDraft.trim() || undefined,
 				apiKey: apiKeyDraft.trim() || undefined,
 			});
@@ -280,8 +334,8 @@ export function RagPane({
 		const value = baseUrlDraft.trim().replace(/\/+$/, "");
 		setBaseUrlDraft(value);
 		setTestState("idle");
-		if (value !== weknora.baseUrl) patchWeKnora({ baseUrl: value });
-	}, [baseUrlDraft, patchWeKnora, weknora.baseUrl]);
+		if (value !== rag.baseUrl) patchRag({ baseUrl: value });
+	}, [baseUrlDraft, patchRag, rag.baseUrl]);
 
 	/** Write-only: an empty input keeps the stored secret untouched. */
 	const commitApiKey = useCallback(() => {
@@ -289,28 +343,28 @@ export function RagPane({
 		setTestState("idle");
 		if (!value) return;
 		setApiKeyDraft("");
-		if (value !== weknora.apiKey) patchWeKnora({ apiKey: value });
-	}, [apiKeyDraft, patchWeKnora, weknora.apiKey]);
+		if (value !== rag.apiKey) patchRag({ apiKey: value });
+	}, [apiKeyDraft, patchRag, rag.apiKey]);
 
 	const commitKbId = useCallback(() => {
 		const value = kbIdDraft.trim();
 		setKbIdDraft(value);
 		setTestState("idle");
-		if (value !== weknora.knowledgeBaseId) {
-			patchWeKnora({ knowledgeBaseId: value });
+		if (value !== rag.knowledgeBaseId) {
+			patchRag({ knowledgeBaseId: value });
 		}
-	}, [kbIdDraft, patchWeKnora, weknora.knowledgeBaseId]);
+	}, [kbIdDraft, patchRag, rag.knowledgeBaseId]);
 
 	const commitMinutes = useCallback(() => {
 		const parsed = Number.parseInt(minutesDraft, 10);
 		const next = Number.isFinite(parsed)
 			? Math.min(24 * 60, Math.max(1, parsed))
-			: weknora.sync.autoSyncMinutes;
+			: rag.sync.autoSyncMinutes;
 		setMinutesDraft(String(next));
-		if (next !== weknora.sync.autoSyncMinutes) {
+		if (next !== rag.sync.autoSyncMinutes) {
 			updateSync({ autoSyncMinutes: next });
 		}
-	}, [minutesDraft, updateSync, weknora.sync.autoSyncMinutes]);
+	}, [minutesDraft, updateSync, rag.sync.autoSyncMinutes]);
 
 	/* ------------------------------ actions -------------------------------- */
 
@@ -320,7 +374,7 @@ export function RagPane({
 		setTestResult(null);
 		setTestError(null);
 		try {
-			const result = await weknoraTest({
+			const result = await ragTest({
 				baseUrl: baseUrlDraft.trim() || undefined,
 				apiKey: apiKeyDraft.trim() || undefined,
 				knowledgeBaseId: kbIdDraft.trim() || undefined,
@@ -338,11 +392,11 @@ export function RagPane({
 		async (args?: { force?: boolean; paper?: string }) => {
 			setBusy("sync");
 			try {
-				const result = await weknoraSyncStart(args ?? {});
+				const result = await ragSyncStart(args ?? {});
 				if (!result.started) {
-					notifyWarning(t("weknora.ops.alreadyRunning"));
+					notifyWarning(t("rag.ops.alreadyRunning"));
 				} else if (!args?.paper) {
-					notifySuccess(t("weknora.ops.started", { total: result.total ?? 0 }));
+					notifySuccess(t("rag.ops.started", { total: result.total ?? 0 }));
 				}
 			} catch (error) {
 				notifyError(errorMessage(error));
@@ -356,9 +410,9 @@ export function RagPane({
 	const cancelSync = useCallback(async () => {
 		setBusy("cancel");
 		try {
-			const result = await weknoraSyncCancel();
-			if (result.cancelled) notifySuccess(t("weknora.ops.cancelled"));
-			else notifyWarning(t("weknora.ops.nothingToCancel"));
+			const result = await ragSyncCancel();
+			if (result.cancelled) notifySuccess(t("rag.ops.cancelled"));
+			else notifyWarning(t("rag.ops.nothingToCancel"));
 		} catch (error) {
 			notifyError(errorMessage(error));
 		} finally {
@@ -369,9 +423,9 @@ export function RagPane({
 	const runReconcile = useCallback(async () => {
 		setBusy("reconcile");
 		try {
-			const result = await weknoraReconcile({ prune: false });
+			const result = await ragReconcile({ prune: false });
 			notifySuccess(
-				t("weknora.ops.reconcileDone", {
+				t("rag.ops.reconcileDone", {
 					adopted: result.adopted ?? 0,
 					missing: result.missing ?? 0,
 					orphans: result.orphans ?? 0,
@@ -389,11 +443,11 @@ export function RagPane({
 	const runClearMapping = useCallback(async () => {
 		setBusy("clear");
 		try {
-			const result = await weknoraClearMapping({
+			const result = await ragClearMapping({
 				deleteDocs: clearDeleteDocs,
 			});
 			notifySuccess(
-				t("weknora.clear.done", {
+				t("rag.clear.done", {
 					cleared: result.cleared ?? 0,
 					deleted: result.deleted ?? 0,
 				}),
@@ -413,16 +467,16 @@ export function RagPane({
 	if (!webHost) {
 		return (
 			<section>
-				<PageTitle title={t("weknora.title")} />
+				<PageTitle title={t("rag.title")} />
 				<div className="rounded-xl border border-border/70 bg-muted/30 px-3.5 py-3 text-muted-foreground text-xs leading-relaxed">
-					{t("weknora.desktopOnly")}
+					{t("rag.desktopOnly")}
 				</div>
 			</section>
 		);
 	}
 
 	const selectedKbName =
-		kbs?.find((kb) => kb.id === weknora.knowledgeBaseId)?.name ?? null;
+		kbs?.find((kb) => kb.id === rag.knowledgeBaseId)?.name ?? null;
 	/** Event payloads carry per-run counters; the persisted status snapshot does not. */
 	const progressCounters =
 		progress !== null && "created" in progress ? progress : null;
@@ -440,25 +494,29 @@ export function RagPane({
 			: 0;
 
 	const statusLabel = statusError
-		? t("weknora.status.backendUnavailable")
-		: running
-			? t("weknora.status.syncing")
-			: status?.enabled && configured
-				? t("weknora.status.connected")
-				: status?.enabled
-					? t("weknora.status.unconfigured")
-					: t("weknora.status.disabled");
+		? t("rag.status.backendUnavailable")
+		: providerUnsupported
+			? t("rag.status.providerUnavailable")
+			: running
+				? t("rag.status.syncing")
+				: status?.enabled && configured
+					? t("rag.status.connected")
+					: status?.enabled
+						? t("rag.status.unconfigured")
+						: t("rag.status.disabled");
 	const statusTone = statusError
 		? "err"
-		: running
+		: providerUnsupported
 			? "warn"
-			: status?.enabled && configured
-				? "ok"
-				: "idle";
+			: running
+				? "warn"
+				: status?.enabled && configured
+					? "ok"
+					: "idle";
 	const statusText = status
 		? `${synced}/${total}${
 				status.sync.lastSyncAt
-					? ` · ${t("weknora.status.lastSyncAt", {
+					? ` · ${t("rag.status.lastSyncAt", {
 							time: formatLocaleTimestamp(status.sync.lastSyncAt),
 						})}`
 					: ""
@@ -474,27 +532,26 @@ export function RagPane({
 				: "idle";
 	const testText =
 		testState === "testing"
-			? t("weknora.test.testing")
+			? t("rag.test.testing")
 			: testError
 				? testError
 				: testResult?.ok
-					? t("weknora.test.okDetail", {
-							kbName:
-								testResult.kbName?.trim() || weknora.knowledgeBaseId || "—",
+					? t("rag.test.okDetail", {
+							kbName: testResult.kbName?.trim() || rag.knowledgeBaseId || "—",
 							count: testResult.knowledgeCount ?? 0,
 							model: testResult.embeddingModelId?.trim() || "—",
 						})
 					: testResult?.error?.trim()
-						? t("weknora.test.failedDetail", { error: testResult.error })
-						: t("weknora.test.failed");
+						? t("rag.test.failedDetail", { error: testResult.error })
+						: t("rag.test.failed");
 
 	const kbDescription = kbError
-		? t("weknora.kb.error", { error: kbError })
+		? t("rag.kb.error", { error: kbError })
 		: kbLoading
-			? t("weknora.kb.loading")
+			? t("rag.kb.loading")
 			: kbs
-				? t("weknora.kb.loaded", { count: kbs.length })
-				: t("weknora.kb.help");
+				? t("rag.kb.loaded", { count: kbs.length })
+				: t("rag.kb.help");
 
 	return (
 		<section>
@@ -505,7 +562,7 @@ export function RagPane({
 							className="size-4 shrink-0 text-muted-foreground"
 							aria-hidden
 						/>
-						<span className="truncate">{t("weknora.title")}</span>
+						<span className="truncate">{t("rag.title")}</span>
 						<StatusDot tone={statusTone} label={statusLabel} />
 						{statusText ? (
 							<span className="truncate font-normal text-muted-foreground text-xs tabular-nums">
@@ -516,10 +573,14 @@ export function RagPane({
 				}
 			/>
 
+			<p className="-mt-2 mb-4 text-muted-foreground text-xs leading-relaxed">
+				{t("rag.subtitle")}
+			</p>
+
 			{loading ? (
 				<p className="mb-4 flex items-center gap-2 text-muted-foreground text-xs">
 					<LoaderCircle className="size-3.5 animate-spin" aria-hidden />
-					{t("weknora.loading")}
+					{t("rag.loading")}
 				</p>
 			) : null}
 
@@ -530,13 +591,13 @@ export function RagPane({
 				>
 					<p className="flex items-center gap-1.5 font-medium text-amber-700 dark:text-amber-400">
 						<CircleAlert className="size-3.5" aria-hidden />
-						{isWeKnoraUnavailableError(statusError)
-							? t("weknora.unavailable.title")
-							: t("weknora.unavailable.errorTitle")}
+						{isRagUnavailableError(statusError)
+							? t("rag.unavailable.title")
+							: t("rag.unavailable.errorTitle")}
 					</p>
 					<p className="mt-1 text-muted-foreground">
-						{isWeKnoraUnavailableError(statusError)
-							? t("weknora.unavailable.body")
+						{isRagUnavailableError(statusError)
+							? t("rag.unavailable.body")
 							: null}
 					</p>
 					<p className="mt-1 break-words font-mono text-muted-foreground/80">
@@ -550,181 +611,216 @@ export function RagPane({
 						onClick={() => void loadStatus()}
 					>
 						<RefreshCw data-icon="inline-start" className="size-3" />
-						{t("weknora.unavailable.retry")}
+						{t("rag.unavailable.retry")}
 					</Button>
 				</div>
 			) : null}
 
 			<SettingsGroup>
 				<SettingsRow
-					label={t("weknora.enable.label")}
-					description={t("weknora.enable.description")}
-					htmlFor="weknora-enabled"
+					label={t("rag.provider.label")}
+					description={
+						providerUnsupported
+							? t("rag.provider.unavailable")
+							: t("rag.provider.help")
+					}
+					htmlFor="rag-provider"
+				>
+					<Select
+						value={rag.provider}
+						disabled={disabled}
+						onValueChange={(value) => {
+							if (isRagProviderId(value)) patchRag({ provider: value });
+						}}
+					>
+						<SelectTrigger
+							id="rag-provider"
+							size="sm"
+							className="min-w-[10rem] max-w-[16rem]"
+						>
+							<SelectValue />
+						</SelectTrigger>
+						<SelectContent>
+							{RAG_PROVIDER_CHOICES.map((choice) => (
+								<SelectItem
+									key={choice.id}
+									value={choice.id}
+									disabled={!choice.available}
+								>
+									{choice.available
+										? choice.label
+										: `${choice.label} · ${t("rag.provider.comingSoon")}`}
+								</SelectItem>
+							))}
+						</SelectContent>
+					</Select>
+				</SettingsRow>
+				<SettingsRow
+					label={t("rag.enable.label")}
+					description={t("rag.enable.description")}
+					htmlFor="rag-enabled"
 				>
 					<Switch
-						id="weknora-enabled"
-						checked={weknora.enabled}
-						disabled={disabled}
-						onCheckedChange={(enabled) => patchWeKnora({ enabled })}
+						id="rag-enabled"
+						checked={rag.enabled}
+						disabled={disabled || providerUnsupported}
+						onCheckedChange={(enabled) => patchRag({ enabled })}
 					/>
 				</SettingsRow>
 			</SettingsGroup>
 
 			<SettingsSectionLabel>
-				{t("weknora.sections.connection")}
+				{t("rag.sections.connection")}
 			</SettingsSectionLabel>
 			<SettingsGroup>
-				<SettingsRow
-					label={t("weknora.baseUrl.label")}
-					description={t("weknora.baseUrl.help")}
-					htmlFor="weknora-base-url"
+				<WideFieldRow
+					label={t("rag.baseUrl.label")}
+					description={t("rag.baseUrl.help")}
+					htmlFor="rag-base-url"
 				>
 					<Input
-						id="weknora-base-url"
+						id="rag-base-url"
 						value={baseUrlDraft}
 						placeholder="https://weknora.example.com/api/v1"
-						className="h-8 w-full max-w-[24rem] font-mono text-xs"
+						className="h-8 w-full min-w-0 flex-1 font-mono text-xs"
 						spellCheck={false}
 						autoComplete="off"
-						disabled={disabled}
+						disabled={disabled || providerUnsupported}
 						onChange={(event) => setBaseUrlDraft(event.currentTarget.value)}
 						onBlur={commitBaseUrl}
 					/>
-				</SettingsRow>
-				<SettingsRow
-					label={t("weknora.apiKey.label")}
+				</WideFieldRow>
+				<WideFieldRow
+					label={t("rag.apiKey.label")}
 					description={
-						apiKeyStored ? t("weknora.apiKey.stored") : t("weknora.apiKey.help")
+						apiKeyStored ? t("rag.apiKey.stored") : t("rag.apiKey.help")
 					}
-					htmlFor="weknora-api-key"
+					htmlFor="rag-api-key"
 				>
-					<div className="flex items-center gap-2">
-						<Input
-							id="weknora-api-key"
-							type="password"
-							value={apiKeyDraft}
-							placeholder={
-								apiKeyStored
-									? t("weknora.apiKey.placeholderStored")
-									: t("weknora.apiKey.placeholder")
-							}
-							className="h-8 w-full max-w-[18rem] font-mono text-xs"
-							autoComplete="off"
-							disabled={disabled}
-							onChange={(event) => setApiKeyDraft(event.currentTarget.value)}
-							onBlur={commitApiKey}
-						/>
-						<Button
-							type="button"
-							variant="outline"
-							size="sm"
-							disabled={disabled || testState === "testing"}
-							onClick={() => void handleTest()}
-						>
-							{testState === "testing" ? (
-								<LoaderCircle
-									data-icon="inline-start"
-									className="size-3.5 animate-spin"
-								/>
-							) : (
-								<RefreshCw data-icon="inline-start" className="size-3.5" />
-							)}
-							{t("weknora.test.button")}
-						</Button>
-						{testState !== "idle" ? (
-							<StatusDot tone={testTone} label={testText} />
-						) : null}
-					</div>
-				</SettingsRow>
+					<Input
+						id="rag-api-key"
+						type="password"
+						value={apiKeyDraft}
+						placeholder={
+							apiKeyStored
+								? t("rag.apiKey.placeholderStored")
+								: t("rag.apiKey.placeholder")
+						}
+						className="h-8 w-full min-w-0 flex-1 font-mono text-xs"
+						autoComplete="off"
+						disabled={disabled || providerUnsupported}
+						onChange={(event) => setApiKeyDraft(event.currentTarget.value)}
+						onBlur={commitApiKey}
+					/>
+					<Button
+						type="button"
+						variant="outline"
+						size="sm"
+						className="shrink-0"
+						disabled={
+							disabled || providerUnsupported || testState === "testing"
+						}
+						onClick={() => void handleTest()}
+					>
+						{testState === "testing" ? (
+							<LoaderCircle
+								data-icon="inline-start"
+								className="size-3.5 animate-spin"
+							/>
+						) : (
+							<RefreshCw data-icon="inline-start" className="size-3.5" />
+						)}
+						{t("rag.test.button")}
+					</Button>
+				</WideFieldRow>
 				{testState !== "idle" && testState !== "testing" ? (
-					<SettingsRow label={t("weknora.test.resultLabel")}>
-						<span
-							className={cn(
-								"max-w-[26rem] truncate text-xs",
-								testTone === "ok"
-									? "text-emerald-600 dark:text-emerald-400"
-									: "text-destructive",
-							)}
-							title={testText}
-						>
-							{testText}
-						</span>
+					<SettingsRow label={t("rag.test.resultLabel")}>
+						<div className="flex min-w-0 items-center gap-2">
+							<StatusDot tone={testTone} label={t("rag.test.resultLabel")} />
+							<span
+								className={cn(
+									"min-w-0 max-w-[36rem] truncate text-xs",
+									testTone === "ok"
+										? "text-emerald-600 dark:text-emerald-400"
+										: "text-destructive",
+								)}
+								title={testText}
+							>
+								{testText}
+							</span>
+						</div>
 					</SettingsRow>
 				) : null}
-				<SettingsRow
-					label={t("weknora.kb.label")}
+				<WideFieldRow
+					label={t("rag.kb.label")}
 					description={kbDescription}
-					htmlFor="weknora-kb"
+					htmlFor="rag-kb"
 				>
-					<div className="flex items-center gap-2">
-						<Input
-							id="weknora-kb"
-							list="weknora-kb-options"
-							value={kbIdDraft}
-							placeholder={t("weknora.kb.placeholder")}
-							className="h-8 w-full max-w-[20rem] font-mono text-xs"
-							spellCheck={false}
-							autoComplete="off"
-							disabled={disabled}
-							onChange={(event) => setKbIdDraft(event.currentTarget.value)}
-							onBlur={commitKbId}
-						/>
-						<datalist id="weknora-kb-options">
-							{(kbs ?? []).map((kb) => (
-								<option key={kb.id} value={kb.id}>
-									{`${kb.name} (${kb.knowledgeCount})`}
-								</option>
-							))}
-						</datalist>
-						<Button
-							type="button"
-							variant="ghost"
-							size="icon"
-							className="size-8"
-							aria-label={t("weknora.kb.refresh")}
-							disabled={disabled || kbLoading}
-							onClick={() => void loadKbs()}
-						>
-							{kbLoading ? (
-								<LoaderCircle className="size-4 animate-spin" />
-							) : (
-								<RefreshCw className="size-4" />
-							)}
-						</Button>
-					</div>
-				</SettingsRow>
+					<Input
+						id="rag-kb"
+						list="rag-kb-options"
+						value={kbIdDraft}
+						placeholder={t("rag.kb.placeholder")}
+						className="h-8 w-full min-w-0 flex-1 font-mono text-xs"
+						spellCheck={false}
+						autoComplete="off"
+						disabled={disabled || providerUnsupported}
+						onChange={(event) => setKbIdDraft(event.currentTarget.value)}
+						onBlur={commitKbId}
+					/>
+					<datalist id="rag-kb-options">
+						{(kbs ?? []).map((kb) => (
+							<option key={kb.id} value={kb.id}>
+								{`${kb.name} (${kb.knowledgeCount})`}
+							</option>
+						))}
+					</datalist>
+					<Button
+						type="button"
+						variant="ghost"
+						size="icon"
+						className="size-8 shrink-0"
+						aria-label={t("rag.kb.refresh")}
+						disabled={disabled || providerUnsupported || kbLoading}
+						onClick={() => void loadKbs()}
+					>
+						{kbLoading ? (
+							<LoaderCircle className="size-4 animate-spin" />
+						) : (
+							<RefreshCw className="size-4" />
+						)}
+					</Button>
+				</WideFieldRow>
 			</SettingsGroup>
 
-			<SettingsSectionLabel>
-				{t("weknora.sections.content")}
-			</SettingsSectionLabel>
+			<SettingsSectionLabel>{t("rag.sections.content")}</SettingsSectionLabel>
 			<SettingsGroup>
 				{(
 					[
 						{
 							key: "includePaperBody",
-							label: t("weknora.content.paperBody"),
+							label: t("rag.content.paperBody"),
 						},
 						{
 							key: "includeNotes",
-							label: t("weknora.content.notes"),
+							label: t("rag.content.notes"),
 						},
 						{
 							key: "includeMarks",
-							label: t("weknora.content.marks"),
+							label: t("rag.content.marks"),
 						},
 						{
 							key: "includeFigureIndex",
-							label: t("weknora.content.figureIndex"),
+							label: t("rag.content.figureIndex"),
 						},
 						{
 							key: "includeCitation",
-							label: t("weknora.content.citation"),
+							label: t("rag.content.citation"),
 						},
 						{
 							key: "ensurePaperBody",
-							label: t("weknora.content.ensurePaperBody"),
-							description: t("weknora.content.ensurePaperBodyHelp"),
+							label: t("rag.content.ensurePaperBody"),
+							description: t("rag.content.ensurePaperBodyHelp"),
 						},
 					] as const
 				).map((item) => (
@@ -732,54 +828,52 @@ export function RagPane({
 						key={item.key}
 						label={item.label}
 						description={"description" in item ? item.description : undefined}
-						checked={weknora.sync[item.key]}
-						disabled={disabled}
+						checked={rag.sync[item.key]}
+						disabled={disabled || providerUnsupported}
 						onCheckedChange={(checked) =>
 							updateSync({
 								[item.key]: checked,
-							} as Partial<WeKnoraSyncSettings>)
+							} as Partial<RagSyncSettings>)
 						}
 					/>
 				))}
 				<div className="space-y-1.5 border-border/50 border-t px-3.5 py-2.5 text-muted-foreground text-xs leading-relaxed">
 					<p className="flex items-start gap-1.5">
 						<ShieldAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden />
-						<span>{t("weknora.privacy.pdf")}</span>
+						<span>{t("rag.privacy.pdf")}</span>
 					</p>
-					<p>{t("weknora.privacy.notes")}</p>
+					<p>{t("rag.privacy.notes")}</p>
 				</div>
 			</SettingsGroup>
 
-			<SettingsSectionLabel>
-				{t("weknora.sections.autoSync")}
-			</SettingsSectionLabel>
+			<SettingsSectionLabel>{t("rag.sections.autoSync")}</SettingsSectionLabel>
 			<SettingsGroup>
 				<SettingsRow
-					label={t("weknora.autoSync.label")}
-					description={t("weknora.autoSync.description")}
-					htmlFor="weknora-auto-sync"
+					label={t("rag.autoSync.label")}
+					description={t("rag.autoSync.description")}
+					htmlFor="rag-auto-sync"
 				>
 					<Switch
-						id="weknora-auto-sync"
-						checked={weknora.sync.autoSync}
-						disabled={disabled}
+						id="rag-auto-sync"
+						checked={rag.sync.autoSync}
+						disabled={disabled || providerUnsupported}
 						onCheckedChange={(autoSync) => updateSync({ autoSync })}
 					/>
 				</SettingsRow>
 				<SettingsRow
-					label={t("weknora.autoSync.interval")}
-					htmlFor="weknora-auto-minutes"
+					label={t("rag.autoSync.interval")}
+					htmlFor="rag-auto-minutes"
 				>
 					<div className="flex items-center gap-2">
 						<Input
-							id="weknora-auto-minutes"
+							id="rag-auto-minutes"
 							type="number"
 							min={1}
 							max={24 * 60}
 							step={5}
 							className="h-8 w-24"
 							value={minutesDraft}
-							disabled={disabled || !weknora.sync.autoSync}
+							disabled={disabled || providerUnsupported || !rag.sync.autoSync}
 							onChange={(event) => setMinutesDraft(event.currentTarget.value)}
 							onBlur={commitMinutes}
 							onKeyDown={(event) => {
@@ -789,42 +883,40 @@ export function RagPane({
 							}}
 						/>
 						<span className="text-muted-foreground text-xs">
-							{t("weknora.autoSync.minutesUnit")}
+							{t("rag.autoSync.minutesUnit")}
 						</span>
 					</div>
 				</SettingsRow>
 			</SettingsGroup>
 
-			<SettingsSectionLabel>{t("weknora.sections.tools")}</SettingsSectionLabel>
+			<SettingsSectionLabel>{t("rag.sections.tools")}</SettingsSectionLabel>
 			<SettingsGroup>
 				<ToggleRow
-					label={t("weknora.tools.agent")}
-					description={t("weknora.tools.agentHelp")}
-					checked={weknora.tools.exposeToAgent}
-					disabled={disabled}
+					label={t("rag.tools.agent")}
+					description={t("rag.tools.agentHelp")}
+					checked={rag.tools.exposeToAgent}
+					disabled={disabled || providerUnsupported}
 					onCheckedChange={(exposeToAgent) => updateTools({ exposeToAgent })}
 				/>
 				<ToggleRow
-					label={t("weknora.tools.mcp")}
-					description={t("weknora.tools.mcpHelp")}
-					checked={weknora.tools.exposeToMcp}
-					disabled={disabled}
+					label={t("rag.tools.mcp")}
+					description={t("rag.tools.mcpHelp")}
+					checked={rag.tools.exposeToMcp}
+					disabled={disabled || providerUnsupported}
 					onCheckedChange={(exposeToMcp) => updateTools({ exposeToMcp })}
 				/>
 			</SettingsGroup>
 
-			<SettingsSectionLabel>
-				{t("weknora.sections.actions")}
-			</SettingsSectionLabel>
+			<SettingsSectionLabel>{t("rag.sections.actions")}</SettingsSectionLabel>
 			<SettingsGroup>
 				<SettingsRow
-					label={t("weknora.ops.syncLabel")}
+					label={t("rag.ops.syncLabel")}
 					description={
-						!weknora.enabled
-							? t("weknora.ops.needEnabled")
+						!rag.enabled
+							? t("rag.ops.needEnabled")
 							: !configured
-								? t("weknora.ops.needConfigured")
-								: t("weknora.ops.syncDetail", { total })
+								? t("rag.ops.needConfigured")
+								: t("rag.ops.syncDetail", { total })
 					}
 				>
 					<div className="flex items-center gap-2">
@@ -844,7 +936,7 @@ export function RagPane({
 								) : (
 									<XCircle data-icon="inline-start" className="size-3.5" />
 								)}
-								{t("weknora.ops.cancel")}
+								{t("rag.ops.cancel")}
 							</Button>
 						) : null}
 						<Button
@@ -854,7 +946,8 @@ export function RagPane({
 								busy !== null ||
 								running ||
 								!ready ||
-								!weknora.enabled ||
+								providerUnsupported ||
+								!rag.enabled ||
 								!configured
 							}
 							onClick={() => void startSync()}
@@ -867,19 +960,25 @@ export function RagPane({
 							) : (
 								<CloudUpload data-icon="inline-start" className="size-3.5" />
 							)}
-							{t("weknora.ops.syncNow")}
+							{t("rag.ops.syncNow")}
 						</Button>
 					</div>
 				</SettingsRow>
 				<SettingsRow
-					label={t("weknora.ops.reconcileLabel")}
-					description={t("weknora.ops.reconcileDescription")}
+					label={t("rag.ops.reconcileLabel")}
+					description={t("rag.ops.reconcileDescription")}
 				>
 					<Button
 						type="button"
 						variant="outline"
 						size="sm"
-						disabled={busy !== null || running || !ready || !configured}
+						disabled={
+							busy !== null ||
+							running ||
+							!ready ||
+							providerUnsupported ||
+							!configured
+						}
 						onClick={() => void runReconcile()}
 					>
 						{busy === "reconcile" ? (
@@ -890,61 +989,62 @@ export function RagPane({
 						) : (
 							<RotateCw data-icon="inline-start" className="size-3.5" />
 						)}
-						{t("weknora.ops.reconcile")}
+						{t("rag.ops.reconcile")}
 					</Button>
 				</SettingsRow>
 				<SettingsRow
 					label={
-						<span className="text-destructive">
-							{t("weknora.ops.clearLabel")}
-						</span>
+						<span className="text-destructive">{t("rag.ops.clearLabel")}</span>
 					}
-					description={t("weknora.ops.clearDescription")}
+					description={t("rag.ops.clearDescription")}
 				>
 					<Button
 						type="button"
 						variant="destructive"
 						size="sm"
-						disabled={busy !== null || running || !ready}
+						disabled={busy !== null || running || !ready || providerUnsupported}
 						onClick={() => setClearOpen(true)}
 					>
 						<Trash2 data-icon="inline-start" className="size-3.5" />
-						{t("weknora.ops.clear")}
+						{t("rag.ops.clear")}
 					</Button>
 				</SettingsRow>
 			</SettingsGroup>
 
-			<SettingsSectionLabel>
-				{t("weknora.sections.status")}
-			</SettingsSectionLabel>
+			<SettingsSectionLabel>{t("rag.sections.status")}</SettingsSectionLabel>
 			<SettingsGroup>
-				<SettingsRow label={t("weknora.status.label")}>
+				<SettingsRow label={t("rag.status.provider")}>
+					<span className="text-muted-foreground text-xs">
+						{currentProviderLabel}
+					</span>
+				</SettingsRow>
+				<SettingsRow label={t("rag.status.label")}>
 					<span className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1 text-muted-foreground text-xs tabular-nums">
 						<span className="font-medium text-foreground">
-							{t("weknora.status.synced", { synced, total })}
+							{t("rag.status.synced", { synced, total })}
 						</span>
 						{indexing > 0 ? (
-							<span>{t("weknora.status.indexing", { count: indexing })}</span>
+							<span>{t("rag.status.indexing", { count: indexing })}</span>
 						) : null}
 						{pending > 0 ? (
-							<span>{t("weknora.status.pending", { count: pending })}</span>
+							<span>{t("rag.status.pending", { count: pending })}</span>
 						) : null}
 						{failed > 0 ? (
 							<span className="text-destructive">
-								{t("weknora.status.failed", { count: failed })}
+								{t("rag.status.failed", { count: failed })}
 							</span>
 						) : null}
 					</span>
 				</SettingsRow>
-				<SettingsRow label={t("weknora.status.lastSync")}>
+				<SettingsRow label={t("rag.status.lastSync")}>
 					<span className="text-muted-foreground text-xs tabular-nums">
 						{status?.sync.lastSyncAt
 							? formatLocaleTimestamp(status.sync.lastSyncAt)
-							: t("weknora.status.neverSynced")}
+							: t("rag.status.neverSynced")}
 					</span>
 				</SettingsRow>
 				{status?.kbName || selectedKbName ? (
-					<SettingsRow label={t("weknora.status.kb")}>
+					<SettingsRow label={t("rag.status.kb")}>
 						<span className="max-w-[24rem] truncate text-muted-foreground text-xs">
 							{status?.kbName ?? selectedKbName}
 						</span>
@@ -955,7 +1055,7 @@ export function RagPane({
 						role="alert"
 						className="border-border/50 border-b px-3.5 py-2.5 text-destructive text-xs leading-relaxed last:border-b-0"
 					>
-						{t("weknora.status.lastError", { error: lastError })}
+						{t("rag.status.lastError", { error: lastError })}
 					</div>
 				) : null}
 				{progress ? (
@@ -963,9 +1063,9 @@ export function RagPane({
 						<div className="flex items-center justify-between gap-3 text-xs">
 							<span className="font-medium">
 								{running
-									? t(`weknora.sync.phase.${progress.phase}`)
-									: `${t("weknora.sync.lastRun")} · ${t(
-											`weknora.sync.phase.${progress.phase}`,
+									? t(`rag.sync.phase.${progress.phase}`)
+									: `${t("rag.sync.lastRun")} · ${t(
+											`rag.sync.phase.${progress.phase}`,
 										)}`}
 							</span>
 							<span className="text-muted-foreground tabular-nums">
@@ -984,22 +1084,22 @@ export function RagPane({
 						{progressCounters ? (
 							<div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-muted-foreground text-xs tabular-nums">
 								<span>
-									{t("weknora.sync.counters.created", {
+									{t("rag.sync.counters.created", {
 										count: progressCounters.created,
 									})}
 								</span>
 								<span>
-									{t("weknora.sync.counters.updated", {
+									{t("rag.sync.counters.updated", {
 										count: progressCounters.updated,
 									})}
 								</span>
 								<span>
-									{t("weknora.sync.counters.skipped", {
+									{t("rag.sync.counters.skipped", {
 										count: progressCounters.skipped,
 									})}
 								</span>
 								<span>
-									{t("weknora.sync.counters.deleted", {
+									{t("rag.sync.counters.deleted", {
 										count: progressCounters.deleted,
 									})}
 								</span>
@@ -1008,7 +1108,7 @@ export function RagPane({
 										progressCounters.failed > 0 && "text-destructive",
 									)}
 								>
-									{t("weknora.sync.counters.failed", {
+									{t("rag.sync.counters.failed", {
 										count: progressCounters.failed,
 									})}
 								</span>
@@ -1034,7 +1134,7 @@ export function RagPane({
 									)}
 									aria-hidden
 								/>
-								{t("weknora.sync.errorsTitle", {
+								{t("rag.sync.errorsTitle", {
 									count: syncErrors.length,
 								})}
 							</button>
@@ -1066,7 +1166,7 @@ export function RagPane({
 												void startSync({ force: true, paper: item.paper })
 											}
 										>
-											{t("weknora.sync.retry")}
+											{t("rag.sync.retry")}
 										</Button>
 									</li>
 								))}
@@ -1088,16 +1188,16 @@ export function RagPane({
 					aria-describedby={undefined}
 				>
 					<DialogHeader>
-						<DialogTitle>{t("weknora.clear.title")}</DialogTitle>
+						<DialogTitle>{t("rag.clear.title")}</DialogTitle>
 					</DialogHeader>
 					<div className="space-y-2 py-1 text-muted-foreground text-xs leading-relaxed">
-						<p>{t("weknora.clear.body")}</p>
+						<p>{t("rag.clear.body")}</p>
 						<label
-							htmlFor="weknora-clear-delete-docs"
+							htmlFor="rag-clear-delete-docs"
 							className="flex items-start gap-2 text-foreground"
 						>
 							<Checkbox
-								id="weknora-clear-delete-docs"
+								id="rag-clear-delete-docs"
 								checked={clearDeleteDocs}
 								disabled={busy === "clear"}
 								onCheckedChange={(checked) =>
@@ -1105,9 +1205,9 @@ export function RagPane({
 								}
 							/>
 							<span>
-								{t("weknora.clear.deleteDocs")}
+								{t("rag.clear.deleteDocs")}
 								<span className="mt-0.5 block text-muted-foreground text-xs">
-									{t("weknora.clear.deleteDocsHint")}
+									{t("rag.clear.deleteDocsHint")}
 								</span>
 							</span>
 						</label>
@@ -1132,7 +1232,7 @@ export function RagPane({
 							{busy === "clear" ? (
 								<LoaderCircle className="mr-1.5 size-3.5 animate-spin" />
 							) : null}
-							{t("weknora.clear.confirm")}
+							{t("rag.clear.confirm")}
 						</Button>
 					</DialogFooter>
 				</DialogContent>

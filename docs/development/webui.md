@@ -175,11 +175,11 @@ agentero-core（已有，tauri-free）
 - 工具宿主接缝：`import_id` 用 web CapsCache+EventBus；`paper_text_get` 实时读 settings opt-in；`file_move` 本地 WikiIndex；`file_delete` 保留 trash/permanent；`vault_list` 单 server vault（可同步 known vaults）；tunnel（OpenAI Secure MCP Tunnel）web v1 不可用。
 - 协议 E2E（curl/Python 客户端）：initialize（SSE+session）/initialized/tools/list（24 工具全带 outputSchema）/tools/call（paper_list、paper_get、paper_notes_get、paper_tag_*、vault_search、file_list/read/write/delete、layout_list/get、page_read、paper_text_get 开关语义、resources/list+read）；layout tools 用真实 MinerU 生成的 sidecar 验证（15 figures、page_read 22 regions）。
 
-### 第六轮：WeKnora RAG 集成（2026-10-24）
+### 第六轮：RAG 集成与 provider 抽象（2026-10-24，v2.1）
 
-- 设置 → RAG / WeKnora：把 Vault 文献（正文/笔记/批注/图表索引/BibTeX 索引，**PDF 与图片二进制不上传**）同步到外部 WeKnora 知识库；手工 Markdown 原地更新、tags 原名映射、managed 文档才允许删除，同步状态存 XDG data（不入 vault/git）。
+- 设置 → RAG（provider 抽象，WeKnora 已实现、RAGFlow 预留）：把 Vault 文献（正文/笔记/批注/图表索引/BibTeX 索引，**PDF 与图片二进制不上传**）同步到外部 WeKnora 知识库；手工 Markdown 原地更新、tags 原名映射、managed 文档才允许删除，同步状态存 XDG data（不入 vault/git）。
 - 每篇文档带 `BibTeX key` / `\cite{}` 与 bibtex+biblatex 两段条目，key 复用 `/agentero_online.bib` 的分配算法（含 `joh` 这类回退 key），检索结果也返回 `citationKey`/`latex`。
-- 开启后：MCP server 动态新增 `weknora_search` / `weknora_paper_context` / `weknora_sync_status`（共 27 工具；关闭即回到 24）；web agent（ACP）会话注入只读 stdio `agentero-rag` MCP（warm pool 随配置失效）。检索默认关 rerank（实测实例 rerank 可 25–40s 超时，关闭后 0.1–0.2s）。
+- 开启后：MCP server 动态新增 `agentero_rag_search` / `agentero_rag_paper_context` / `agentero_rag_sync_status`（共 27 工具；关闭即回到 24；旧 `weknora_*` 名称已移除）；web agent（ACP）会话注入只读 stdio `agentero-rag` MCP（config 带 provider；warm pool 随配置失效）。检索默认关 rerank（实测实例 rerank 可 25–40s 超时，关闭后 0.1–0.2s）。
 - 自动同步 opt-in（默认关）：vault 写入后 60s 防抖 + 30 分钟兜底扫描。
 - 验收：6 篇测试 Vault → 测试 KB 保留 6 docs（tags/custom_metadata/BibTeX/notes 检索通过）；MCP 27 工具协议 E2E；Dsh agent 回答含 `papers/...` 与 `\cite{joh}`；关闭工具后降级不崩。
 

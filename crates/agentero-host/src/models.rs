@@ -898,6 +898,8 @@ mod agent_status_event_tests {
 /// logs; the temp config is removed when the turn ends.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RagMcpSpec {
+    /// Provider id (`weknora` / `ragflow`), passed through to the worker config.
+    pub provider: String,
     pub base_url: String,
     pub api_key: String,
     pub knowledge_base_id: String,
@@ -914,7 +916,8 @@ impl RagMcpSpec {
     /// Complete enough to spawn the worker (the API key may be empty for a
     /// self-hosted/anonymous WeKnora instance).
     pub fn is_complete(&self) -> bool {
-        !self.base_url.trim().is_empty()
+        !self.provider.trim().is_empty()
+            && !self.base_url.trim().is_empty()
             && !self.knowledge_base_id.trim().is_empty()
             && !self.vault_path.trim().is_empty()
     }

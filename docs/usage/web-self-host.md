@@ -127,16 +127,16 @@ AGENTERO_WEB_DIST=$PWD/dist \
 
 设置 → Layout → 选择 **MinerU**、打开 **Self-hosted**、填 Base URL 与 API Key（BYOK，只写入服务器 `settings.json`，不进镜像/仓库）。之后新入库或手动 Force re-parse 的论文由**服务端**调用 MinerU 解析，写 `source/layout.json` + `layout-index.json`；PDF 工具栏「Analysis」里的 FIGURES 面板展示检测到的图/表/算法/公式（缩略图 + caption + 页码跳转）。未配置远程服务时回退到浏览器本地 ONNX 模型。
 
-## WeKnora RAG（可选，仅 Web host）
+## RAG 外部知识库（可选，仅 Web host；provider 抽象）
 
-设置 → RAG / WeKnora：打开开关、填 Base URL（可带/不带 `/api/v1`）、API Key、选择知识库（`weknora_list_kbs` 下拉），可先「测试连接」。开启后服务端把当前 Vault 的每篇论文渲染成一份合并 Markdown 同步到该知识库（正文 + 图表索引 + NOTES + 批注文本；**PDF 与图片二进制不上传**），检索结果带论文路径/BibTeX `\cite{}`。
+设置 → RAG：选择 **Provider**（当前可选 WeKnora；RAGFlow 预留、coming soon），打开开关、填 Base URL（可带/不带 `/api/v1`）、API Key、选择知识库（`rag_list_kbs` 下拉），可先「测试连接」。开启后服务端把当前 Vault 的每篇论文渲染成一份合并 Markdown 同步到该知识库（正文 + 图表索引 + NOTES + 批注文本；**PDF 与图片二进制不上传**），检索结果带论文路径/BibTeX `\cite{}`。
 
-- **隐私**：显式 opt-in；笔记、批注、图注文本会发送到你配置的外部 WeKnora。API Key 只保存在服务端 `settings.json`（0600），前端只见掩码，重启后状态保持。
-- **同步方式**：设置页「立即同步」（可取消、可看进度/失败项）或自动同步（默认关；开启后 Vault 写入 **60s 防抖** + 每 **30 分钟**兜底扫描）。内容按哈希增量更新，删除论文后下次同步清理对应 managed 文档；`weknora_reconcile` 可从 KB `custom_metadata` 重建映射，「清理 Agentero 文档」需二次确认。
-- **状态**：同步映射存 `$XDG_DATA_HOME/agentero/weknora/<vault-key>.json`（不在 Vault、不进 git、无密钥）；设置页显示已同步/待同步/失败计数与 `weknora:sync` 进度。
+- **隐私**：显式 opt-in；笔记、批注、图注文本会发送到你配置的外部知识库（当前 provider=WeKnora）。API Key 只保存在服务端 `settings.json`（0600），前端只见掩码，重启后状态保持；旧 `settings.weknora` 会自动迁移为 `settings.rag`。
+- **同步方式**：设置页「立即同步」（可取消、可看进度/失败项）或自动同步（默认关；开启后 Vault 写入 **60s 防抖** + 每 **30 分钟**兜底扫描）。内容按哈希增量更新，删除论文后下次同步清理对应 managed 文档；`rag_reconcile` 可从 KB `custom_metadata` 重建映射，「清理 Agentero 文档」需二次确认。
+- **状态**：同步映射存 `$XDG_DATA_HOME/agentero/rag/<vault-key>.<provider>.json`（v2.0 旧路径 `<vault>.json` 会自动迁移；不在 Vault、不进 git、无密钥）；设置页显示已同步/待同步/失败计数与 `rag:sync` 进度。
 - **单 Vault / 单知识库**（v1）：更换知识库会重置映射；同一 KB 多部署同时写属于未支持场景。出站请求遵循设置里的网络代理。
-- **给外部 MCP / Web Agent 用**：设置里 `tools.exposeToMcp` 打开后，Agentero 的 MCP server（`/mcp`）会动态出现只读 `weknora_search` / `weknora_paper_context` / `weknora_sync_status`；`tools.exposeToAgent` 打开后，Web 端 ACP agent（Chat）每轮会注入会话级 `agentero-rag` stdio MCP，可直接问"我库里有没有讨论 trapping/TCS 的笔记或图注，引用怎么写"。两者都只读、命中带 `paper.path` 与 `\cite{key}`，不会写入 WeKnora；关闭开关后工具立即消失，不影响其余 MCP 工具。
-- **限制**：图片语义检索、PDF 原件上传、WeKnora 侧聊天/Agent 调用不在 v1；检索默认关闭 rerank（该实例开启时可能 20–40s 不返回）。单篇检索受 API key scope 限制（不支持 `knowledge_ids`）走 KB-wide 检索 + 本地过滤。API 细节与 RPC/事件契约见 [backend/weknora.md](../backend/weknora.md)，MCP 工具 schema 见 [backend/mcp.md](../backend/mcp.md)。
+- **给外部 MCP / Web Agent 用**：设置里 `tools.exposeToMcp` 打开后，Agentero 的 MCP server（`/mcp`）会动态出现只读 `agentero_rag_search` / `agentero_rag_paper_context` / `agentero_rag_sync_status`；`tools.exposeToAgent` 打开后，Web 端 ACP agent（Chat）每轮会注入会话级 `agentero-rag` stdio MCP，可直接问"我库里有没有讨论 trapping/TCS 的笔记或图注，引用怎么写"。两者都只读、命中带 `paper.path` 与 `\cite{key}`，不会写入知识库；关闭开关后工具立即消失，不影响其余 MCP 工具。
+- **限制**：图片语义检索、PDF 原件上传、provider 侧聊天/Agent 调用不在 v1；检索默认关闭 rerank（该实例开启时可能 20–40s 不返回）。单篇检索受 API key scope 限制（不支持 `knowledge_ids`）走 KB-wide 检索 + 本地过滤。provider 适配指南、API 细节与 RPC/事件契约见 [backend/rag.md](../backend/rag.md)，MCP 工具 schema 见 [backend/mcp.md](../backend/mcp.md)。
 
 ## Vault 同步（NAS 友好）
 

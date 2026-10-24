@@ -1,9 +1,9 @@
-//! WeKnora RAG service for the headless Web host.
+//! RAG service for the headless Web host.
 //!
-//! Owns the sync run (one at a time), the `weknora:sync` / `weknora:changed`
+//! Owns the sync run (one at a time), the `rag:sync` / `rag:changed`
 //! events, the optional auto-sync scheduler (60s debounce after Vault writes +
 //! 30-min fallback scan) and the read-only RPC helpers. The heavy lifting lives
-//! in `agentero_core::features::weknora`.
+//! in `agentero_core::features::rag`.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,19 +15,19 @@ use serde_json::{json, Value};
 
 use agentero_core::features::paper::catalog::papers;
 use agentero_core::features::system::settings::AppSettingsStore;
-use agentero_core::features::weknora::client::{KnowledgeBaseInfo, WeKnoraClient, WeKnoraError};
-use agentero_core::features::weknora::settings::WeKnoraSettings;
-use agentero_core::features::weknora::state::WeKnoraSyncState;
-use agentero_core::features::weknora::sync::{
+use agentero_core::features::rag::providers::{RagBackend, WeKnoraError};
+use agentero_core::features::rag::settings::RagSettings;
+use agentero_core::features::rag::state::RagSyncState;
+use agentero_core::features::rag::sync::{
     self, SyncOptions, SyncPhase, SyncProgress,
 };
 
 use crate::events::EventBus;
 
-/// Progress event consumed by the settings page (`weknora:sync`).
-pub const SYNC_EVENT: &str = "weknora:sync";
-/// State change event (`weknora:changed`, payload = `weknora_status` data).
-pub const CHANGED_EVENT: &str = "weknora:changed";
+/// Progress event consumed by the settings page (`rag:sync`).
+pub const SYNC_EVENT: &str = "rag:sync";
+/// State change event (`rag:changed`, payload = `rag_status` data).
+pub const CHANGED_EVENT: &str = "rag:changed";
 
 /// Auto-sync debounce after Vault writes.
 pub const AUTO_SYNC_DEBOUNCE: Duration = Duration::from_secs(60);
@@ -43,18 +43,18 @@ struct Inner {
     progress: SyncProgress,
     last_error: Option<String>,
     last_sync_at: Option<String>,
-    /// Last KB name resolved by `weknora_test` / `weknora_status`.
+    /// Last KB name resolved by `rag_test` / `rag_status`.
     kb_name: Option<String>,
 }
 
-pub struct WeKnoraService {
+pub struct RagService {
     settings: Arc<AppSettingsStore>,
     events: EventBus,
     vault: PathBuf,
     inner: Mutex<Inner>,
 }
 
-impl WeKnoraService {
+impl RagService {
     pub fn new(
         settings: Arc<AppSettingsStore>,
         events: EventBus,
@@ -100,7 +100,7 @@ impl WeKnoraService {
                             debounce_deadline = None;
                             continue;
                         }
-                        let settings = service.weknora_settings();
+                        let settings = service.rag_settings();
                         let interval = Duration::from_secs(
                             u64::from(settings.sync.auto_sync_minutes.max(1)) * 60,
                         );
@@ -116,7 +116,7 @@ impl WeKnoraService {
                             continue;
                         }
                         if let Err(error) = service.start_sync(false, None) {
-                            log::warn!("weknora auto-sync not started: {error}");
+                            log::warn!("rag auto-sync not started: {error}");
                         }
                     }
                 }
@@ -126,16 +126,16 @@ impl WeKnoraService {
 
     // ---- settings / state snapshots ---------------------------------------
 
-    fn weknora_settings(&self) -> WeKnoraSettings {
-        self.settings.weknora()
+    fn rag_settings(&self) -> RagSettings {
+        self.settings.rag()
     }
 
     fn mount_settings(&self) -> agentero_core::features::system::settings::BibtexMountSettings {
         self.settings.bibtex_mount()
     }
 
-    fn state(&self) -> WeKnoraSyncState {
-        WeKnoraSyncState::load(&self.vault)
+    fn state(&self) -> RagSyncState {
+        RagSyncState::load(&self.vault, self.settings.rag().provider())
     }
 
     fn catalog(&self) -> Vec<papers::PaperRecord> {
@@ -143,10 +143,11 @@ impl WeKnoraService {
     }
 
     fn auto_sync_ready(&self) -> bool {
-        let settings = self.weknora_settings();
+        let settings = self.rag_settings();
         settings.enabled
             && settings.sync.auto_sync
             && settings.is_configured()
+            && settings.provider().is_implemented()
     }
 
     fn is_running(&self) -> bool {
@@ -156,15 +157,15 @@ impl WeKnoraService {
             .unwrap_or(false)
     }
 
-    fn base_client(&self, settings: &WeKnoraSettings) -> Result<WeKnoraClient, WeKnoraError> {
-        WeKnoraClient::from_settings(settings)
+    fn base_client(&self, settings: &RagSettings) -> Result<RagBackend, WeKnoraError> {
+        RagBackend::from_settings(settings)
     }
 
     // ---- status -----------------------------------------------------------
 
-    /// `weknora_status` payload.
+    /// `rag_status` payload.
     pub fn status(&self) -> Value {
-        let settings = self.weknora_settings();
+        let settings = self.rag_settings();
         let state = self.state();
         let counts = state.counts();
         let catalog = self.catalog();
@@ -172,7 +173,18 @@ impl WeKnoraService {
         let pending = total.saturating_sub(counts.total);
         let inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
         let progress = &inner.progress;
+        let provider = settings.provider();
+        let capabilities = provider.capabilities();
         json!({
+            "provider": provider.id(),
+            "providerLabel": provider.label(),
+            "providerImplemented": provider.is_implemented(),
+            "capabilities": {
+                "manualMarkdown": capabilities.manual_markdown,
+                "inPlaceUpdate": capabilities.in_place_update,
+                "tags": capabilities.tags,
+                "customMetadata": capabilities.custom_metadata,
+            },
             "enabled": settings.enabled,
             "configured": settings.is_configured(),
             "baseUrl": settings.base_url.trim(),
@@ -241,8 +253,8 @@ impl WeKnoraService {
         base_url: Option<&str>,
         api_key: Option<&str>,
         knowledge_base_id: Option<&str>,
-    ) -> WeKnoraSettings {
-        let mut settings = self.weknora_settings();
+    ) -> RagSettings {
+        let mut settings = self.rag_settings();
         if let Some(base_url) = base_url.map(str::trim).filter(|url| !url.is_empty()) {
             settings.base_url = base_url.to_string();
         }
@@ -261,7 +273,7 @@ impl WeKnoraService {
         settings
     }
 
-    /// `weknora_test` — returns `{ok, kbName?, knowledgeCount?, embeddingModelId?, error?}`.
+    /// `rag_test` — returns `{ok, kbName?, knowledgeCount?, embeddingModelId?, error?}`.
     pub async fn test_connection(
         self: &Arc<Self>,
         base_url: Option<String>,
@@ -273,9 +285,17 @@ impl WeKnoraService {
             api_key.as_deref(),
             knowledge_base_id.as_deref(),
         );
+        let provider = settings.provider();
         let client = match self.base_client(&settings) {
             Ok(client) => client,
-            Err(error) => return json!({ "ok": false, "error": error.to_string() }),
+            Err(error) => {
+                return json!({
+                    "ok": false,
+                    "provider": provider.id(),
+                    "providerLabel": provider.label(),
+                    "error": error.to_string(),
+                })
+            }
         };
         let kb_id = settings.knowledge_base_id();
         if !kb_id.is_empty() {
@@ -284,28 +304,42 @@ impl WeKnoraService {
                     self.cache_kb_name(Some(kb.name.clone()));
                     json!({
                         "ok": true,
+                        "provider": provider.id(),
+                        "providerLabel": provider.label(),
                         "kbName": kb.name,
                         "knowledgeCount": kb.knowledge_count,
                         "embeddingModelId": kb.embedding_model_id,
                     })
                 }
-                Err(error) => json!({ "ok": false, "error": error.to_string() }),
+                Err(error) => json!({
+                    "ok": false,
+                    "provider": provider.id(),
+                    "providerLabel": provider.label(),
+                    "error": error.to_string(),
+                }),
             }
         } else {
             // No KB selected yet: verify credentials by listing knowledge bases.
             match client.list_knowledge_bases().await {
                 Ok(kbs) => json!({
                     "ok": true,
+                    "provider": provider.id(),
+                    "providerLabel": provider.label(),
                     "kbName": Value::Null,
                     "knowledgeCount": kbs.len(),
                     "embeddingModelId": Value::Null,
                 }),
-                Err(error) => json!({ "ok": false, "error": error.to_string() }),
+                Err(error) => json!({
+                    "ok": false,
+                    "provider": provider.id(),
+                    "providerLabel": provider.label(),
+                    "error": error.to_string(),
+                }),
             }
         }
     }
 
-    /// `weknora_list_kbs` — `{kbs:[…], error?}`.
+    /// `rag_list_kbs` — `{kbs:[…], error?}`.
     pub async fn list_kbs(
         &self,
         base_url: Option<String>,
@@ -317,9 +351,12 @@ impl WeKnoraService {
             Ok(client) => client,
             Err(error) => return json!({ "kbs": [], "error": error.to_string() }),
         };
+        let provider = settings.provider();
         match client.list_knowledge_bases().await {
             Ok(kbs) => json!({
-                "kbs": kbs.iter().map(kb_json).collect::<Vec<_>>(),
+                "provider": provider.id(),
+                "providerLabel": provider.label(),
+                "kbs": kbs,
                 "error": Value::Null,
             }),
             Err(error) => json!({ "kbs": [], "error": error.to_string() }),
@@ -340,13 +377,19 @@ impl WeKnoraService {
         force: bool,
         paper: Option<String>,
     ) -> Result<Value, String> {
-        let settings = self.weknora_settings();
+        let settings = self.rag_settings();
         if !settings.enabled {
-            return Err("WeKnora RAG is disabled (enable it in Settings → RAG)".into());
+            return Err("RAG is disabled (enable it in Settings → RAG)".into());
+        }
+        if !settings.provider().is_implemented() {
+            return Err(format!(
+                "RAG provider '{}' is not implemented yet; choose WeKnora in Settings → RAG",
+                settings.provider().label()
+            ));
         }
         if !settings.is_configured() {
             return Err(
-                "configure the WeKnora base URL and knowledge base id first (Settings → RAG)"
+                "configure the RAG provider base URL and knowledge base id first (Settings → RAG)"
                     .into(),
             );
         }
@@ -414,7 +457,7 @@ impl WeKnoraService {
 
     async fn run_sync(
         self: Arc<Self>,
-        settings: WeKnoraSettings,
+        settings: RagSettings,
         force: bool,
         paper: Option<String>,
     ) {
@@ -520,15 +563,15 @@ impl WeKnoraService {
 
     // ---- maintenance ------------------------------------------------------
 
-    fn require_client(&self) -> Result<(WeKnoraSettings, WeKnoraClient), String> {
-        let settings = self.weknora_settings();
+    fn require_client(&self) -> Result<(RagSettings, RagBackend), String> {
+        let settings = self.rag_settings();
         if !settings.is_configured() {
             return Err(
                 "configure the WeKnora base URL and knowledge base id first (Settings → RAG)"
                     .into(),
             );
         }
-        let client = WeKnoraClient::from_settings(&settings).map_err(|error| error.to_string())?;
+        let client = RagBackend::from_settings(&settings).map_err(|error| error.to_string())?;
         Ok((settings, client))
     }
 
@@ -536,7 +579,14 @@ impl WeKnoraService {
         let (settings, client) = self.require_client()?;
         let kb = settings.knowledge_base_id().to_string();
         let mut state = self.state();
-        let report = sync::reconcile(&client, &self.vault, &kb, &mut state, prune)
+        let report = sync::reconcile(
+            &client,
+            &self.vault,
+            settings.provider(),
+            &kb,
+            &mut state,
+            prune,
+        )
             .await
             .map_err(|error| error.to_string())?;
         self.emit_changed();
@@ -552,7 +602,14 @@ impl WeKnoraService {
         let (settings, client) = self.require_client()?;
         let kb = settings.knowledge_base_id().to_string();
         let mut state = self.state();
-        let report = sync::clear_mapping(&client, &self.vault, &kb, &mut state, delete_docs)
+        let report = sync::clear_mapping(
+            &client,
+            &self.vault,
+            settings.provider(),
+            &kb,
+            &mut state,
+            delete_docs,
+        )
             .await
             .map_err(|error| error.to_string())?;
         self.emit_changed();
@@ -564,12 +621,12 @@ impl WeKnoraService {
 
     // ---- retrieval preview -------------------------------------------------
 
-    /// `weknora_search` — read-only preview used by the settings page / agents.
+    /// `rag_search` — read-only preview used by the settings page / agents.
     pub async fn search(&self, args: SearchArgs) -> Result<Value, String> {
         let (settings, _client) = self.require_client()?;
         let retrieval = settings.retrieval.clone();
         // Delegate to the shared MCP-tool implementation so the RPC preview and
-        // the agent/MCP tools map WeKnora hits identically.
+        // the agent/MCP tools map RAG hits identically.
         let rag_args = crate::mcp::rag_tools::RagSearchArgs {
             query: args.query,
             top_k: Some(args.top_k.unwrap_or(retrieval.top_k)),
@@ -578,7 +635,7 @@ impl WeKnoraService {
             mode: args.mode,
             rerank: Some(args.rerank.unwrap_or(retrieval.rerank)),
             // The settings-page preview keeps the historical behaviour that
-            // includes WeKnora summary chunks.
+            // includes provider summary chunks.
             include_summaries: true,
         };
         let runtime = crate::mcp::rag_tools::RagRuntime::new(settings, &self.vault);
@@ -587,7 +644,7 @@ impl WeKnoraService {
     }
 }
 
-/// `weknora_search` parameters.
+/// `rag_search` parameters.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchArgs {
@@ -605,16 +662,6 @@ pub struct SearchArgs {
     pub rerank: Option<bool>,
 }
 
-fn kb_json(kb: &KnowledgeBaseInfo) -> Value {
-    json!({
-        "id": kb.id,
-        "name": kb.name,
-        "knowledgeCount": kb.knowledge_count,
-        "description": kb.description,
-        "capabilities": kb.capabilities,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -622,13 +669,13 @@ mod tests {
 
     fn service_for_tests() -> (
         tempfile::TempDir,
-        Arc<WeKnoraService>,
+        Arc<RagService>,
         EventBus,
     ) {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(AppSettingsStore::for_tests(AppSettings::default()));
         let events = EventBus::new();
-        let service = WeKnoraService::new(
+        let service = RagService::new(
             store,
             events.clone(),
             dir.path().to_path_buf(),
@@ -696,11 +743,11 @@ mod tests {
     fn settings_overrides_keep_the_stored_secret_for_masks() {
         let dir = tempfile::tempdir().unwrap();
         let mut settings = AppSettings::default();
-        settings.weknora.base_url = "https://stored.example.com".into();
-        settings.weknora.knowledge_base_id = "kb-stored".into();
-        settings.weknora.api_key = "stored-secret".into();
+        settings.rag.base_url = "https://stored.example.com".into();
+        settings.rag.knowledge_base_id = "kb-stored".into();
+        settings.rag.api_key = "stored-secret".into();
         let store = Arc::new(AppSettingsStore::for_tests(settings));
-        let service = WeKnoraService::new(
+        let service = RagService::new(
             store,
             EventBus::new(),
             dir.path().to_path_buf(),

@@ -1,11 +1,14 @@
-//! `settings.weknora` — persisted WeKnora RAG configuration.
+//! `settings.rag` — persisted RAG configuration (provider-agnostic).
 //!
-//! Lives in the shared `settings.json` (`AppSettings.weknora`), so the desktop
-//! Host and the headless Web host read the same configuration. The API key is
-//! a server-side secret: `redact_secrets` masks it on the wire and
-//! `merge_secrets` restores the stored value when the UI writes the mask back.
+//! Lives in the shared `settings.json` (`AppSettings.rag`; legacy files use the
+//! `weknora` key, accepted through a serde alias), so the desktop Host and the
+//! headless Web host read the same configuration. The API key is a server-side
+//! secret: `redact_secrets` masks it on the wire and `merge_secrets` restores
+//! the stored value when the UI writes the mask back.
 
 use serde::{Deserialize, Serialize};
+
+use super::providers::RagProviderId;
 
 /// Auto-sync fallback scan interval when unset (minutes).
 pub const DEFAULT_AUTO_SYNC_MINUTES: u32 = 30;
@@ -21,7 +24,7 @@ pub const DEFAULT_INDEX_TIMEOUT_SECS: u64 = 180;
 /// Which parts of a paper package are merged into the synced document.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "camelCase")]
-pub struct WeKnoraSyncSettings {
+pub struct RagSyncSettings {
     /// `PAPER.md` body (metadata-only docs are allowed when missing).
     #[serde(default = "default_true")]
     pub include_paper_body: bool,
@@ -48,7 +51,7 @@ pub struct WeKnoraSyncSettings {
     pub auto_sync_minutes: u32,
 }
 
-impl Default for WeKnoraSyncSettings {
+impl Default for RagSyncSettings {
     fn default() -> Self {
         Self {
             include_paper_body: true,
@@ -66,14 +69,14 @@ impl Default for WeKnoraSyncSettings {
 /// Which agent surfaces may use the read-only RAG tools (P2 gates on these).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "camelCase")]
-pub struct WeKnoraToolSettings {
+pub struct RagToolSettings {
     #[serde(default = "default_true")]
     pub expose_to_agent: bool,
     #[serde(default = "default_true")]
     pub expose_to_mcp: bool,
 }
 
-impl Default for WeKnoraToolSettings {
+impl Default for RagToolSettings {
     fn default() -> Self {
         Self {
             expose_to_agent: true,
@@ -85,7 +88,7 @@ impl Default for WeKnoraToolSettings {
 /// Retrieval defaults (shared by the settings UI and the future agent tools).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "camelCase")]
-pub struct WeKnoraRetrievalSettings {
+pub struct RagRetrievalSettings {
     /// Rerank is off by default: the tested instance can stall 25–40s with it.
     #[serde(default)]
     pub rerank: bool,
@@ -97,7 +100,7 @@ pub struct WeKnoraRetrievalSettings {
     pub top_k: u32,
 }
 
-impl Default for WeKnoraRetrievalSettings {
+impl Default for RagRetrievalSettings {
     fn default() -> Self {
         Self {
             rerank: false,
@@ -110,7 +113,7 @@ impl Default for WeKnoraRetrievalSettings {
 /// Sync-engine tuning knobs.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "camelCase")]
-pub struct WeKnoraAdvancedSettings {
+pub struct RagAdvancedSettings {
     /// Concurrent document writes (create/update). Clamped to 1..=4.
     #[serde(default = "default_concurrency")]
     pub concurrency: u32,
@@ -120,7 +123,7 @@ pub struct WeKnoraAdvancedSettings {
     pub index_timeout_secs: u64,
 }
 
-impl Default for WeKnoraAdvancedSettings {
+impl Default for RagAdvancedSettings {
     fn default() -> Self {
         Self {
             concurrency: DEFAULT_CONCURRENCY,
@@ -129,10 +132,14 @@ impl Default for WeKnoraAdvancedSettings {
     }
 }
 
-/// WeKnora RAG configuration (`settings.weknora`).
+/// RAG configuration (`settings.rag`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default, specta::Type)]
 #[serde(rename_all = "camelCase")]
-pub struct WeKnoraSettings {
+pub struct RagSettings {
+    /// RAG backend. `weknora` (implemented) or `ragflow` (reserved, returns
+    /// `not_implemented` until an adapter lands).
+    #[serde(default)]
+    pub provider: RagProviderId,
     /// Explicit opt-in: notes/annotations text leaves the Vault when on.
     #[serde(default)]
     pub enabled: bool,
@@ -146,16 +153,21 @@ pub struct WeKnoraSettings {
     #[serde(default)]
     pub knowledge_base_id: String,
     #[serde(default)]
-    pub sync: WeKnoraSyncSettings,
+    pub sync: RagSyncSettings,
     #[serde(default)]
-    pub tools: WeKnoraToolSettings,
+    pub tools: RagToolSettings,
     #[serde(default)]
-    pub retrieval: WeKnoraRetrievalSettings,
+    pub retrieval: RagRetrievalSettings,
     #[serde(default)]
-    pub advanced: WeKnoraAdvancedSettings,
+    pub advanced: RagAdvancedSettings,
 }
 
-impl WeKnoraSettings {
+impl RagSettings {
+    /// Configured provider id.
+    pub fn provider(&self) -> RagProviderId {
+        self.provider
+    }
+
     /// Base URL + knowledge base id are present (the key may still be missing
     /// for self-hosted instances that run anonymous — the client decides).
     pub fn is_configured(&self) -> bool {
@@ -228,7 +240,7 @@ mod tests {
 
     #[test]
     fn defaults_match_the_reviewed_contract() {
-        let settings = WeKnoraSettings::default();
+        let settings = RagSettings::default();
         assert!(!settings.enabled);
         assert!(!settings.is_configured());
         assert!(settings.sync.include_paper_body);
@@ -250,9 +262,9 @@ mod tests {
 
     #[test]
     fn old_settings_without_weknora_default_and_partial_json_keeps_defaults() {
-        let from_json: WeKnoraSettings = serde_json::from_str("{}").expect("empty object");
-        assert_eq!(from_json, WeKnoraSettings::default());
-        let partial: WeKnoraSettings =
+        let from_json: RagSettings = serde_json::from_str("{}").expect("empty object");
+        assert_eq!(from_json, RagSettings::default());
+        let partial: RagSettings =
             serde_json::from_str(r#"{"enabled":true,"sync":{"autoSync":true}}"#)
                 .expect("partial");
         assert!(partial.enabled);
@@ -264,20 +276,20 @@ mod tests {
 
     #[test]
     fn normalize_trims_and_clamps() {
-        let mut settings = WeKnoraSettings {
+        let mut settings = RagSettings {
             base_url: "  https://kb.example.com/api/v1/  ".into(),
             api_key: "  sk-test  ".into(),
             knowledge_base_id: "  kb-1  ".into(),
-            sync: WeKnoraSyncSettings {
+            sync: RagSyncSettings {
                 auto_sync_minutes: 0,
                 ..Default::default()
             },
-            retrieval: WeKnoraRetrievalSettings {
+            retrieval: RagRetrievalSettings {
                 timeout_ms: 10,
                 top_k: 0,
                 ..Default::default()
             },
-            advanced: WeKnoraAdvancedSettings {
+            advanced: RagAdvancedSettings {
                 concurrency: 0,
                 index_timeout_secs: 5_000,
                 ..Default::default()
@@ -299,7 +311,7 @@ mod tests {
 
     #[test]
     fn masked_or_empty_api_key_is_treated_as_unset() {
-        let mut settings = WeKnoraSettings {
+        let mut settings = RagSettings {
             api_key: "*********".into(),
             ..Default::default()
         };
@@ -312,7 +324,7 @@ mod tests {
 
     #[test]
     fn serialized_shape_is_camel_case() {
-        let value = serde_json::to_value(WeKnoraSettings::default()).unwrap();
+        let value = serde_json::to_value(RagSettings::default()).unwrap();
         for key in [
             "enabled",
             "baseUrl",

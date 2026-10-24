@@ -136,9 +136,9 @@ tunnel-client run --profile agentero
 
 列表没有隧道：§3 关联了目标 workspace、key 有 Tunnels **Use**、Agentero 仍是 **Connected**。
 
-### WeKnora RAG 只读工具（可选）
+### RAG 只读工具（可选）
 
-设置 → RAG 打开并配置后，MCP tools/list 会动态多出 `weknora_search`（跨文献语义检索，返回 `paper.path` / `cite{}`）、`weknora_paper_context`（单篇笔记/图注/批注检索）、`weknora_sync_status`（同步进度）。三者只读、不写入知识库；`tools.exposeToMcp` 关闭或 RAG 未配置时工具列表恢复为原来的 24 个。详见 [backend/mcp.md](../backend/mcp.md)。
+设置 → RAG 打开并配置（provider=WeKnora）后，MCP tools/list 会动态多出 `agentero_rag_search`（跨文献语义检索，返回 `paper.path` / `cite{}` / provider）、`agentero_rag_paper_context`（单篇笔记/图注/批注检索）、`agentero_rag_sync_status`（同步进度）。三者只读、不写入知识库；`tools.exposeToMcp` 关闭或 RAG 未配置时工具列表恢复为原来的 24 个。详见 [backend/mcp.md](../backend/mcp.md) 与 [backend/rag.md](../backend/rag.md)。
 
 ## 能做什么
 

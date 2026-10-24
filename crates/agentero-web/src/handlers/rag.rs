@@ -1,8 +1,8 @@
-//! WeKnora RAG RPCs (`weknora_*`).
+//! RAG RPCs (`rag_*`).
 //!
 //! Every command answers a plain `ApiResult<T>` envelope (`{ok, data|error}`).
-//! Long-running sync is fire-and-forget: `weknora_sync_start` returns
-//! `{started,…}` immediately and progress streams through `weknora:sync`.
+//! Long-running sync is fire-and-forget: `rag_sync_start` returns
+//! `{started,…}` immediately and progress streams through `rag:sync`.
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -55,13 +55,13 @@ struct ClearMappingArgs {
     delete_docs: bool,
 }
 
-/// `weknora_status` → status summary +
+/// `rag_status` → status summary +
 /// `{enabled, configured, baseUrl, knowledgeBaseId, kbName?, sync, autoSync, tools}`.
 pub async fn status(ctx: &RpcCtx) -> HandlerResult {
-    ok(ctx.state.weknora.status())
+    ok(ctx.state.rag.status())
 }
 
-/// `weknora_test {baseUrl?, apiKey?, knowledgeBaseId?}`.
+/// `rag_test {baseUrl?, apiKey?, knowledgeBaseId?}`.
 pub async fn test(ctx: &RpcCtx, args: &Value) -> HandlerResult {
     let args: TestArgs = match parse_args(args) {
         Ok(args) => args,
@@ -69,12 +69,12 @@ pub async fn test(ctx: &RpcCtx, args: &Value) -> HandlerResult {
     };
     ok(ctx
         .state
-        .weknora
+        .rag
         .test_connection(args.base_url, args.api_key, args.knowledge_base_id)
         .await)
 }
 
-/// `weknora_list_kbs {baseUrl?, apiKey?}` → `{kbs, error?}`.
+/// `rag_list_kbs {baseUrl?, apiKey?}` → `{kbs, error?}`.
 pub async fn list_kbs(ctx: &RpcCtx, args: &Value) -> HandlerResult {
     let args: ListKbsArgs = match parse_args(args) {
         Ok(args) => args,
@@ -82,59 +82,59 @@ pub async fn list_kbs(ctx: &RpcCtx, args: &Value) -> HandlerResult {
     };
     ok(ctx
         .state
-        .weknora
+        .rag
         .list_kbs(args.base_url, args.api_key)
         .await)
 }
 
-/// `weknora_sync_start {force?, paper?}` → `{started,total,changed,skipped,deleted}`.
+/// `rag_sync_start {force?, paper?}` → `{started,total,changed,skipped,deleted}`.
 pub async fn sync_start(ctx: &RpcCtx, args: &Value) -> HandlerResult {
     let args: SyncStartArgs = match parse_args(args) {
         Ok(args) => args,
         Err(error) => return fail_msg(error),
     };
-    match ctx.state.weknora.start_sync(args.force, args.paper) {
+    match ctx.state.rag.start_sync(args.force, args.paper) {
         Ok(value) => ok(value),
         Err(error) => fail_msg(error),
     }
 }
 
-/// `weknora_sync_cancel` → `{cancelled}`.
+/// `rag_sync_cancel` → `{cancelled}`.
 pub async fn sync_cancel(ctx: &RpcCtx) -> HandlerResult {
-    ok(ctx.state.weknora.cancel())
+    ok(ctx.state.rag.cancel())
 }
 
-/// `weknora_reconcile {prune?}` → `{adopted,missing,orphans,deleted}`.
+/// `rag_reconcile {prune?}` → `{adopted,missing,orphans,deleted}`.
 pub async fn reconcile(ctx: &RpcCtx, args: &Value) -> HandlerResult {
     let args: ReconcileArgs = match parse_args(args) {
         Ok(args) => args,
         Err(error) => return fail_msg(error),
     };
-    match ctx.state.weknora.reconcile(args.prune).await {
+    match ctx.state.rag.reconcile(args.prune).await {
         Ok(value) => ok(value),
         Err(error) => fail_msg(error),
     }
 }
 
-/// `weknora_clear_mapping {deleteDocs?}` → `{cleared,deleted}`.
+/// `rag_clear_mapping {deleteDocs?}` → `{cleared,deleted}`.
 pub async fn clear_mapping(ctx: &RpcCtx, args: &Value) -> HandlerResult {
     let args: ClearMappingArgs = match parse_args(args) {
         Ok(args) => args,
         Err(error) => return fail_msg(error),
     };
-    match ctx.state.weknora.clear_mapping(args.delete_docs).await {
+    match ctx.state.rag.clear_mapping(args.delete_docs).await {
         Ok(value) => ok(value),
         Err(error) => fail_msg(error),
     }
 }
 
-/// `weknora_search {query, topK?, paper?, tag?, mode?, rerank?}`.
+/// `rag_search {query, topK?, paper?, tag?, mode?, rerank?}`.
 pub async fn search(ctx: &RpcCtx, args: &Value) -> HandlerResult {
-    let args: crate::weknora::SearchArgs = match parse_args(args) {
+    let args: crate::rag::SearchArgs = match parse_args(args) {
         Ok(args) => args,
         Err(error) => return fail_msg(error),
     };
-    match ctx.state.weknora.search(args).await {
+    match ctx.state.rag.search(args).await {
         Ok(value) => ok(value),
         Err(error) => fail_msg(error),
     }

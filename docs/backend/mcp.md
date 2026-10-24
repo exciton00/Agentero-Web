@@ -152,26 +152,26 @@ cargo test -p agentero-core pdf::layout_index
 - `file_move` 复用 Host 的 wiki 重命名事务：先移动，再重写链接，失败会回滚；`papers/` 下的路径同步更新 catalog
 - `file_delete` 默认进入 Vault 回收站（undoable）；`permanent=true` 时永久删除，调用方必须先取得用户确认
 
-### WeKnora RAG 工具（P2，动态）
+### RAG 工具（v2.1，动态）
 
-当设置 → RAG 满足 `enabled && configured && tools.exposeToMcp` 时，tools/list **动态**多出 3 个只读工具；任一条件关闭后立即消失（同一 MCP 会话内也生效），`call_tool` 对未暴露工具返回可读的 tool-level error（`weknora_disabled`）。其余 24 个工具完全不受影响。
+当设置 → RAG 满足 `enabled && configured && provider 已实现 && tools.exposeToMcp` 时，tools/list **动态**多出 3 个只读工具（与 provider 无关，输出带 `provider`）；任一条件关闭后立即消失（同一 MCP 会话内也生效），`call_tool` 对未暴露工具返回可读的 tool-level error（`rag_disabled`）。其余 24 个工具完全不受影响。
 
 | Tool | 作用 |
 |---|---|
-| `weknora_search` | KB 语义+关键词混合检索（`mode`: hybrid 默认 / semantic / keyword；`rerank` 默认 false）。`query` 必填；`topK?` 1–50 默认 8；`paper?`（id/路径）限定单篇；`tag?` 按 catalog 标签过滤；`includeSummaries?` 默认 false（summary chunk 会去重）。返回 `{query,hits,count,degraded?}`，每条 hit 含 `paper{ref,path,title,tags,bibtexKey}`、`knowledgeId`、`chunkType`、`score`、`content`（≤4k 字符）、`section?`、`latex?`（`\cite{key}`）。 |
-| `weknora_paper_context` | 只查一篇已同步论文的正文/笔记/批注/图表索引：`paper` + `query` 必填，`topK?` 默认 6。返回 `{paper,hits,count}`（hit 含 `section`）。实现上是 KB-wide 检索后按本地映射过滤（API key scope 不允许 `knowledge_ids`）。 |
-| `weknora_sync_status` | 只读、无网络：`enabled/configured/total/synced/indexing/failed/pending/lastSyncAt`；带 `paper?` 时返回该篇 `status/syncedAt/lastError/knowledgeId/bibtexKey`。 |
+| `agentero_rag_search` | KB 语义+关键词混合检索（`mode`: hybrid 默认 / semantic / keyword；`rerank` 默认 false）。`query` 必填；`topK?` 1–50 默认 8；`paper?`（id/路径）限定单篇；`tag?` 按 catalog 标签过滤；`includeSummaries?` 默认 false（summary chunk 会去重）。返回 `{provider,providerLabel,query,hits,count,degraded?}`，每条 hit 含 `provider`、`paper{ref,path,title,tags,bibtexKey}`、`knowledgeId`、`chunkType`、`score`、`content`（≤4k 字符）、`section?`、`latex?`（`\cite{key}`）。 |
+| `agentero_rag_paper_context` | 只查一篇已同步论文的正文/笔记/批注/图表索引：`paper` + `query` 必填，`topK?` 默认 6。返回 `{provider,providerLabel,paper,hits,count}`（hit 含 `section`）。实现上是 KB-wide 检索后按本地映射过滤（WeKnora API key scope 不允许 `knowledge_ids`）。 |
+| `agentero_rag_sync_status` | 只读、无网络：`provider/providerLabel/enabled/configured/total/synced/indexing/failed/pending/lastSyncAt`；带 `paper?` 时返回该篇 `status/syncedAt/lastError/knowledgeId/bibtexKey`。 |
 
-工具描述明确：适合"库里有没有讨论 X 的笔记/图注"这类跨文献问题；精读单篇仍用 `paper_get`/`page_read`；引用用返回的 `bibtexKey`/`latex`。命中内容按 `(knowledge_id, chunk)` 去重、单条裁剪到 4k 字符；WeKnora 不可达/未启用返回可读 `isError`。
+工具描述明确：适合"库里有没有讨论 X 的笔记/图注"这类跨文献问题；精读单篇仍用 `paper_get`/`page_read`；引用用返回的 `bibtexKey`/`latex`。命中内容按 `(knowledge_id, chunk)` 去重、单条裁剪到 4k 字符；provider 不可达/未启用返回可读 `isError`。
 
 ### Web Agent 的 RAG MCP 注入（P2）
 
-Web host 在 `weknora.enabled && configured && tools.exposeToAgent` 时，为每个 ACP turn 注入会话级 stdio MCP `agentero-rag`（`AgentHost::set_rag_mcp`，settings 保存后即时更新）：
+Web host 在 `rag.enabled && configured && provider 已实现 && tools.exposeToAgent` 时，为每个 ACP turn 注入会话级 stdio MCP `agentero-rag`（`AgentHost::set_rag_mcp`，settings 保存后即时更新）：
 
 - `prepare_run_turn` 写一个 **0600** 临时配置（baseUrl/apiKey/kbId/vault/statePath/检索默认值），把 `McpServerStdio("agentero-rag", current_exe, ["--agentero-rag-mcp", path])` 追加到 ACP `mcpServers`，并在 prompt 里插入一句短提示（仅在启用时；不写历史）。
 - 该 turn 跳过 warm pool（暖会话无此 MCP server）；spec 变化（开关/KB/地址）时 `set_rag_mcp` 返回 changed 并清空 warm pool。
 - 子进程 `agentero-web --agentero-rag-mcp <config>` 只讲 stdio MCP，暴露同一 3 个只读工具；config 在 turn 结束（guard drop）时删除，key 不落日志/命令行。
-- 会话结束/失败也会清理；WeKnora 关闭时 ACP 工具面与历史行为一致（不注入、不提示）。
+- 会话结束/失败也会清理；RAG 关闭时 ACP 工具面与历史行为一致（不注入、不提示）；provider/开关/KB 变化时 warm pool 失效。
 
 不做：mark（请用 CLI）、把 PDF 当文本读、shell、stdio MCP。
 
