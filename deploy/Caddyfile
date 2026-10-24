@@ -1,18 +1,24 @@
 # Reverse proxy for the headless Agentero web host.
 #
 # The app itself has no built-in auth (single-user, trusted network model), so
-# this layer owns TLS + authentication. Replace the hostname and the basic_auth
-# hash before deploying:
+# this layer owns TLS + authentication. Everything user-specific comes from
+# .env (see .env.example):
 #
-#   caddy hash-password --plaintext 'your-password'
+#   AGENTERO_DOMAIN             # public hostname; DNS must point here
+#   AGENTERO_BASIC_AUTH_USER    # login user
+#   AGENTERO_BASIC_AUTH_HASH    # bcrypt hash, single-quoted in .env
 #
-# Then: docker compose -f docker-compose.prod.yml up -d
+# Generate the hash with:
+#   docker run --rm caddy:2 caddy hash-password --plaintext 'your-password'
+#
+# Start with:
+#   docker compose -f docker-compose.prod.yml up -d
 
-agentero.example.com {
+{$AGENTERO_DOMAIN} {
 	encode zstd gzip
 
 	basic_auth {
-		you $2a$14$REPLACE_WITH_BCRYPT_HASH
+		{$AGENTERO_BASIC_AUTH_USER} {$AGENTERO_BASIC_AUTH_HASH}
 	}
 
 	# The app is served from one origin; no CORS needed.
@@ -27,11 +33,13 @@ agentero.example.com {
 	}
 }
 
-# Optional MCP route (uncomment together with the prod compose env/expose above):
-# the MCP endpoint has no auth of its own, so it sits behind the same basic auth.
-# mcp.example.com {
+# Optional MCP route: expose 8765 in docker-compose.prod.yml, uncomment this
+# block, and add AGENTERO_MCP_DOMAIN to .env. The MCP endpoint has no auth of
+# its own, so it sits behind the same basic auth.
+# {$AGENTERO_MCP_DOMAIN} {
+# 	encode zstd gzip
 # 	basic_auth {
-# 		# <user> <bcrypt-hash>
+# 		{$AGENTERO_BASIC_AUTH_USER} {$AGENTERO_BASIC_AUTH_HASH}
 # 	}
 # 	reverse_proxy agentero-web:8765
 # }

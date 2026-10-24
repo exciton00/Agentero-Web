@@ -1,0 +1,73 @@
+# Example production compose: the app is not published directly; Caddy
+# terminates TLS and enforces basic auth. Copy and configure .env:
+#
+#   cp docker-compose.prod.yml.example docker-compose.prod.yml
+#   cp .env.example .env
+#   # edit .env: AGENTERO_VAULT_DIR / AGENTERO_DATA_DIR / AGENTERO_DOMAIN /
+#   #            AGENTERO_BASIC_AUTH_USER / AGENTERO_BASIC_AUTH_HASH
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Caddy fetches certificates automatically (ports 80/443 must be reachable).
+# The real docker-compose.prod.yml and .env are git-ignored.
+
+services:
+  agentero-web:
+    build:
+      context: .
+      args:
+        AGENTERO_BUILD_VERSION: ${AGENTERO_BUILD_VERSION:-dev}
+    image: ${AGENTERO_IMAGE:-ghcr.io/exciton00/agentero-web:latest}
+    container_name: agentero-web
+    restart: unless-stopped
+    # No host port: only reachable through the Caddy network.
+    expose:
+      - "8787"
+      # Optional MCP endpoint; expose 8765 and route it in deploy/Caddyfile if
+      # you want to publish MCP through the same proxy (no built-in auth).
+      # - "8765"
+    environment:
+      AGENTERO_WEB_ADDR: ${AGENTERO_WEB_ADDR:-0.0.0.0:8787}
+      AGENTERO_WEB_VAULT: ${AGENTERO_WEB_VAULT:-/vault}
+      AGENTERO_WEB_DIST: ${AGENTERO_WEB_DIST:-/app/dist}
+      AGENTERO_WEB_MAX_BODY_MB: ${AGENTERO_WEB_MAX_BODY_MB:-64}
+      AGENTERO_WEB_ALLOW_ROOTS: ${AGENTERO_WEB_ALLOW_ROOTS:-}
+      RUST_LOG: ${RUST_LOG:-info}
+      AGENTERO_MCP_ENABLED: ${AGENTERO_MCP_ENABLED:-}
+      AGENTERO_MCP_BIND: ${AGENTERO_MCP_BIND:-}
+      AGENTERO_MCP_ALLOWED_HOSTS: ${AGENTERO_MCP_ALLOWED_HOSTS:-}
+      AGENTERO_SYNC_ACCESS_KEY: ${AGENTERO_SYNC_ACCESS_KEY:-}
+      AGENTERO_SYNC_SECRET_KEY: ${AGENTERO_SYNC_SECRET_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    volumes:
+      - ${AGENTERO_VAULT_DIR:-./vault}:/vault
+      - ${AGENTERO_DATA_DIR:-./data}:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  caddy:
+    image: caddy:2
+    container_name: agentero-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # deploy/Caddyfile is generic; the values come from .env.
+      AGENTERO_DOMAIN: ${AGENTERO_DOMAIN}
+      AGENTERO_BASIC_AUTH_USER: ${AGENTERO_BASIC_AUTH_USER}
+      AGENTERO_BASIC_AUTH_HASH: ${AGENTERO_BASIC_AUTH_HASH}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - agentero-web
+
+volumes:
+  caddy_data:
+  caddy_config:

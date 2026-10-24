@@ -1,0 +1,54 @@
+# Example dev/intranet docker-compose file.
+#
+# Usage:
+#   cp docker-compose.yml.example docker-compose.yml
+#   cp .env.example .env
+#   # edit .env (paths, ports, optional API keys / MCP)
+#   docker compose up -d --build
+#
+# The real docker-compose.yml and .env are git-ignored. Do not commit them.
+#
+# Single-user, no built-in auth. Put a reverse proxy (Caddy/nginx/Tailscale)
+# in front for TLS + auth before exposing this to a network.
+
+services:
+  agentero-web:
+    build:
+      context: .
+      args:
+        AGENTERO_BUILD_VERSION: ${AGENTERO_BUILD_VERSION:-dev}
+    image: ${AGENTERO_IMAGE:-ghcr.io/exciton00/agentero-web:latest}
+    container_name: agentero-web
+    restart: unless-stopped
+    ports:
+      # Host bind/port from .env; default only loopback.
+      - "${AGENTERO_WEB_BIND:-127.0.0.1}:${AGENTERO_WEB_PORT:-8787}:8787"
+      # Optional MCP endpoint (Streamable HTTP, no auth): uncomment and set
+      # AGENTERO_MCP_ENABLED/AGENTERO_MCP_BIND in .env to publish it.
+      # - "${AGENTERO_MCP_PORT:-8765}:${AGENTERO_MCP_PORT:-8765}"
+    environment:
+      AGENTERO_WEB_ADDR: ${AGENTERO_WEB_ADDR:-0.0.0.0:8787}
+      AGENTERO_WEB_VAULT: ${AGENTERO_WEB_VAULT:-/vault}
+      AGENTERO_WEB_DIST: ${AGENTERO_WEB_DIST:-/app/dist}
+      AGENTERO_WEB_MAX_BODY_MB: ${AGENTERO_WEB_MAX_BODY_MB:-64}
+      AGENTERO_WEB_ALLOW_ROOTS: ${AGENTERO_WEB_ALLOW_ROOTS:-}
+      RUST_LOG: ${RUST_LOG:-info}
+      # Optional MCP endpoint.
+      AGENTERO_MCP_ENABLED: ${AGENTERO_MCP_ENABLED:-}
+      AGENTERO_MCP_BIND: ${AGENTERO_MCP_BIND:-}
+      AGENTERO_MCP_ALLOWED_HOSTS: ${AGENTERO_MCP_ALLOWED_HOSTS:-}
+      # Optional cloud-sync credentials (XDG sync.json otherwise).
+      AGENTERO_SYNC_ACCESS_KEY: ${AGENTERO_SYNC_ACCESS_KEY:-}
+      AGENTERO_SYNC_SECRET_KEY: ${AGENTERO_SYNC_SECRET_KEY:-}
+      # Optional agent CLI credentials (server-side).
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    volumes:
+      - ${AGENTERO_VAULT_DIR:-./vault}:/vault
+      - ${AGENTERO_DATA_DIR:-./data}:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

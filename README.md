@@ -160,45 +160,62 @@ git merge upstream/main   # 或 rebase；Web 改动较多，冲突需自行解�
 
 ## 5. 部署
 
-### 5.1 Docker Compose（推荐）
+### 5.1 Docker Compose（推荐，使用 GHCR 自动构建镜像）
 
 前置：Linux（实测 Debian 13 x86_64）、Docker + Compose 插件。
+
+仓库只提交 `.example` 模板；实际的 `docker-compose.yml`、`docker-compose.prod.yml`、
+`.env` 都被 `.gitignore` 忽略，不会被误提交。
 
 ```bash
 git clone https://github.com/exciton00/Agentero-Web.git agentero-web
 cd agentero-web
 
+cp docker-compose.yml.example docker-compose.yml
+cp .env.example .env
+# 编辑 .env：至少确认 AGENTERO_VAULT_DIR / AGENTERO_DATA_DIR / AGENTERO_WEB_PORT
 mkdir -p vault data
-# 默认只绑定 127.0.0.1:8787；单用户、无内置鉴权，请在前方加反向代理
-AGENTERO_VAULT_DIR=$PWD/vault AGENTERO_DATA_DIR=$PWD/data \
-  docker compose up -d --build
+
+# 默认使用 GitHub Actions 构建并推送到 GHCR 的镜像：
+#   ghcr.io/exciton00/agentero-web:latest
+docker compose pull
+docker compose up -d --no-build
 
 # 打开 http://127.0.0.1:8787
 ```
 
-`vault/` 与 `data/` 是本地运行数据（Vault 与 XDG 设置/记录），仓库根目录下这两个目录
-**已加入 `.gitignore`，不会被误提交**；也可以把 `AGENTERO_VAULT_DIR` / `AGENTERO_DATA_DIR`
-指向仓库外的绝对路径（生产环境建议这样做）。
+> 镜像地址由 `.env` 的 `AGENTERO_IMAGE` 控制；fork 后改成
+> `ghcr.io/<你的账号>/agentero-web:latest`。首次构建完成前 / 不想用 GHCR 时，可改
+> `AGENTERO_IMAGE=agentero-web:local` 并执行 `docker compose up -d --build`（本地源码构建，
+> 耗时较长）。GHCR 包默认可能是 private，pull 前需要 `docker login ghcr.io` 或在
+> GitHub Packages 中把包设为 public。
+
+`vault/` 与 `data/` 是本地运行数据（Vault 与 XDG 设置/记录），**已加入 `.gitignore`**；
+也可以把 `AGENTERO_VAULT_DIR` / `AGENTERO_DATA_DIR` 指向仓库外的绝对路径（生产建议这样做）。
 
 生产（Caddy TLS + basic auth，应用端口不直接发布）：
 
 ```bash
-# 1) 生成 basic auth 哈希
+cp docker-compose.prod.yml.example docker-compose.prod.yml
+# 继续使用同一个 .env：设置 AGENTERO_DOMAIN / AGENTERO_BASIC_AUTH_USER / AGENTERO_BASIC_AUTH_HASH
 docker run --rm caddy:2 caddy hash-password --plaintext 'change-me'
-# 2) 把哈希与域名写进 deploy/Caddyfile
-# 3) 启动（80/443 需可达，Caddy 自动签发证书）
-AGENTERO_VAULT_DIR=/srv/agentero/vault \
-AGENTERO_DATA_DIR=/srv/agentero/data \
-  docker compose -f docker-compose.prod.yml up -d --build
+
+docker compose -f docker-compose.prod.yml pull
+docker compose -f docker-compose.prod.yml up -d --no-build
 ```
+
+`deploy/Caddyfile` 不需要手改：域名和 basic auth 全部由 `.env` 注入
+（`{$AGENTERO_DOMAIN}` / `{$AGENTERO_BASIC_AUTH_*}`）。
 
 关键点：
 - **必须让反向代理支持 WebSocket**（`/api/events` 的 Upgrade），否则流式输出/任务进度不可用。
 - `AGENTERO_VAULT_DIR`：Vault（Markdown/PDF/`.agentero/catalog.sqlite`）；`AGENTERO_DATA_DIR`：
   XDG 设置/使用记录/同步状态/RAG state，均需备份。
-- 需要公网 MCP 时：`AGENTERO_MCP_ENABLED=1`、`AGENTERO_MCP_BIND=0.0.0.0:8765`，发布 8765，
-  把外部域名加入 `AGENTERO_MCP_ALLOWED_HOSTS`，并由反代加鉴权（MCP 本身无鉴权）。
-- Agent CLI 需在镜像/容器内额外安装（镜像只含 Node 22）；凭据用环境变量或挂载 `~/.dsh/.env`。
+- 需要公网 MCP 时：`.env` 设 `AGENTERO_MCP_ENABLED=1`、`AGENTERO_MCP_BIND=0.0.0.0:8765`，
+  取消 compose 中 MCP 端口映射注释并发布 8765；把外部域名加入 `AGENTERO_MCP_ALLOWED_HOSTS`，
+  并由反代加鉴权（MCP 本身无鉴权）。
+- Agent CLI 需在镜像/容器内额外安装（镜像只含 Node 22）；凭据可在 `.env` 填
+  `DEEPSEEK_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`，或挂载 `~/.dsh/.env`。
 
 ### 5.2 源码部署
 
@@ -233,18 +250,43 @@ RUST_LOG=info \
 用 systemd 托管时把上述环境变量写入 `Environment=`；反向代理配置见
 [`docs/usage/web-self-host.md`](docs/usage/web-self-host.md)。首次访问进入欢迎页，新建/打开 Vault 即可。
 
-### 5.3 环境变量（常用）
+### 5.3 环境变量（`.env`）
+
+Docker Compose 的所有用户配置统一放在 `.env`（从 `.env.example` 复制）。
+`docker compose` 会自动读取仓库根目录的 `.env`；这个文件与实际的 compose 文件都被 git 忽略。
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `AGENTERO_WEB_ADDR` | `127.0.0.1:8787` | 监听地址；容器内 `0.0.0.0:8787` |
-| `AGENTERO_WEB_VAULT` | `~/Agentero` | 默认 Vault 根 |
-| `AGENTERO_WEB_DIST` | `./dist` | 前端产物目录（`pnpm build:web`） |
-| `AGENTERO_WEB_ALLOW_ROOTS` | 空 | 文件端点额外根目录（`:`/`,` 分隔） |
+| `AGENTERO_IMAGE` | `ghcr.io/exciton00/agentero-web:latest` | 镜像地址；本地构建可改 `agentero-web:local` |
+| `AGENTERO_VAULT_DIR` / `AGENTERO_DATA_DIR` | `./vault` / `./data` | 宿主机 Vault / XDG 数据目录 |
+| `AGENTERO_WEB_BIND` / `AGENTERO_WEB_PORT` | `127.0.0.1` / `8787` | 宿主机绑定与端口 |
+| `AGENTERO_WEB_ADDR` / `AGENTERO_WEB_VAULT` / `AGENTERO_WEB_DIST` | 容器内固定路径 | 容器内 Web 监听 / Vault / dist |
 | `AGENTERO_WEB_MAX_BODY_MB` | `64` | `/api` body 上限（8–512 MiB） |
+| `AGENTERO_WEB_ALLOW_ROOTS` | 空 | 文件端点额外根目录（`:`/`,` 分隔） |
 | `AGENTERO_MCP_ENABLED` / `AGENTERO_MCP_BIND` / `AGENTERO_MCP_ALLOWED_HOSTS` | 空 | MCP 强制开启 / 绑定地址 / Host 白名单 |
-| `XDG_CONFIG_HOME` / `XDG_DATA_HOME` / `XDG_CACHE_HOME` | 系统默认 | 设置、使用记录、模型缓存（容器内建议持久卷） |
+| `AGENTERO_DOMAIN` / `AGENTERO_BASIC_AUTH_USER` / `AGENTERO_BASIC_AUTH_HASH` | 仅生产 | Caddy 域名与 basic auth（hash 用单引号，防止 `$` 插值） |
+| `DEEPSEEK_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | 空 | 可选，服务端 Agent CLI 凭据 |
 | `RUST_LOG` | `info` | 日志级别 |
+
+完整模板见 [`.env.example`](.env.example)。
+
+### 5.4 镜像构建（GitHub Actions → GHCR）
+
+仓库内置 [`.github/workflows/docker-image.yml`](.github/workflows/docker-image.yml)：
+
+- 触发：推送 `main`、推送 `v*` tag、手动 `workflow_dispatch`；
+- 构建 `linux/amd64` 镜像并推送到 **`ghcr.io/<repository-owner>/agentero-web`**
+  （当前仓库为 `ghcr.io/exciton00/agentero-web`）：`latest`（默认分支）、分支名、semver tag、
+  `sha-<short>`；
+- 使用 `GITHUB_TOKEN` 登录 GHCR，`packages: write`；构建缓存走 GitHub Actions cache
+  （`type=gha`）；镜像内已包含前端 `dist`、PDFium 与 Node 22；
+- 构建成功后，把 `.env` 的 `AGENTERO_IMAGE` 指向 `ghcr.io/exciton00/agentero-web:latest`，
+  `docker compose pull && docker compose up -d --no-build` 即可部署；
+- 本地构建/调试：`docker build -t agentero-web:local .`，或在 `.env` 设
+  `AGENTERO_IMAGE=agentero-web:local` 后 `docker compose up -d --build`。
+
+> GHCR 包默认可能是 private；公开部署前可在 GitHub 仓库 → Packages 里把包设为 public，
+> 或先 `docker login ghcr.io -u <user>`（PAT 需要 `read:packages`）。
 
 ---
 

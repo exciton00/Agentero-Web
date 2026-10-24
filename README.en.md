@@ -98,42 +98,61 @@ under its original copyright/license (see [LICENSE](LICENSE)).
 
 ## 5. Deployment
 
-### 5.1 Docker Compose (recommended)
+### 5.1 Docker Compose (recommended; uses the GHCR image)
 
 Requirements: Linux (tested Debian 13 x86_64), Docker + Compose plugin.
+
+Only `.example` templates are committed; the real `docker-compose.yml`,
+`docker-compose.prod.yml` and `.env` are **git-ignored**.
 
 ```bash
 git clone https://github.com/exciton00/Agentero-Web.git agentero-web
 cd agentero-web
+
+cp docker-compose.yml.example docker-compose.yml
+cp .env.example .env
+# edit .env (at least AGENTERO_VAULT_DIR / AGENTERO_DATA_DIR / AGENTERO_WEB_PORT)
 mkdir -p vault data
 
-AGENTERO_VAULT_DIR=$PWD/vault AGENTERO_DATA_DIR=$PWD/data \
-  docker compose up -d --build
+# Default image built by GitHub Actions and pushed to GHCR:
+#   ghcr.io/exciton00/agentero-web:latest
+docker compose pull
+docker compose up -d --no-build
 # open http://127.0.0.1:8787
 ```
 
+> `AGENTERO_IMAGE` in `.env` controls the image; after forking, point it at
+> `ghcr.io/<your-account>/agentero-web:latest`. Before the first CI build (or to build locally),
+> set `AGENTERO_IMAGE=agentero-web:local` and run `docker compose up -d --build` instead.
+> GHCR packages may be private by default — set the package to public in GitHub Packages or run
+> `docker login ghcr.io` first.
+
 `vault/` and `data/` hold local runtime data (Vault + XDG settings/records); both directories are
-**listed in `.gitignore`**, so they will not be committed by accident. You can also point
-`AGENTERO_VAULT_DIR` / `AGENTERO_DATA_DIR` at absolute paths outside the repository (recommended in
-production).
+**listed in `.gitignore`**. You can also point `AGENTERO_VAULT_DIR` / `AGENTERO_DATA_DIR` at absolute
+paths outside the repository (recommended in production).
 
 Production (Caddy TLS + basic auth; app port is not published):
 
 ```bash
+cp docker-compose.prod.yml.example docker-compose.prod.yml
+# keep using .env; set AGENTERO_DOMAIN / AGENTERO_BASIC_AUTH_USER / AGENTERO_BASIC_AUTH_HASH
 docker run --rm caddy:2 caddy hash-password --plaintext 'change-me'
-# put the hash + your domain into deploy/Caddyfile
-AGENTERO_VAULT_DIR=/srv/agentero/vault \
-AGENTERO_DATA_DIR=/srv/agentero/data \
-  docker compose -f docker-compose.prod.yml up -d --build
+
+docker compose -f docker-compose.prod.yml pull
+docker compose -f docker-compose.prod.yml up -d --no-build
 ```
+
+`deploy/Caddyfile` is generic; domain and basic auth come from `.env`
+(`{$AGENTERO_DOMAIN}` / `{$AGENTERO_BASIC_AUTH_*}`), so no file edits are needed.
 
 - The reverse proxy **must support WebSocket** (`Upgrade` on `/api/events`), otherwise streaming/task
   progress break.
 - Back up `AGENTERO_VAULT_DIR` plus the XDG data dir (`AGENTERO_DATA_DIR`).
-- Public MCP: set `AGENTERO_MCP_ENABLED=1`, `AGENTERO_MCP_BIND=0.0.0.0:8765`, publish 8765, add the
-  public host to `AGENTERO_MCP_ALLOWED_HOSTS`, and protect it with the reverse proxy (MCP has no auth).
+- Public MCP: set `AGENTERO_MCP_ENABLED=1`, `AGENTERO_MCP_BIND=0.0.0.0:8765`, uncomment the MCP port
+  mapping in the compose file, add the public host to `AGENTERO_MCP_ALLOWED_HOSTS`, and protect it with
+  the reverse proxy (MCP has no auth).
 - Agent CLIs must be installed inside the image/container (Node 22 is included); pass credentials via
-  environment variables or mount `~/.dsh/.env`.
+  `.env` (`DEEPSEEK_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`) or mount `~/.dsh/.env`.
 
 ### 5.2 From source
 
@@ -161,6 +180,43 @@ RUST_LOG=info \
 
 Use systemd `Environment=` for the variables above. Reverse-proxy examples are in
 [`docs/usage/web-self-host.md`](docs/usage/web-self-host.md).
+
+### 5.3 Environment variables (`.env`)
+
+All Docker Compose settings live in `.env` (copied from `.env.example`). Compose reads it
+automatically; `.env` and the real compose files are git-ignored.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `AGENTERO_IMAGE` | `ghcr.io/exciton00/agentero-web:latest` | image; set `agentero-web:local` for a local build |
+| `AGENTERO_VAULT_DIR` / `AGENTERO_DATA_DIR` | `./vault` / `./data` | host Vault / XDG data |
+| `AGENTERO_WEB_BIND` / `AGENTERO_WEB_PORT` | `127.0.0.1` / `8787` | host bind and port |
+| `AGENTERO_WEB_MAX_BODY_MB` | `64` | `/api` body limit (8–512 MiB) |
+| `AGENTERO_WEB_ALLOW_ROOTS` | empty | extra file-API roots |
+| `AGENTERO_MCP_ENABLED` / `AGENTERO_MCP_BIND` / `AGENTERO_MCP_ALLOWED_HOSTS` | empty | optional MCP listener / bind / Host allow-list |
+| `AGENTERO_DOMAIN` / `AGENTERO_BASIC_AUTH_USER` / `AGENTERO_BASIC_AUTH_HASH` | production only | Caddy domain and basic auth (quote the hash to protect `$`) |
+| `DEEPSEEK_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | empty | optional server-side agent CLI credentials |
+| `RUST_LOG` | `info` | log level |
+
+See [`.env.example`](.env.example) for the full template.
+
+### 5.4 Image build (GitHub Actions → GHCR)
+
+[`.github/workflows/docker-image.yml`](.github/workflows/docker-image.yml):
+
+- Triggers on pushes to `main`, tags `v*`, and `workflow_dispatch`;
+- Builds a `linux/amd64` image and pushes to **`ghcr.io/<repository-owner>/agentero-web`**
+  (this repo: `ghcr.io/exciton00/agentero-web`): `latest` (default branch), branch name, semver tag,
+  `sha-<short>`;
+- Logs in with `GITHUB_TOKEN` (`packages: write`), caches layers with the GitHub Actions cache
+  (`type=gha`); the image bundles the frontend `dist`, PDFium and Node 22;
+- To deploy a built image, set `AGENTERO_IMAGE=ghcr.io/exciton00/agentero-web:latest` in `.env` and run
+  `docker compose pull && docker compose up -d --no-build`;
+- Local build/debug: `docker build -t agentero-web:local .` (then set that image in `.env` and add
+  `--build` to `docker compose up`).
+
+> GHCR packages may default to private; make the package public in GitHub Packages or
+> `docker login ghcr.io` with a PAT that has `read:packages`.
 
 ---
 

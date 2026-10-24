@@ -7,35 +7,67 @@ Agentero 的 headless Web 宿主把同一个 Vault 与工作台界面跑在一�
 
 ## 快速开始（Docker Compose）
 
+仓库只提交 `.example` 模板；实际的 `docker-compose.yml`、`docker-compose.prod.yml` 和 `.env`
+已被 `.gitignore` 忽略。
+
 ```bash
-git clone <this repo> agentero && cd agentero
-# 1. 准备目录（NAS 上换成自己的路径）
+git clone https://github.com/exciton00/Agentero-Web.git agentero && cd agentero
+
+# 1. 生成本地配置（不要提交这两个文件）
+cp docker-compose.yml.example docker-compose.yml
+cp .env.example .env
+# 编辑 .env：路径、端口、可选 Agent key 等
 mkdir -p vault data
-# 2. 启动
-AGENTERO_VAULT_DIR=$PWD/vault AGENTERO_DATA_DIR=$PWD/data \
-  docker compose up -d --build
+
+# 2. 拉取 GitHub Actions 构建的镜像并启动
+# 默认 AGENTERO_IMAGE=ghcr.io/exciton00/agentero-web:latest
+docker compose pull
+docker compose up -d --no-build
+
 # 3. 打开（默认只绑 loopback，见下面的反向代理）
 open http://127.0.0.1:8787
 ```
 
 首次访问会进入欢迎页；在 VAULT 目录里新建/打开一个 Vault 即可（也可以复用已有 Vault：把 `AGENTERO_VAULT_DIR` 指向它）。
 
-> `vault/` 与 `data/` 是本地运行数据目录，仓库根目录下的这两个目录已加入 `.gitignore`，不会被误提交；
-> 生产环境建议把 `AGENTERO_VAULT_DIR` / `AGENTERO_DATA_DIR` 指向仓库外的绝对路径。
+> `vault/` 与 `data/` 是本地运行数据目录，已加入 `.gitignore`，不会被误提交；生产环境建议把
+> `AGENTERO_VAULT_DIR` / `AGENTERO_DATA_DIR` 指向仓库外的绝对路径。
+>
+> 想用源码构建镜像时：`.env` 设 `AGENTERO_IMAGE=agentero-web:local`，执行
+> `docker compose up -d --build`（耗时较长）。首次 CI 构建完成前也可用这条路径。
+>
+> GHCR 包默认可能是 private：公开部署前在 GitHub Packages 里设为 public，或先
+> `docker login ghcr.io`（PAT 需要 `read:packages`）。
 
 ## 生产部署（Caddy 反向代理 + 鉴权）
 
-仓库内置了生产编排：`docker-compose.prod.yml` + `deploy/Caddyfile`。应用端口不再发布到宿主机，只由 Caddy 反代并通过 basic auth 保护：
+仓库内置生产编排模板：`docker-compose.prod.yml.example` + `deploy/Caddyfile`（Caddyfile 是通用模板，
+域名 / basic auth 由 `.env` 注入）。应用端口不再发布到宿主机：
 
 ```bash
-# 1. 生成密码哈希
+cp docker-compose.prod.yml.example docker-compose.prod.yml
+# 继续使用同一个 .env，设置：
+#   AGENTERO_VAULT_DIR / AGENTERO_DATA_DIR（建议绝对路径）
+#   AGENTERO_DOMAIN / AGENTERO_BASIC_AUTH_USER / AGENTERO_BASIC_AUTH_HASH
+
+# 生成 basic auth 哈希（写进 .env 时用单引号，避免 $ 被 compose 插值）
 docker run --rm caddy:2 caddy hash-password --plaintext 'your-password'
-# 2. 把哈希写进 deploy/Caddyfile 的 basic_auth，域名改成自己的
-# 3. 启动（80/443 需可达，Caddy 自动签发 TLS）
-AGENTERO_VAULT_DIR=/srv/agentero/vault \
-AGENTERO_DATA_DIR=/srv/agentero/data \
-  docker compose -f docker-compose.prod.yml up -d --build
+
+# 启动（80/443 需可达，Caddy 自动签发 TLS）
+docker compose -f docker-compose.prod.yml pull
+docker compose -f docker-compose.prod.yml up -d --no-build
 ```
+
+## 镜像构建（GitHub Actions → GHCR）
+
+`.github/workflows/docker-image.yml` 在 push `main` / `v*` tag / 手动 dispatch 时构建
+`linux/amd64` 镜像并推送到 `ghcr.io/<repository-owner>/agentero-web`（本仓库为
+`ghcr.io/exciton00/agentero-web`），标签包括 `latest`（默认分支）、分支名、semver tag 与
+`sha-<short>`；使用 `GITHUB_TOKEN`（`packages: write`）登录与 GitHub Actions 缓存。
+
+部署时 `.env` 的 `AGENTERO_IMAGE` 指向该镜像，`docker compose pull && docker compose up -d --no-build`
+即可；本地构建/调试用 `docker build -t agentero-web:local .`，并在 `.env` 设
+`AGENTERO_IMAGE=agentero-web:local`。
 
 ## 反向代理（手工配置）
 
@@ -64,20 +96,30 @@ location / {
 
 WebSocket（`/api/events`）必须支持 Upgrade，否则前端事件（流式输出、文件变更、任务进度）不会工作。
 
-## 环境变量
+## 环境变量（`.env`）
+
+Docker Compose 的用户配置统一放在 `.env`（由 `.env.example` 复制）；Compose 会自动读取。
+`.env` 与实际 compose 文件都不进 git。
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `AGENTERO_WEB_ADDR` | `127.0.0.1:8787` | 监听地址；容器内用 `0.0.0.0:8787` |
-| `AGENTERO_WEB_VAULT` | `~/Agentero` | 默认 Vault 根（命令仍以显式 `vaultPath` 为准，此值用于文件端点与首屏） |
-| `AGENTERO_WEB_DIST` | `./dist` | 前端构建产物目录（`pnpm build:web`） |
+| `AGENTERO_IMAGE` | `ghcr.io/exciton00/agentero-web:latest` | 镜像地址；本地构建改 `agentero-web:local` |
+| `AGENTERO_VAULT_DIR` / `AGENTERO_DATA_DIR` | `./vault` / `./data` | 宿主机 Vault / XDG 数据目录 |
+| `AGENTERO_WEB_BIND` / `AGENTERO_WEB_PORT` | `127.0.0.1` / `8787` | 宿主机绑定与端口 |
+| `AGENTERO_WEB_ADDR` | `0.0.0.0:8787` | 容器内监听地址 |
+| `AGENTERO_WEB_VAULT` | `/vault` | 容器内默认 Vault 根（命令仍以显式 `vaultPath` 为准） |
+| `AGENTERO_WEB_DIST` | `/app/dist`（源码部署 `./dist`） | 前端构建产物目录 |
 | `AGENTERO_WEB_ALLOW_ROOTS` | 空 | 额外允许文件端点读写的根目录，`:` 或 `,` 分隔 |
-| `AGENTERO_WEB_MAX_BODY_MB` | `64` | `/api` 请求体上限（MiB，8–512，非法值回落 64）。版面解析会把整份 PDF 以 base64 放进 RPC body，大论文 / 大图上传也走同一上限 |
-| `AGENTERO_MCP_ENABLED` | 空 | `1`/`true` 强制启动 MCP listener（无视 `settings.mcpEnabled`，容器里固定开启用） |
-| `AGENTERO_MCP_BIND` | 空 | MCP 监听地址 `host:port`，如 `0.0.0.0:8765`；覆盖 settings 中的端口（设置后 `mcp_set_port` 不再改端口） |
-| `AGENTERO_MCP_ALLOWED_HOSTS` | 空 | MCP 额外允许的 `Host` 头（逗号分隔），反代域名必须列在这里；loopback/bind 主机自动允许 |
-| `XDG_CONFIG_HOME` / `XDG_DATA_HOME` / `XDG_CACHE_HOME` | 系统默认 | 设置、使用记录、模型缓存；容器里建议挂到持久卷 |
+| `AGENTERO_WEB_MAX_BODY_MB` | `64` | `/api` 请求体上限（MiB，8–512，非法值回落 64） |
+| `AGENTERO_MCP_ENABLED` | 空 | `1`/`true` 强制启动 MCP listener（无视 `settings.mcpEnabled`） |
+| `AGENTERO_MCP_BIND` | 空 | MCP 监听地址 `host:port`，如 `0.0.0.0:8765` |
+| `AGENTERO_MCP_ALLOWED_HOSTS` | 空 | MCP 额外允许的 `Host` 头（逗号分隔），反代域名必须列在这里 |
+| `AGENTERO_DOMAIN` / `AGENTERO_BASIC_AUTH_USER` / `AGENTERO_BASIC_AUTH_HASH` | 仅生产 | Caddy 域名与 basic auth；hash 在 `.env` 中用单引号 |
+| `DEEPSEEK_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | 空 | 可选，服务端 Agent CLI 凭据 |
+| `XDG_CONFIG_HOME` / `XDG_DATA_HOME` / `XDG_CACHE_HOME` | 系统默认 | 设置、使用记录、模型缓存；容器里已由 `/data` 挂载持久化 |
 | `RUST_LOG` | `info` | 日志级别 |
+
+完整模板见仓库根目录 [`.env.example`](../../.env.example)。
 
 ## MCP 客户端接入
 
