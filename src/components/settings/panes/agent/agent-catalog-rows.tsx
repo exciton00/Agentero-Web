@@ -42,7 +42,7 @@ import {
 	type CatalogScanResponse,
 	isAgentAuthFailure,
 } from "@/lib/agent";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport, isTauri } from "@/lib/core/tauri";
 import { cn } from "@/lib/core/utils";
 
 type AgentToolLifecycle = ReturnType<typeof useAgentToolLifecycle>;
@@ -257,7 +257,7 @@ function AgentCatalogEntryRow({
 							title={t("agent.installAgentTitle")}
 							// Do not gate on global `busy` (catalog scan/ACP probe of
 							// other agents) — that left Install looking dead for minutes.
-							disabled={rowInstalling || !isTauri()}
+							disabled={rowInstalling || !hasHostTransport()}
 							onClick={() => void runToolLifecycle(entry, "install")}
 						>
 							{rowBusyAction === "install" ? (
@@ -278,7 +278,7 @@ function AgentCatalogEntryRow({
 								name: entry.name,
 							})}
 							title={t("agent.installAdapterTitle")}
-							disabled={rowInstalling || !isTauri()}
+							disabled={rowInstalling || !hasHostTransport()}
 							onClick={() => void runToolLifecycle(entry, "install")}
 						>
 							{rowBusyAction === "install" ? (
@@ -318,7 +318,7 @@ function AgentCatalogEntryRow({
 								name: entry.name,
 							})}
 							title={t("agent.updateAgentTitle")}
-							disabled={rowInstalling || !isTauri()}
+							disabled={rowInstalling || !hasHostTransport()}
 							onClick={() => void runToolLifecycle(entry, "update")}
 						>
 							{rowBusyAction === "update" ? (
@@ -355,7 +355,7 @@ function AgentCatalogEntryRow({
 								name: entry.name,
 							})}
 							title={t("agent.uninstallAgentTitle")}
-							disabled={rowInstalling || !isTauri()}
+							disabled={rowInstalling || !hasHostTransport()}
 							onClick={() =>
 								openUninstallDialog({
 									kind: "catalog",
@@ -495,7 +495,7 @@ function AgentCustomAgentRow({
 						className="size-7"
 						aria-label={editing ? t("common:cancel") : t("common:edit")}
 						title={editing ? t("common:cancel") : t("common:edit")}
-						disabled={!isTauri()}
+						disabled={!hasHostTransport()}
 						onClick={() => {
 							if (editing) {
 								onCancel();
@@ -514,7 +514,7 @@ function AgentCustomAgentRow({
 						className="size-7"
 						aria-label={t("common:remove")}
 						title={t("common:remove")}
-						disabled={!isTauri()}
+						disabled={!hasHostTransport()}
 						onClick={() =>
 							openUninstallDialog({
 								kind: "custom",

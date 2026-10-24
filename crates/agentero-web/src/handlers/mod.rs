@@ -13,6 +13,7 @@ pub mod search;
 pub mod settings;
 pub mod stubs;
 pub mod tags;
+pub mod translate;
 pub mod vault;
 pub mod rag;
 pub mod wiki_state;

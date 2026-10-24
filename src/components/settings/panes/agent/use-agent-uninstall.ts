@@ -13,7 +13,7 @@ import {
 } from "@/lib/agent";
 import { errorText } from "@/lib/core/error";
 import { notifyError, notifySuccess } from "@/lib/core/notify";
-import { isTauri } from "@/lib/core/tauri";
+import { hasHostTransport } from "@/lib/core/tauri";
 
 export type UninstallTarget =
 	| { kind: "catalog"; entry: CatalogEntry; info: UninstallInfo | null }
@@ -39,7 +39,7 @@ export function useAgentUninstall({
 	const [uninstallBusy, setUninstallBusy] = useState(false);
 
 	const openUninstallDialog = useCallback((target: UninstallTarget) => {
-		if (!isTauri()) return;
+		if (!hasHostTransport()) return;
 		if (target.kind === "catalog") {
 			setUninstallTarget({ ...target, info: null });
 			void toolUninstallInfo(target.entry.templateId)
@@ -62,7 +62,7 @@ export function useAgentUninstall({
 
 	const onUninstallConfirm = async (scope: UninstallScope) => {
 		const target = uninstallTarget;
-		if (!target || !isTauri()) return;
+		if (!target || !hasHostTransport()) return;
 		if (target.kind === "catalog") {
 			const info = target.info;
 			const hasAgentPayload =

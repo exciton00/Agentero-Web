@@ -109,6 +109,16 @@ Only `.example` templates are committed; the real `docker-compose.yml`,
 git clone https://github.com/exciton00/Agentero-Web.git agentero-web
 cd agentero-web
 
+# One command: prepare .env/compose, detect a host Dsh (mounts it and
+# auto-registers Host Dsh), pull the GHCR image and start.
+./scripts/docker-up.sh
+
+# open http://127.0.0.1:8787
+```
+
+Manual equivalent:
+
+```bash
 cp docker-compose.yml.example docker-compose.yml
 cp .env.example .env
 # edit .env (at least AGENTERO_VAULT_DIR / AGENTERO_DATA_DIR / AGENTERO_WEB_PORT)
@@ -118,8 +128,11 @@ mkdir -p vault data
 #   ghcr.io/exciton00/agentero-web:latest
 docker compose pull
 docker compose up -d --no-build
-# open http://127.0.0.1:8787
 ```
+
+> If the host already has an authenticated Dsh, run `./scripts/docker-up.sh` instead: it detects the
+> host Dsh, mounts its CLI plus `~/.dsh`, and the web host auto-registers `Host Dsh` — no manual agent
+> setup. Use `./scripts/docker-up.sh prod` for the production compose file.
 
 > `AGENTERO_IMAGE` in `.env` controls the image; after forking, point it at
 > `ghcr.io/<your-account>/agentero-web:latest`. Before the first CI build (or to build locally),
@@ -190,6 +203,7 @@ automatically; `.env` and the real compose files are git-ignored.
 |---|---|---|
 | `AGENTERO_IMAGE` | `ghcr.io/exciton00/agentero-web:latest` | image; set `agentero-web:local` for a local build |
 | `AGENTERO_VAULT_DIR` / `AGENTERO_DATA_DIR` | `./vault` / `./data` | host Vault / XDG data |
+| `AGENTERO_VAULT_CONTAINER_PATH` | `/vault` | container Vault path; use the same absolute path as `AGENTERO_VAULT_DIR` to mirror host paths |
 | `AGENTERO_WEB_BIND` / `AGENTERO_WEB_PORT` | `127.0.0.1` / `8787` | host bind and port |
 | `AGENTERO_WEB_MAX_BODY_MB` | `64` | `/api` body limit (8–512 MiB) |
 | `AGENTERO_WEB_ALLOW_ROOTS` | empty | extra file-API roots |
@@ -218,41 +232,57 @@ See [`.env.example`](.env.example) for the full template.
 > GHCR packages may default to private; make the package public in GitHub Packages or
 > `docker login ghcr.io` with a PAT that has `read:packages`.
 
-### 5.5 Call the host's ACP agent directly (Docker Compose, optional)
+### 5.5 Use the host's ACP agent inside the container (recommended; Dsh tested)
 
-The default image does **not** include any agent CLI, so a fresh compose deployment shows no available
-agent. If the Docker host already has a configured agent (only Dsh was tested for this fork), you can let
-the container call the host's ACP instead of installing a CLI in the image:
+The default GHCR image does **not** bundle an agent CLI. If the Docker host already has a configured
+Dsh (`~/.dsh` exists), you do not need to add an agent manually: `scripts/docker-up.sh` detects the
+host Dsh, writes the host-agent mounts, and the web host auto-registers `Host Dsh` through Agentero's
+own agent registry at startup.
 
 ```bash
-# On the host:
-dsh --version          # tested 0.2.1-rc.2
-ls ~/.dsh              # has .credentials.yaml + profiles/acp
+# host has Dsh installed and authenticated (~/.dsh exists)
+./scripts/docker-up.sh
 
-# Use the host-agent override (mounts the host's Dsh package and ~/.dsh):
-cp docker-compose.host-agent.yml.example docker-compose.host-agent.yml
-docker compose -f docker-compose.yml -f docker-compose.host-agent.yml up -d
-# production: docker compose -f docker-compose.prod.yml -f docker-compose.host-agent.yml up -d
+# production stack (docker-compose.prod.yml + the same host ACP)
+./scripts/docker-up.sh prod
 ```
 
-Then add a custom agent in **Settings → Agent**:
+Manual compose equivalent:
 
-| Field | Value |
-|---|---|
-| Name | `Host Dsh` |
-| Command | `/usr/local/bin/node` |
-| Args | `/usr/lib/node_modules/@deepseek-ai/dsh/lib/bin.js`, `--profile`, `acp` |
+```bash
+cp docker-compose.host-agent.yml.example docker-compose.host-agent.yml
+docker compose -f docker-compose.yml -f docker-compose.host-agent.yml up -d
+# or -f docker-compose.prod.yml ...
+```
 
-Probe should report `dsh-acp` / Protocol 1; then use it from Chat.
+`Host Dsh` appears in Settings → Agent automatically (command = the image's Node, args = the mounted
+real `dsh/lib/bin.js --profile acp`). No manual command entry is needed. Context turns work because
+the web host also acts as the `agentero-context` MCP worker
+(`agentero-web --agentero-context-mcp <grant>`), so the previous
+`mcp-client(agentero-context) initial connection failed` error is gone.
+
+**Vault path parity**: the container Vault defaults to `/vault`. If the host ACP (or your scripts) must
+see exactly the same absolute Vault path as the host, set both variables in `.env` to that host path:
+
+```dotenv
+AGENTERO_VAULT_DIR=/srv/agentero/vault
+AGENTERO_VAULT_CONTAINER_PATH=/srv/agentero/vault
+```
+
+The Compose file mounts the host directory at the same absolute container path. The default
+`./vault` + `/vault` also works, but the paths differ inside/outside the container.
 
 Notes:
-- **Do not mount `/usr/bin/dsh` directly**: Docker resolves the symlink and mounts `bin.js` as a regular
-  file, so Node cannot resolve `@deepseek-ai/*`. The node + bin.js form above is tested.
-- If Dsh lives elsewhere (nvm/volta/custom prefix), use `readlink -f "$(which dsh)"` and adjust both the
-  override mount and the Args path.
-- The mount gives the container access to the host's `~/.dsh` credentials; only do this on a trusted host.
-  For other agents, install the CLI into a custom image instead (see the Agent section in
-  [docs/usage/web-self-host.md](docs/usage/web-self-host.md)).
+- The container mounts the host `@deepseek-ai/dsh` package and `~/.dsh`; use this only on a trusted host.
+- For nvm/volta/custom prefixes, `scripts/docker-up.sh` resolves `readlink -f "$(which dsh)"`; you can
+  also set `AGENTERO_HOST_DSH_PKG` / `AGENTERO_DSH_HOME` in `.env`.
+- Without a host ACP, install the CLI into a custom image instead (see below); other agents are untested.
+- This requires the container to read host Dsh files (same Docker host + bind mounts); remote Docker is
+  not supported.
+- **Host Dsh is editable/removable**: the custom-agent row in Settings → Agent supports editing its
+  name/command/args and deleting it. A deleted host agent is not re-added on restart
+  (`/data/config/agentero/.host-agent-auto.flag` is written); delete that marker and restart to
+  re-enable auto-registration.
 
 ---
 

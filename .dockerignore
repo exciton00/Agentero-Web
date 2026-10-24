@@ -17,4 +17,9 @@ tmp
 vault
 data
 *.log
+# Local secrets / compose working files
+.env
+.env.*
+!.env.example
+docker-compose*.yml
 .DS_Store

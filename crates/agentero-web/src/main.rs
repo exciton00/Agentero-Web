@@ -9,9 +9,11 @@
 
 mod agent_runtime;
 mod config;
+mod context_mcp;
 mod error;
 mod events;
 mod handlers;
+mod host_agent;
 mod mcp;
 mod rag_mcp;
 mod rpc;
@@ -139,6 +141,11 @@ fn main() {
     if let Some(status) = rag_mcp::try_run_rag_mcp() {
         std::process::exit(status);
     }
+    // Per-session stdio context MCP worker spawned by an ACP agent
+    // (`agentero-web --agentero-context-mcp <grant>`); builds its own runtime.
+    if let Some(status) = context_mcp::try_run_context_mcp() {
+        std::process::exit(status);
+    }
     run();
 }
 
@@ -165,6 +172,10 @@ async fn run() {
     );
 
     let state = Arc::new(AppState::new(config.clone()));
+
+    // Docker host ACP: a bind-mounted Dsh is registered automatically so users
+    // do not have to add a custom agent in Settings.
+    host_agent::ensure_host_dsh(&state.agents, state.settings.path());
 
     // Process-wide cloud-sync auto scheduler: one tokio task ticking every few
     // seconds over the configured vaults (autoSync + intervalMinutes). It stops

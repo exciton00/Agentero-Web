@@ -27,7 +27,7 @@ services:
       # - "8765"
     environment:
       AGENTERO_WEB_ADDR: ${AGENTERO_WEB_ADDR:-0.0.0.0:8787}
-      AGENTERO_WEB_VAULT: ${AGENTERO_WEB_VAULT:-/vault}
+      AGENTERO_WEB_VAULT: ${AGENTERO_VAULT_CONTAINER_PATH:-/vault}
       AGENTERO_WEB_DIST: ${AGENTERO_WEB_DIST:-/app/dist}
       AGENTERO_WEB_MAX_BODY_MB: ${AGENTERO_WEB_MAX_BODY_MB:-64}
       AGENTERO_WEB_ALLOW_ROOTS: ${AGENTERO_WEB_ALLOW_ROOTS:-}
@@ -41,7 +41,7 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     volumes:
-      - ${AGENTERO_VAULT_DIR:-./vault}:/vault
+      - ${AGENTERO_VAULT_DIR:-./vault}:${AGENTERO_VAULT_CONTAINER_PATH:-/vault}
       - ${AGENTERO_DATA_DIR:-./data}:/data
     logging:
       driver: json-file

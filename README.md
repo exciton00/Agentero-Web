@@ -171,6 +171,16 @@ git merge upstream/main   # 或 rebase；Web 改动较多，冲突需自行解�
 git clone https://github.com/exciton00/Agentero-Web.git agentero-web
 cd agentero-web
 
+# 一键：生成 .env/compose、检测宿主机 Dsh（有则自动挂载并注册 Host Dsh）、
+# 拉取 GHCR 镜像并启动。没有宿主机 Dsh 时就是普通 Web 部署。
+./scripts/docker-up.sh
+
+# 打开 http://127.0.0.1:8787
+```
+
+手动方式（等价）：
+
+```bash
 cp docker-compose.yml.example docker-compose.yml
 cp .env.example .env
 # 编辑 .env：至少确认 AGENTERO_VAULT_DIR / AGENTERO_DATA_DIR / AGENTERO_WEB_PORT
@@ -180,9 +190,11 @@ mkdir -p vault data
 #   ghcr.io/exciton00/agentero-web:latest
 docker compose pull
 docker compose up -d --no-build
-
-# 打开 http://127.0.0.1:8787
 ```
+
+> 如果宿主机已安装并登录 Dsh，可以直接用 `./scripts/docker-up.sh`：脚本会自动检测宿主 Dsh、
+> 挂载其 CLI 与 `~/.dsh`，Web host 启动后会自动出现 `Host Dsh`（无需手填 Agent 配置）。
+> 也可以用 `./scripts/docker-up.sh prod` 走生产编排。
 
 > 镜像地址由 `.env` 的 `AGENTERO_IMAGE` 控制；fork 后改成
 > `ghcr.io/<你的账号>/agentero-web:latest`。首次构建完成前 / 不想用 GHCR 时，可改
@@ -259,6 +271,7 @@ Docker Compose 的所有用户配置统一放在 `.env`（从 `.env.example` 复
 |---|---|---|
 | `AGENTERO_IMAGE` | `ghcr.io/exciton00/agentero-web:latest` | 镜像地址；本地构建可改 `agentero-web:local` |
 | `AGENTERO_VAULT_DIR` / `AGENTERO_DATA_DIR` | `./vault` / `./data` | 宿主机 Vault / XDG 数据目录 |
+| `AGENTERO_VAULT_CONTAINER_PATH` | `/vault` | 容器内 Vault 路径；与 `AGENTERO_VAULT_DIR` 设为同一绝对路径可实现宿主机/容器路径一致 |
 | `AGENTERO_WEB_BIND` / `AGENTERO_WEB_PORT` | `127.0.0.1` / `8787` | 宿主机绑定与端口 |
 | `AGENTERO_WEB_ADDR` / `AGENTERO_WEB_VAULT` / `AGENTERO_WEB_DIST` | 容器内固定路径 | 容器内 Web 监听 / Vault / dist |
 | `AGENTERO_WEB_MAX_BODY_MB` | `64` | `/api` body 上限（8–512 MiB） |
@@ -288,40 +301,55 @@ Docker Compose 的所有用户配置统一放在 `.env`（从 `.env.example` 复
 > GHCR 包默认可能是 private；公开部署前可在 GitHub 仓库 → Packages 里把包设为 public，
 > 或先 `docker login ghcr.io -u <user>`（PAT 需要 `read:packages`）。
 
-### 5.5 直接使用宿主机的 ACP Agent（Docker Compose，可选）
+### 5.5 在容器内自动使用宿主机的 ACP Agent（推荐，实测 Dsh）
 
-默认镜像**不包含任何 Agent CLI**，所以全新的 Compose 部署在 Settings → Agent 里看不到可用 Agent。
-如果 Docker 宿主机上已经装好并登录了 Agent（本仓库唯一实测的是 Dsh），可以直接让容器调用宿主机的 ACP，
-不需要把 CLI 装进镜像：
+默认 GHCR 镜像**不包含任何 Agent CLI**；但 Docker 宿主机上通常已经装好并登录了 Dsh。
+不需要手动在 Settings → Agent 添加 Agent：
+`scripts/docker-up.sh` 会检测宿主机的 Dsh，生成 host-agent 挂载；Web host 启动时通过
+Agentero 自己的 agent registry 自动注册 `Host Dsh`，打开设置即可看到。
 
 ```bash
-# 宿主机先确认：
-dsh --version          # 实测 0.2.1-rc.2
-ls ~/.dsh              # 已有 .credentials.yaml + profiles/acp
+# 宿主机已安装并登录 Dsh（~/.dsh 存在），然后：
+./scripts/docker-up.sh
 
-# 使用 host-agent 覆盖文件（会挂载宿主机的 Dsh 包与 ~/.dsh）：
-cp docker-compose.host-agent.yml.example docker-compose.host-agent.yml
-docker compose -f docker-compose.yml -f docker-compose.host-agent.yml up -d
-# 生产： docker compose -f docker-compose.prod.yml -f docker-compose.host-agent.yml up -d
+# 生产模式（docker-compose.prod.yml + 同一个 host ACP）：
+./scripts/docker-up.sh prod
 ```
 
-然后在 **Settings → Agent** 添加自定义 Agent：
+手动 compose 等价配置：
 
-| 字段 | 值 |
-|---|---|
-| Name | `Host Dsh` |
-| Command | `/usr/local/bin/node` |
-| Args | `/usr/lib/node_modules/@deepseek-ai/dsh/lib/bin.js`、`--profile`、`acp` |
+```bash
+cp docker-compose.host-agent.yml.example docker-compose.host-agent.yml
+docker compose -f docker-compose.yml -f docker-compose.host-agent.yml up -d
+# 或 -f docker-compose.prod.yml ...
+```
 
-保存后点 Probe，应显示 `dsh-acp` / Protocol 1；随后即可在 Chat 里使用。
+启动后 Settings → Agent 会自动出现 `Host Dsh`（command 为镜像内 Node，args 为挂载的真实
+`dsh/lib/bin.js --profile acp`）；不需要手填命令。也可以直接开始对话，`agentero-context`
+MCP 由 Web host 自己再执行（`agentero-web --agentero-context-mcp <grant>`），不会出现
+`mcp-client(agentero-context) initial connection failed`。
+
+**Vault 路径对齐**：容器内默认 Vault 是 `/vault`。如果宿主机 ACP 或你的脚本需要看到**和宿主机
+完全相同的 Vault 绝对路径**，在 `.env` 里把两个变量设成同一个宿主机绝对路径即可：
+
+```dotenv
+AGENTERO_VAULT_DIR=/srv/agentero/vault
+AGENTERO_VAULT_CONTAINER_PATH=/srv/agentero/vault
+```
+
+这样容器内看到的路径与宿主机一致（Compose 会把宿主机目录挂到同名绝对路径）。
+默认的 `./vault` + `/vault` 也能工作，只是容器内外路径不同。
 
 说明：
-- **不要直接挂载 `/usr/bin/dsh`**：Docker 会把符号链接解析成普通文件，Node 找不到 `@deepseek-ai/*` 包；
-  上面的 node + bin.js 方式是实测可用的。
-- 若宿主机的 Dsh 不在 `/usr/lib/node_modules/@deepseek-ai`（nvm/volta/自定义 prefix），
-  用 `readlink -f "$(which dsh)"` 找到真实 `lib/bin.js`，同时调整覆盖文件里的挂载路径与 Args。
-- 此挂载会让容器使用宿主机的 `~/.dsh` 凭据；仅建议在可信宿主机使用。其他 Agent 请用自定义镜像安装 CLI，
-  或参考 [docs/usage/web-self-host.md](docs/usage/web-self-host.md) 的 Agent 章节。
+- 挂载的是宿主机 `@deepseek-ai/dsh` 包与 `~/.dsh`；仅建议在可信宿主机使用。
+- 如果 Dsh 不在 `/usr/lib/node_modules/@deepseek-ai`（nvm/volta/自定义 prefix），
+  `scripts/docker-up.sh` 会用 `readlink -f "$(which dsh)"` 自动定位；也可手动设置
+  `.env` 的 `AGENTERO_HOST_DSH_PKG` / `AGENTERO_DSH_HOME`。
+- 不想用宿主机 ACP 时，仍可用自定义镜像安装 CLI（见下方流程），其他 Agent 未测试。
+- 本方式要求容器能读取宿主机的 Dsh 文件（同一台 Docker 宿主机 + bind mount）；不支持远程 Docker。
+- **Host Dsh 可编辑/删除**：自动注册后，Settings → Agent 的自定义 Agent 行可以修改名称/命令/参数或删除。
+  删除后不会被下次启动重新加回（会写入 `/data/config/agentero/.host-agent-auto.flag` 标记）；
+  要恢复自动注册，删除该 marker 后重启即可。
 
 ---
 

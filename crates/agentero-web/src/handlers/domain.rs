@@ -8,7 +8,7 @@
 use serde_json::Value;
 
 use crate::error::HandlerResult;
-use crate::handlers::{agent, layout, markdown, mcp, paper, rag, search, tags, vault};
+use crate::handlers::{agent, layout, markdown, mcp, paper, rag, search, tags, translate, vault};
 use crate::rpc::RpcCtx;
 
 pub async fn dispatch(ctx: &RpcCtx, command: &str, args: &Value) -> Option<HandlerResult> {
@@ -38,6 +38,9 @@ pub async fn dispatch(ctx: &RpcCtx, command: &str, args: &Value) -> Option<Handl
         "rag_reconcile" => rag::reconcile(ctx, args).await,
         "rag_clear_mapping" => rag::clear_mapping(ctx, args).await,
         "rag_search" => rag::search(ctx, args).await,
+
+        // ---- Translation (BYOK; built-in gateway is desktop-only) ----
+        "translate_text" => translate::translate_text(ctx, args).await,
 
         // ---- Vault file search ----
         "vault_search" => search::vault_search(ctx, args).await,
