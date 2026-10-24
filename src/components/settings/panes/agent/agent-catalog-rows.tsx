@@ -20,9 +20,6 @@ import {
 	isCustomAgentProbing,
 	ProbingBadge,
 	StatusBadge,
-	showInstallAcp,
-	showInstallAgent,
-	showUninstallAgent,
 	showUpdateAgent,
 } from "@/components/settings/panes/agent-catalog";
 import { Button } from "@/components/ui/button";
@@ -88,7 +85,6 @@ export function AgentCatalogRows({
 					probing={probingKeys.has(catalogProbeKey(entry.templateId))}
 					batchActive={batchActive}
 					lifecycle={lifecycle}
-					openUninstallDialog={openUninstallDialog}
 					onLogin={onLogin}
 					onOpenCli={onOpenCli}
 				/>
@@ -113,7 +109,6 @@ function AgentCatalogEntryRow({
 	probing,
 	batchActive,
 	lifecycle,
-	openUninstallDialog,
 	onLogin,
 	onOpenCli,
 }: {
@@ -121,7 +116,6 @@ function AgentCatalogEntryRow({
 	probing: boolean;
 	batchActive: boolean;
 	lifecycle: AgentToolLifecycle;
-	openUninstallDialog: (target: UninstallTarget) => void;
 	onLogin: (templateId: string) => Promise<boolean>;
 	onOpenCli: (templateId: string) => void;
 }) {
@@ -132,20 +126,15 @@ function AgentCatalogEntryRow({
 		runToolLifecycle,
 		cancelToolLifecycle,
 	} = lifecycle;
-	const installAgent = showInstallAgent(entry);
-	const installAcp = showInstallAcp(entry);
 	const updateAgent = showUpdateAgent(entry);
-	const uninstallAgent = showUninstallAgent(entry);
 	const loginAgent =
 		entry.acpStatus === "failed" &&
 		isAgentAuthFailure(entry.lastProbeError) &&
 		Boolean(entry.loginCommand?.trim());
 	// Installed host CLI with a user-facing entrypoint → offer it in a terminal.
 	const openCli = entry.binaryAvailable && Boolean(entry.cliCommand);
-	// Install/ACP-only gaps gate “Use default”; Update/CLI/Uninstall can sit beside it.
-	const needsInstall = installAgent || installAcp;
-	const hasLifecycleAction =
-		needsInstall || updateAgent || uninstallAgent || loginAgent || openCli;
+	// Install/uninstall controls are intentionally not shown for catalog agents.
+	const hasLifecycleAction = updateAgent || loginAgent || openCli;
 	const notInstalled = !entry.binaryAvailable;
 	const rowInstalling = lifecycleBusyIds.has(entry.templateId);
 	const rowBusyAction = lifecycleBusyIds.get(entry.templateId);
@@ -245,50 +234,6 @@ function AgentCatalogEntryRow({
 						hasLifecycleAction ? "min-w-0" : "w-8",
 					)}
 				>
-					{installAgent ? (
-						<Button
-							type="button"
-							variant="outline"
-							size="sm"
-							className="h-7 gap-1 px-2 text-xs"
-							aria-label={t("agent.installAgentAria", {
-								name: entry.name,
-							})}
-							title={t("agent.installAgentTitle")}
-							// Do not gate on global `busy` (catalog scan/ACP probe of
-							// other agents) — that left Install looking dead for minutes.
-							disabled={rowInstalling || !hasHostTransport()}
-							onClick={() => void runToolLifecycle(entry, "install")}
-						>
-							{rowBusyAction === "install" ? (
-								<Loader2 className="size-3 animate-spin" />
-							) : (
-								<Terminal className="size-3" />
-							)}
-							{t("agent.installAgent")}
-						</Button>
-					) : null}
-					{installAcp ? (
-						<Button
-							type="button"
-							variant="outline"
-							size="sm"
-							className="h-7 gap-1 px-2 text-xs"
-							aria-label={t("agent.installAdapterAria", {
-								name: entry.name,
-							})}
-							title={t("agent.installAdapterTitle")}
-							disabled={rowInstalling || !hasHostTransport()}
-							onClick={() => void runToolLifecycle(entry, "install")}
-						>
-							{rowBusyAction === "install" ? (
-								<Loader2 className="size-3 animate-spin" />
-							) : (
-								<Terminal className="size-3" />
-							)}
-							{t("agent.installAdapter")}
-						</Button>
-					) : null}
 					{loginAgent ? (
 						<Button
 							type="button"
@@ -343,35 +288,6 @@ function AgentCatalogEntryRow({
 							onClick={() => onOpenCli(entry.templateId)}
 						>
 							<Terminal className="size-3.5" aria-hidden />
-						</Button>
-					) : null}
-					{uninstallAgent ? (
-						<Button
-							type="button"
-							variant="ghost"
-							size="icon-xs"
-							className="size-7"
-							aria-label={t("agent.uninstallAgentAria", {
-								name: entry.name,
-							})}
-							title={t("agent.uninstallAgentTitle")}
-							disabled={rowInstalling || !hasHostTransport()}
-							onClick={() =>
-								openUninstallDialog({
-									kind: "catalog",
-									entry,
-									info: null,
-								})
-							}
-						>
-							{rowBusyAction === "uninstall" ? (
-								<Loader2
-									className="size-3.5 animate-spin text-destructive"
-									aria-hidden
-								/>
-							) : (
-								<Trash2 className="size-3.5 text-destructive" aria-hidden />
-							)}
 						</Button>
 					) : null}
 				</div>
