@@ -5,6 +5,7 @@
  */
 
 import { Fragment, memo, useLayoutEffect, useMemo, useRef } from "react";
+import { useStore } from "zustand";
 import { cn } from "@/lib/core/utils";
 import { highlightFill } from "@/lib/pdf/highlight/palette";
 import {
@@ -39,6 +40,8 @@ import {
 	PDF_PAPER_BLOCK_CLASS,
 	type PdfPaperTone,
 } from "@/lib/pdf/page-theme";
+import { settingsStore } from "@/lib/settings/react-store";
+import { clampTranslateFontScale } from "@/lib/translate/defaults";
 
 type LayoutTranslateOverlayProps = {
 	/** Items already bucketed for this one page (groupLayoutTranslateItemsByPage). */
@@ -88,6 +91,20 @@ const FIT_SAFETY = 0.97;
 const HEADING_EM_PER_BOX = 0.9;
 /** Section titles should outrank body text on the same page. */
 export const HEADING_TO_BODY_SIZE_RATIO = 1.35;
+
+/**
+ * Apply the Settings → Translate body/heading font multiplier to a fitted
+ * overlay size. Clamped to the same range the settings UI offers so a stale or
+ * hand-edited value cannot render unreadable text.
+ */
+export function applyLayoutTranslateFontScale(
+	fontSize: number,
+	scale: number,
+): number {
+	if (!Number.isFinite(fontSize)) return fontSize;
+	const clamped = clampTranslateFontScale(scale);
+	return Math.max(FS_MIN, Math.min(FS_MAX, fontSize * clamped));
+}
 
 /**
  * Median of body block sizes on a page. Empty when the page has no painted
@@ -386,6 +403,12 @@ export function fontSizeForLayoutTranslateBox(
  * (value equality), so cache hits build no large key strings. Bounded:
  * oldest item entries are evicted first; per-item maps hold only the few
  * text variants a block goes through (placeholder → final).
+ *
+ * The cached value is the source-box fit *before* the Settings → Translate
+ * body/heading multiplier; the multiplier is applied after the lookup, so a
+ * scale change re-renders immediately without invalidating this cache. The
+ * DOM-measured second pass does include the scale in its key (see
+ * `layoutTranslateDomFitKey`).
  */
 const FONT_SIZE_CACHE_MAX_ITEMS = 1024;
 const FONT_SIZE_CACHE_MAX_SOURCES = 8;
@@ -464,6 +487,8 @@ type ExactFitParagraphProps = {
 	boxWidthPx: number;
 	boxHeightPx: number;
 	isHeading: boolean;
+	/** Body/heading multiplier behind `initialFontSize` (DOM-fit cache key). */
+	fontScale: number;
 	/** Dark PDF paper: selection ink stays light, matching the glyphs. */
 	paperDark: boolean;
 	tone: PdfPaperTone;
@@ -597,6 +622,7 @@ export const LayoutTranslateParagraph = memo(function LayoutTranslateParagraph({
 	boxWidthPx,
 	boxHeightPx,
 	isHeading,
+	fontScale,
 	paperDark,
 	tone,
 	tintedSentences,
@@ -615,6 +641,7 @@ export const LayoutTranslateParagraph = memo(function LayoutTranslateParagraph({
 		boxHeightPx,
 		initialFontSize,
 		isHeading,
+		fontScale,
 	});
 	const cachedDomFit = readLayoutTranslateDomFit(domFitKey);
 
@@ -720,6 +747,14 @@ export const LayoutTranslateOverlay = memo(function LayoutTranslateOverlay({
 	onOpenLink,
 	onHoverLink,
 }: LayoutTranslateOverlayProps) {
+	// Settings → Translate font multipliers, live: the settings window patches
+	// the shared store and the overlay re-fits without remounting the viewer.
+	const bodyScale = clampTranslateFontScale(
+		useStore(settingsStore, (state) => state.translate.bodyFontScale),
+	);
+	const headingScale = clampTranslateFontScale(
+		useStore(settingsStore, (state) => state.translate.headingFontScale),
+	);
 	const onPage = useMemo(() => {
 		const painted = items.filter(isLayoutTranslateItemPainted).map((item) => {
 			const paintText =
@@ -754,9 +789,16 @@ export const LayoutTranslateOverlay = memo(function LayoutTranslateOverlay({
 			// Doc titles already dwarf body; page chrome (date, logo) must not be
 			// inflated. Only short section strips need the body-relative floor.
 			const sectionStrip = isHeading && item.bbox.h < 0.035;
-			const paintFontSize = sectionStrip
+			// The floor is computed on the fitted source size, then the user's
+			// body/heading multiplier applies to the final size so an explicit
+			// preference wins over the heuristic.
+			const fitted = sectionStrip
 				? applyHeadingBodyFloor(baseFs, bodyRef)
 				: baseFs;
+			const paintFontSize = applyLayoutTranslateFontScale(
+				fitted,
+				isHeading ? headingScale : bodyScale,
+			);
 			return {
 				...item,
 				sourceBbox: item.bbox,
@@ -771,7 +813,14 @@ export const LayoutTranslateOverlay = memo(function LayoutTranslateOverlay({
 				paintFontSize,
 			};
 		});
-	}, [items, layoutRegions, pageHeightPx, pageWidthPx]);
+	}, [
+		bodyScale,
+		headingScale,
+		items,
+		layoutRegions,
+		pageHeightPx,
+		pageWidthPx,
+	]);
 	const tintByItem = useMemo(
 		() =>
 			sentenceHighlightTints({
@@ -870,6 +919,7 @@ export const LayoutTranslateOverlay = memo(function LayoutTranslateOverlay({
 									boxWidthPx={boxWidthPx}
 									boxHeightPx={boxHeightPx}
 									isHeading={isHeading}
+									fontScale={isHeading ? headingScale : bodyScale}
 									paperDark={tone === "dark"}
 									tone={tone}
 									tintedSentences={tintByItem.get(item.id)}

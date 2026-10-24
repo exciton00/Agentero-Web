@@ -4990,6 +4990,10 @@ export type TranslateSettings = {
 	dualPaneTranslate?: boolean,
 	displayMode?: string,
 	dualPaneSource?: string,
+	/**  Multiplier applied to body text in full-document translation overlays. */
+	bodyFontScale?: number | null,
+	/**  Multiplier applied to headings/titles in full-document translation overlays. */
+	headingFontScale?: number | null,
 	agentId?: string,
 	modelId?: string,
 	/**

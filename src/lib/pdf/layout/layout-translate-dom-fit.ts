@@ -41,11 +41,18 @@ export function layoutTranslateDomFitKey(input: {
 	boxHeightPx: number;
 	initialFontSize: number;
 	isHeading: boolean;
+	/**
+	 * Settings → Translate body/heading multiplier behind `initialFontSize`.
+	 * Folded into the key so a scale change re-measures instead of reusing the
+	 * fit measured at the previous preference (they can round to the same px).
+	 */
+	fontScale?: number;
 }): string {
 	const width = Math.round(input.boxWidthPx * 2);
 	const height = Math.round(input.boxHeightPx * 2);
 	const fontSize = Math.round(input.initialFontSize * 100);
-	return `${width}x${height}@${fontSize}${input.isHeading ? "h" : "b"}\n${input.text}`;
+	const scale = Math.round((input.fontScale ?? 1) * 100);
+	return `${width}x${height}@${fontSize}s${scale}${input.isHeading ? "h" : "b"}\n${input.text}`;
 }
 
 const domFitCache = new Map<string, LayoutTranslateDomFit>();

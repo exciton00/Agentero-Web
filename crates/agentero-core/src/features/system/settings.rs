@@ -330,6 +330,15 @@ pub struct TranslateSettings {
     pub display_mode: String,
     #[serde(default = "default_translate_dual_pane_source")]
     pub dual_pane_source: String,
+    /// Multiplier applied to body text in full-document translation overlays.
+    /// `1.0` keeps the size the source box implies; the UI offers 0.5–2.0.
+    #[serde(default = "default_translate_font_scale")]
+    pub body_font_scale: f32,
+    /// Multiplier applied to headings/titles in full-document translation
+    /// overlays. Separate from the body scale because translated CJK headings
+    /// often look oversized next to the source glyphs. UI offers 0.5–2.0.
+    #[serde(default = "default_translate_font_scale")]
+    pub heading_font_scale: f32,
     #[serde(default)]
     pub agent_id: String,
     #[serde(default)]
@@ -359,6 +368,8 @@ impl Default for TranslateSettings {
             dual_pane_translate: false,
             display_mode: default_translate_display_mode(),
             dual_pane_source: default_translate_dual_pane_source(),
+            body_font_scale: default_translate_font_scale(),
+            heading_font_scale: default_translate_font_scale(),
             agent_id: String::new(),
             model_id: String::new(),
             custom_prompt: String::new(),
@@ -676,6 +687,22 @@ fn default_translate_display_mode() -> String {
 }
 fn default_translate_dual_pane_source() -> String {
     "pdf".into()
+}
+/// Full-document translation font multipliers: 1.0 = the size the source box
+/// implies. Bounds match `TRANSLATE_FONT_SCALE_MIN/MAX` and the settings UI.
+pub const TRANSLATE_FONT_SCALE_MIN: f32 = 0.5;
+pub const TRANSLATE_FONT_SCALE_MAX: f32 = 2.0;
+fn default_translate_font_scale() -> f32 {
+    1.0
+}
+/// Clamp a persisted font-scale preference. A hand-edited `99`, a negative
+/// value or `NaN` must not break the overlay fit: clamp (or fall back on
+/// non-finite) instead of dropping the whole settings file.
+fn normalize_translate_font_scale(value: f32) -> f32 {
+    if !value.is_finite() {
+        return default_translate_font_scale();
+    }
+    value.clamp(TRANSLATE_FONT_SCALE_MIN, TRANSLATE_FONT_SCALE_MAX)
 }
 /// Layout analysis stays on the bundled offline PP-DocLayoutV3 model: it is
 /// free, local, and a cloud backend would bill every PDF for no gain. The
@@ -1530,6 +1557,8 @@ fn normalize(s: &mut AppSettings) {
     // Cap hand-edited oversized prompts and drop unknown `{{…}}` tokens. The
     // value is echoed to a billed API on every request. No trim: leading
     // whitespace may be intentional (the settings UI trims on blur).
+    s.translate.body_font_scale = normalize_translate_font_scale(s.translate.body_font_scale);
+    s.translate.heading_font_scale = normalize_translate_font_scale(s.translate.heading_font_scale);
     s.translate.custom_prompt = cap_translate_template(&s.translate.custom_prompt);
     s.translate.custom_system = cap_translate_template(&s.translate.custom_system);
     s.translate.custom_user = cap_translate_template(&s.translate.custom_user);
@@ -2036,6 +2065,66 @@ mod tests {
         };
         normalize(&mut s);
         assert_eq!(s.translate.custom_prompt, "keep me");
+    }
+
+    #[test]
+    fn normalize_clamps_translate_font_scales() {
+        let mut s = AppSettings {
+            translate: TranslateSettings {
+                body_font_scale: 0.1,
+                heading_font_scale: 9.0,
+                ..Default::default()
+            },
+            ..AppSettings::default()
+        };
+        normalize(&mut s);
+        assert_eq!(s.translate.body_font_scale, TRANSLATE_FONT_SCALE_MIN);
+        assert_eq!(s.translate.heading_font_scale, TRANSLATE_FONT_SCALE_MAX);
+
+        // A usable in-range preference survives normalize untouched.
+        let mut s = AppSettings {
+            translate: TranslateSettings {
+                body_font_scale: 0.85,
+                heading_font_scale: 1.4,
+                ..Default::default()
+            },
+            ..AppSettings::default()
+        };
+        normalize(&mut s);
+        assert_eq!(s.translate.body_font_scale, 0.85);
+        assert_eq!(s.translate.heading_font_scale, 1.4);
+
+        // Non-finite values fall back to 1.0 instead of poisoning the fit.
+        let mut s = AppSettings::default();
+        s.translate.body_font_scale = f32::NAN;
+        s.translate.heading_font_scale = f32::INFINITY;
+        normalize(&mut s);
+        assert_eq!(s.translate.body_font_scale, 1.0);
+        assert_eq!(s.translate.heading_font_scale, 1.0);
+    }
+
+    #[test]
+    fn translate_font_scales_default_for_old_settings() {
+        // settings.json written before the font-scale fields existed.
+        let parsed: TranslateSettings = serde_json::from_value(serde_json::json!({
+            "provider": "deepl",
+            "targetLang": "zh-CN",
+        }))
+        .expect("legacy translate settings deserialize");
+        assert_eq!(parsed.body_font_scale, 1.0);
+        assert_eq!(parsed.heading_font_scale, 1.0);
+
+        let round_trip: TranslateSettings = serde_json::from_value(
+            serde_json::to_value(TranslateSettings {
+                body_font_scale: 0.75,
+                heading_font_scale: 1.25,
+                ..Default::default()
+            })
+            .expect("serialize"),
+        )
+        .expect("deserialize");
+        assert_eq!(round_trip.body_font_scale, 0.75);
+        assert_eq!(round_trip.heading_font_scale, 1.25);
     }
 
     #[test]

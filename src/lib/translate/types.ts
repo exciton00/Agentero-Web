@@ -66,6 +66,18 @@ export type TranslateSettings = {
 	 */
 	dualPaneSource: DualPaneSource;
 	/**
+	 * Multiplier for body text in full-document translation overlays.
+	 * `1` keeps the size the source box implies; clamped to
+	 * {@link TRANSLATE_FONT_SCALE_MIN}–{@link TRANSLATE_FONT_SCALE_MAX}.
+	 */
+	bodyFontScale: number;
+	/**
+	 * Multiplier for headings/titles in full-document translation overlays.
+	 * Separate from the body scale because translated CJK headings often read
+	 * oversized next to the source glyphs.
+	 */
+	headingFontScale: number;
+	/**
 	 * Agent seat for provider === "agent".
 	 * Empty = follow registry defaultId.
 	 */

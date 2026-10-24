@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
 	applyHeadingBodyFloor,
+	applyLayoutTranslateFontScale,
 	bodyReferenceFontSize,
 	expandLayoutTranslateBbox,
 	fontSizeForLayoutTranslateBox,
@@ -24,7 +25,10 @@ import {
 	writeLayoutTranslateSidecar,
 } from "@/lib/pdf/layout/layout-translate";
 import type { PdfLayoutRegion } from "@/lib/pdf/layout/types";
-import { DEFAULT_TRANSLATE_SETTINGS } from "@/lib/translate/defaults";
+import {
+	clampTranslateFontScale,
+	DEFAULT_TRANSLATE_SETTINGS,
+} from "@/lib/translate/defaults";
 
 vi.mock("@/lib/vault", () => ({
 	joinVaultPath: (parent: string, name: string) => `${parent}/${name}`,
@@ -319,6 +323,32 @@ describe("fontSizeForLayoutTranslateBox", () => {
 		);
 		expect(fs).toBeGreaterThan(7);
 		expect(fs).toBeLessThanOrEqual(20);
+	});
+});
+
+describe("translated font scale preferences", () => {
+	it("clamps body/heading multipliers to the supported range", () => {
+		expect(clampTranslateFontScale(0.2)).toBe(0.5);
+		expect(clampTranslateFontScale(0.5)).toBe(0.5);
+		expect(clampTranslateFontScale(1.35)).toBe(1.35);
+		expect(clampTranslateFontScale(9)).toBe(2);
+		// Missing / corrupt persisted values fall back to the source size.
+		expect(clampTranslateFontScale(undefined)).toBe(1);
+		expect(clampTranslateFontScale("1.5")).toBe(1);
+		expect(clampTranslateFontScale(Number.NaN)).toBe(1);
+	});
+
+	it("applies the multiplier to the fitted overlay size", () => {
+		expect(applyLayoutTranslateFontScale(10, 1)).toBe(10);
+		expect(applyLayoutTranslateFontScale(10, 0.6)).toBe(6);
+		expect(applyLayoutTranslateFontScale(10, 1.5)).toBe(15);
+	});
+
+	it("keeps the result inside the overlay font bounds", () => {
+		// Re-clamped here too, so a stale settings value cannot render huge text.
+		expect(applyLayoutTranslateFontScale(10, 0.01)).toBe(5);
+		expect(applyLayoutTranslateFontScale(18, 2)).toBe(20);
+		expect(applyLayoutTranslateFontScale(4, 0.5)).toBe(4);
 	});
 });
 

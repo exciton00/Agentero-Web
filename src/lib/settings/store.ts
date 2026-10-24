@@ -52,7 +52,10 @@ import {
 	type LibraryColumnPref,
 	type PdfAskSettings,
 } from "@/lib/settings/types";
-import { DEFAULT_TRANSLATE_SETTINGS } from "@/lib/translate/defaults";
+import {
+	clampTranslateFontScale,
+	DEFAULT_TRANSLATE_SETTINGS,
+} from "@/lib/translate/defaults";
 import { stripUnknownTranslatePlaceholders } from "@/lib/translate/prompt";
 import {
 	isCommercialTranslateProvider,
@@ -718,6 +721,9 @@ function normalizeTranslateSettings(
 	) {
 		base.dualPaneSource = raw.dualPaneSource as DualPaneSource;
 	}
+	// Persisted by an older build? Missing → 1; hand-edited outliers clamp.
+	base.bodyFontScale = clampTranslateFontScale(raw.bodyFontScale);
+	base.headingFontScale = clampTranslateFontScale(raw.headingFontScale);
 	if (typeof raw.agentId === "string") {
 		base.agentId = raw.agentId.trim();
 	}

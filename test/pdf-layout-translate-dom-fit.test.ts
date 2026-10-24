@@ -4,6 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	fitLayoutTranslateParagraph,
+	layoutTranslateDomFitKey,
 	type MeasurableParagraph,
 	scheduleLayoutTranslateDomFit,
 } from "@/lib/pdf/layout/layout-translate-dom-fit";
@@ -43,6 +44,24 @@ afterEach(() => {
 	}
 	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
+});
+
+describe("layout translate DOM fit key", () => {
+	it("re-measures when the translated font scale changes", () => {
+		const base = {
+			text: "标题翻译",
+			boxWidthPx: 220,
+			boxHeightPx: 24,
+			initialFontSize: 12,
+			isHeading: true,
+		};
+		expect(layoutTranslateDomFitKey(base)).toBe(
+			layoutTranslateDomFitKey({ ...base, fontScale: 1 }),
+		);
+		expect(layoutTranslateDomFitKey(base)).not.toBe(
+			layoutTranslateDomFitKey({ ...base, fontScale: 0.8 }),
+		);
+	});
 });
 
 describe("layout translate DOM fit", () => {

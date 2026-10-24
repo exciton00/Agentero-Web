@@ -501,6 +501,12 @@
 			"overlay": "Overlay on original PDF",
 			"dualPane": "Dual pane"
 		},
+		"fontScale": {
+			"body": "Body text size",
+			"heading": "Heading size",
+			"value": "{{percent}}%",
+			"reset": "Reset to default"
+		},
 		"providerConfig": {
 			"section": "API Services",
 			"confirm": "Confirm",

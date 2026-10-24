@@ -501,6 +501,12 @@
 			"overlay": "在原 PDF 上覆盖",
 			"dualPane": "双栏对照"
 		},
+		"fontScale": {
+			"body": "正文字号",
+			"heading": "标题字号",
+			"value": "{{percent}}%",
+			"reset": "恢复默认"
+		},
 		"providerConfig": {
 			"section": "API 服务",
 			"confirm": "确定",

@@ -1,5 +1,12 @@
-import { ExternalLink } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ExternalLink, RotateCcw } from "lucide-react";
+import {
+	useCallback,
+	useEffect,
+	useId,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
 import { useTranslation } from "react-i18next";
 import {
 	AgentModelSelects,
@@ -66,7 +73,12 @@ import {
 	translateSystemTemplateIssue,
 	translateUserTemplateIssue,
 } from "@/lib/translate";
-import { EMPTY_TRANSLATE_PROVIDER_CONFIG } from "@/lib/translate/defaults";
+import {
+	EMPTY_TRANSLATE_PROVIDER_CONFIG,
+	TRANSLATE_FONT_SCALE_DEFAULT,
+	TRANSLATE_FONT_SCALE_MAX,
+	TRANSLATE_FONT_SCALE_MIN,
+} from "@/lib/translate/defaults";
 import type { ProbeStatus } from "@/lib/ui/probe-status";
 
 /** Resolve API key for save/probe: draft wins; otherwise keep stored (may be mask). */
@@ -76,6 +88,9 @@ function resolveApiKeyDraft(draft: string | undefined, stored: string): string {
 }
 
 type ProviderStatusKind = FreeMtProbeStatus | "unconfigured";
+
+/** Slider drags coalesce into one save, like the appearance font controls. */
+const FONT_SCALE_SAVE_DEBOUNCE_MS = 150;
 
 const PROBE_LABEL_KEYS = {
 	ok: "translate.provider.probeOk",
@@ -136,6 +151,35 @@ export function TranslatePane({
 		[patch, tr],
 	);
 	const showAgent = tr.provider === "agent";
+	// Full-document translation font sizes: slider state is local for a smooth
+	// drag and patches the shared settings store after a short idle, so an open
+	// translation overlay re-fits live.
+	const bodyScaleId = useId();
+	const headingScaleId = useId();
+	const [bodyScale, setBodyScale] = useState(tr.bodyFontScale);
+	const [headingScale, setHeadingScale] = useState(tr.headingFontScale);
+	useEffect(() => {
+		setBodyScale(tr.bodyFontScale);
+	}, [tr.bodyFontScale]);
+	useEffect(() => {
+		setHeadingScale(tr.headingFontScale);
+	}, [tr.headingFontScale]);
+	useEffect(() => {
+		if (bodyScale === tr.bodyFontScale) return;
+		const id = setTimeout(
+			() => patchTranslate({ bodyFontScale: bodyScale }),
+			FONT_SCALE_SAVE_DEBOUNCE_MS,
+		);
+		return () => clearTimeout(id);
+	}, [bodyScale, patchTranslate, tr.bodyFontScale]);
+	useEffect(() => {
+		if (headingScale === tr.headingFontScale) return;
+		const id = setTimeout(
+			() => patchTranslate({ headingFontScale: headingScale }),
+			FONT_SCALE_SAVE_DEBOUNCE_MS,
+		);
+		return () => clearTimeout(id);
+	}, [headingScale, patchTranslate, tr.headingFontScale]);
 	const getProviderConfig = useCallback(
 		(id: CommercialTranslateProviderId): TranslateProviderConfig =>
 			tr.providerConfigs[id] ?? EMPTY_TRANSLATE_PROVIDER_CONFIG,
@@ -472,6 +516,84 @@ export function TranslatePane({
 							</SelectItem>
 						</SelectContent>
 					</Select>
+				</SettingsRow>
+				<SettingsRow
+					label={t("translate.fontScale.body")}
+					htmlFor={bodyScaleId}
+				>
+					<div className="flex items-center gap-2">
+						<input
+							id={bodyScaleId}
+							type="range"
+							min={Math.round(TRANSLATE_FONT_SCALE_MIN * 100)}
+							max={Math.round(TRANSLATE_FONT_SCALE_MAX * 100)}
+							step={5}
+							value={Math.round(bodyScale * 100)}
+							onChange={(e) => setBodyScale(Number(e.target.value) / 100)}
+							aria-valuemin={Math.round(TRANSLATE_FONT_SCALE_MIN * 100)}
+							aria-valuemax={Math.round(TRANSLATE_FONT_SCALE_MAX * 100)}
+							aria-valuenow={Math.round(bodyScale * 100)}
+							aria-valuetext={t("translate.fontScale.value", {
+								percent: Math.round(bodyScale * 100),
+							})}
+							className="w-28 accent-primary"
+						/>
+						<span className="w-12 text-right text-muted-foreground text-xs tabular-nums">
+							{t("translate.fontScale.value", {
+								percent: Math.round(bodyScale * 100),
+							})}
+						</span>
+						<Button
+							type="button"
+							variant="ghost"
+							size="icon-xs"
+							aria-label={t("translate.fontScale.reset")}
+							title={t("translate.fontScale.reset")}
+							disabled={bodyScale === TRANSLATE_FONT_SCALE_DEFAULT}
+							onClick={() => setBodyScale(TRANSLATE_FONT_SCALE_DEFAULT)}
+						>
+							<RotateCcw className="size-3.5" aria-hidden />
+						</Button>
+					</div>
+				</SettingsRow>
+				<SettingsRow
+					label={t("translate.fontScale.heading")}
+					htmlFor={headingScaleId}
+				>
+					<div className="flex items-center gap-2">
+						<input
+							id={headingScaleId}
+							type="range"
+							min={Math.round(TRANSLATE_FONT_SCALE_MIN * 100)}
+							max={Math.round(TRANSLATE_FONT_SCALE_MAX * 100)}
+							step={5}
+							value={Math.round(headingScale * 100)}
+							onChange={(e) => setHeadingScale(Number(e.target.value) / 100)}
+							aria-valuemin={Math.round(TRANSLATE_FONT_SCALE_MIN * 100)}
+							aria-valuemax={Math.round(TRANSLATE_FONT_SCALE_MAX * 100)}
+							aria-valuenow={Math.round(headingScale * 100)}
+							aria-valuetext={t("translate.fontScale.value", {
+								percent: Math.round(headingScale * 100),
+							})}
+							className="w-28 accent-primary"
+						/>
+						<span className="w-12 text-right text-muted-foreground text-xs tabular-nums">
+							{t("translate.fontScale.value", {
+								percent: Math.round(headingScale * 100),
+							})}
+						</span>
+						<Button
+							type="button"
+							variant="ghost"
+							size="icon-xs"
+							aria-label={t("translate.fontScale.reset")}
+							title={t("translate.fontScale.reset")}
+							disabled={headingScale === TRANSLATE_FONT_SCALE_DEFAULT}
+							onClick={() => setHeadingScale(TRANSLATE_FONT_SCALE_DEFAULT)}
+						>
+							<RotateCcw className="size-3.5" aria-hidden />
+						</Button>
+					</div>
 				</SettingsRow>
 			</SettingsGroup>
 
