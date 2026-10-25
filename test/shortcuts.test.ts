@@ -5,14 +5,17 @@ vi.mock("@/lib/core/tauri", async (importOriginal) => {
 	return {
 		...actual,
 		getPlatformOS: vi.fn(() => "macos"),
+		isWebHost: vi.fn(() => false),
 	};
 });
 
-import { getPlatformOS } from "@/lib/core/tauri";
+import { getPlatformOS, isWebHost } from "@/lib/core/tauri";
 import {
 	formatShortcut,
+	isShortcutAvailableOnCurrentHost,
 	resolveShortcutId,
 	shortcutBelongsToTextField,
+	shortcutsByGroup,
 } from "@/lib/shell/shortcuts";
 
 function keyEvent(init: {
@@ -160,5 +163,68 @@ describe("shell shortcuts", () => {
 		expect(
 			resolveShortcutId(keyEvent({ key: "F11" }), { settingsOpen: false }),
 		).toBeNull();
+	});
+});
+
+describe("host shortcut availability", () => {
+	const listedIds = () =>
+		shortcutsByGroup().flatMap((group) => group.items.map((item) => item.id));
+
+	afterEach(() => {
+		vi.mocked(isWebHost).mockReturnValue(false);
+		vi.mocked(getPlatformOS).mockReturnValue("macos");
+	});
+
+	it("hides desktop-only shortcuts in the Web build", () => {
+		vi.mocked(isWebHost).mockReturnValue(true);
+		const ids = listedIds();
+		for (const id of [
+			"newWindow",
+			"openVault",
+			"createVault",
+			"revealInFinder",
+			"openInTerminal",
+		] as const) {
+			expect(ids).not.toContain(id);
+		}
+		// The features that do work in the browser stay listed.
+		expect(ids).toContain("settings");
+		expect(ids).toContain("quickOpen");
+		expect(ids).toContain("refreshTree");
+		expect(ids).toContain("layoutTranslate");
+	});
+
+	it("hides Windows-only fullscreen in the Web build", () => {
+		vi.mocked(getPlatformOS).mockReturnValue("windows");
+		expect(
+			isShortcutAvailableOnCurrentHost({
+				id: "toggleFullscreen",
+				group: "App",
+				key: "F11",
+				platforms: ["windows"],
+			}),
+		).toBe(true);
+		vi.mocked(isWebHost).mockReturnValue(true);
+		expect(
+			isShortcutAvailableOnCurrentHost({
+				id: "toggleFullscreen",
+				group: "App",
+				key: "F11",
+				platforms: ["windows"],
+			}),
+		).toBe(false);
+	});
+
+	it("keeps the desktop shortcut list unchanged", () => {
+		const ids = listedIds();
+		for (const id of [
+			"newWindow",
+			"openVault",
+			"createVault",
+			"revealInFinder",
+			"openInTerminal",
+		] as const) {
+			expect(ids).toContain(id);
+		}
 	});
 });

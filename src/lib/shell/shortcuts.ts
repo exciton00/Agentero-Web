@@ -3,7 +3,7 @@
  * Display uses Apple symbols: ⌘ ⌥ ⇧ ⌃
  */
 
-import { getPlatformOS } from "@/lib/core/tauri";
+import { getPlatformOS, isWebHost } from "@/lib/core/tauri";
 
 export type ShortcutId =
 	| "settings"
@@ -362,6 +362,32 @@ function shortcutAvailableOnPlatform(def: ShortcutDef): boolean {
 		: false;
 }
 
+/**
+ * Shortcuts whose action needs the desktop shell: native window creation, OS
+ * directory pickers, the Finder/terminal bridge and exclusive fullscreen.
+ * Agentero-Web hides them from Settings → Keyboard. They stay bound so the
+ * desktop build is untouched and the browser's own ⌘N / ⌘O defaults are still
+ * suppressed while the app is focused.
+ */
+const WEB_UNAVAILABLE_SHORTCUTS: ReadonlySet<ShortcutId> = new Set([
+	"newWindow",
+	"openVault",
+	"createVault",
+	"revealInFinder",
+	"openInTerminal",
+	"toggleFullscreen",
+]);
+
+/**
+ * Whether this shortcut can do its work on the current host build.
+ * Desktop keeps the platform-only filter; the Web build additionally drops
+ * entries whose handler is a desktop-only error toast / no-op.
+ */
+export function isShortcutAvailableOnCurrentHost(def: ShortcutDef): boolean {
+	if (isWebHost() && WEB_UNAVAILABLE_SHORTCUTS.has(def.id)) return false;
+	return shortcutAvailableOnPlatform(def);
+}
+
 /** Secondary aliases that still work (documented lightly). */
 const ALIASES: Partial<Record<ShortcutId, ShortcutDef[]>> = {
 	toggleSidebar: [
@@ -544,7 +570,7 @@ export function shortcutsByGroup(): {
 	return order.map((group) => ({
 		group,
 		items: SHORTCUTS.filter(
-			(s) => s.group === group && shortcutAvailableOnPlatform(s),
+			(s) => s.group === group && isShortcutAvailableOnCurrentHost(s),
 		),
 	}));
 }
