@@ -12,6 +12,7 @@
 //!   source/model/categories/top_n, superseding the single-row
 //!   `arxiv_rec_state` (kept for old DBs; no longer written)
 //! - v9: manually maintained `code_repo` link (no auto resolution yet)
+//! - v10: `openreview_url` link for OpenReview papers (desktop 0.12 vaults)
 
 use crate::error::AppError;
 use crate::sqlite::MigrationStep;
@@ -22,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// Current catalog schema version written to `schema_meta`.
-pub const SCHEMA_VERSION: i32 = 9;
+pub const SCHEMA_VERSION: i32 = 10;
 
 const DDL_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -154,6 +155,11 @@ const MIGRATE_V8_TO_V9: &str = r#"
 ALTER TABLE papers ADD COLUMN code_repo TEXT;
 "#;
 
+/// Schema v10: OpenReview URL link (written by desktop Agentero 0.12 vaults).
+const MIGRATE_V9_TO_V10: &str = r#"
+ALTER TABLE papers ADD COLUMN openreview_url TEXT;
+"#;
+
 /// Absolute path to `{vault}/.agentero/catalog.sqlite`.
 pub fn catalog_db_path(vault_root: &Path) -> std::path::PathBuf {
     vault_root.join(".agentero").join("catalog.sqlite")
@@ -264,7 +270,7 @@ pub fn with_catalog<T>(
 
 /// Migration ladder, applied by [`crate::sqlite::run_migrations`] (per-step
 /// version re-read, stamping, `newer than app` guard).
-const MIGRATION_STEPS: [MigrationStep; 9] = [
+const MIGRATION_STEPS: [MigrationStep; 10] = [
     MigrationStep::batch(1, DDL_V1),
     // SQLite ADD COLUMN is not fully batch-safe across existing cols; the
     // v2–v4 entries run one-by-one and ignore duplicate-column errors.
@@ -276,6 +282,7 @@ const MIGRATION_STEPS: [MigrationStep; 9] = [
     MigrationStep::custom(7, migrate_v7),
     MigrationStep::script(8, MIGRATE_V7_TO_V8),
     MigrationStep::script_tolerant(9, MIGRATE_V8_TO_V9),
+    MigrationStep::script_tolerant(10, MIGRATE_V9_TO_V10),
 ];
 
 fn migrate(conn: &Connection) -> Result<(), AppError> {
@@ -370,15 +377,16 @@ mod tests {
             .unwrap();
         assert_eq!(has_zotero, 2);
 
-        // v9 manual code-repo column exists
-        let has_code_repo: i64 = conn
+        // v9 manual code-repo + v10 OpenReview URL columns exist.
+        let has_v9_v10: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM pragma_table_info('papers') WHERE name = 'code_repo'",
+                "SELECT COUNT(*) FROM pragma_table_info('papers')
+                 WHERE name IN ('code_repo', 'openreview_url')",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(has_code_repo, 1);
+        assert_eq!(has_v9_v10, 2);
 
         // v6 recommendation caches + v8 multi-row discovery runs exist
         let has_rec_tables: i64 = conn
@@ -409,9 +417,9 @@ mod tests {
 
     /// v1 databases predate the whole migration ladder: build one by hand
     /// (v1 DDL + version stamp + legacy-shaped row) and walk it through every
-    /// step — v2…v9 must all land.
+    /// step — v2…v10 must all land.
     #[test]
-    fn migrates_v1_to_v9_through_full_ladder() {
+    fn migrates_v1_to_v10_through_full_ladder() {
         let dir = env::temp_dir().join(format!(
             "agentero-catalog-v1-{}-{}",
             std::process::id(),
@@ -440,7 +448,7 @@ mod tests {
             .unwrap();
         }
 
-        let conn = ensure_catalog(&dir).expect("migrate v1 to v9");
+        let conn = ensure_catalog(&dir).expect("migrate v1 to v10");
         assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
 
         // v2 Translator columns exist (spot-check a few of the 16).
@@ -453,16 +461,17 @@ mod tests {
             )
             .unwrap();
         assert_eq!(has_v2, 4);
-        // v3 read flag + v4 Zotero linkage + v9 manual code-repo link.
-        let has_v3_v4_v9: i64 = conn
+        // v3 read flag + v4 Zotero linkage + v9 code-repo + v10 OpenReview.
+        let has_v3_v4_v9_v10: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('papers')
-                 WHERE name IN ('is_read', 'zotero_item_id', 'zotero_last_synced', 'code_repo')",
+                 WHERE name IN ('is_read', 'zotero_item_id', 'zotero_last_synced',
+                                'code_repo', 'openreview_url')",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(has_v3_v4_v9, 4);
+        assert_eq!(has_v3_v4_v9_v10, 5);
         // v5 page-count cache + v6 recommendation caches + v8 discovery runs.
         let tables: i64 = conn
             .query_row(
@@ -613,6 +622,47 @@ mod tests {
         );
         assert_eq!(get("papers/garbage", "updated_at"), "also not a date");
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn opens_current_v10_catalog_and_preserves_openreview_url() {
+        let dir = env::temp_dir().join(format!(
+            "agentero-catalog-v10-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+
+        {
+            let conn = ensure_catalog(&dir).expect("ensure");
+            assert_eq!(schema_version(&conn).unwrap(), 10);
+            conn.execute(
+                "INSERT INTO papers
+                 (path, id, type, title, added_at, updated_at, openreview_url)
+                 VALUES ('papers/openreview', 'openreview', 'article', 'OR paper',
+                         '2026-08-20T09:00:00.000Z', '2026-08-20T09:00:00.000Z',
+                         'https://openreview.net/forum?id=abc')",
+                [],
+            )
+            .unwrap();
+        }
+
+        // A desktop Agentero 0.12 vault has schema_version 10 already; opening
+        // it must not run an older-schema guard and must leave the URL intact.
+        let conn = ensure_catalog(&dir).expect("open v10");
+        assert_eq!(schema_version(&conn).unwrap(), 10);
+        let url: String = conn
+            .query_row(
+                "SELECT openreview_url FROM papers WHERE path = 'papers/openreview'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(url, "https://openreview.net/forum?id=abc");
         let _ = fs::remove_dir_all(&dir);
     }
 }
