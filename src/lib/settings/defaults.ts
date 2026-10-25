@@ -206,7 +206,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
 	mcpTunnelApiKey: "",
 	zoteroSyncDir: "",
 	batchImportConcurrency: 5,
-	telemetryEnabled: true,
+	telemetryEnabled: false,
 	plazaEnabled: true,
 	plazaHiddenSources: [],
 	onboardingDone: false,

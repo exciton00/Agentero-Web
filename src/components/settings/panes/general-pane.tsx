@@ -457,111 +457,118 @@ export function GeneralPane({
 				</SettingsRow>
 			</SettingsGroup>
 
-			<SettingsSectionLabel className="mt-4">
-				{t("general.sections.network")}
-			</SettingsSectionLabel>
-			<SettingsGroup>
-				<NetworkProxyRow
-					htmlFor="network-proxy-enabled"
-					label={t("general.networkProxy.label")}
-					description={
-						!settings.networkProxyEnabled && systemProxy
-							? t("general.networkProxy.systemDetected", {
-									url: systemProxy,
+			{isWebHost() ? null : (
+				<>
+					<SettingsSectionLabel className="mt-4">
+						{t("general.sections.network")}
+					</SettingsSectionLabel>
+					<SettingsGroup>
+						<NetworkProxyRow
+							htmlFor="network-proxy-enabled"
+							label={t("general.networkProxy.label")}
+							description={
+								!settings.networkProxyEnabled && systemProxy
+									? t("general.networkProxy.systemDetected", {
+											url: systemProxy,
+										})
+									: undefined
+							}
+							proxyUrl={proxyUrlDraft}
+							proxyEnabled={settings.networkProxyEnabled}
+							onProxyUrlChange={setProxyUrlDraft}
+							onCommitProxyUrl={() =>
+								patch({
+									networkProxyUrl:
+										proxyUrlDraft.trim() || DEFAULT_NETWORK_PROXY_URL,
 								})
-							: undefined
-					}
-					proxyUrl={proxyUrlDraft}
-					proxyEnabled={settings.networkProxyEnabled}
-					onProxyUrlChange={setProxyUrlDraft}
-					onCommitProxyUrl={() =>
-						patch({
-							networkProxyUrl:
-								proxyUrlDraft.trim() || DEFAULT_NETWORK_PROXY_URL,
-						})
-					}
-					onToggleProxy={(networkProxyEnabled) =>
-						patch({ networkProxyEnabled })
-					}
-				/>
-				<GitHubMirrorRow
-					htmlFor="github-mirror-enabled"
-					label={t("general.githubMirror.label")}
-					value={settings.githubMirrorBaseUrl}
-					enabled={settings.githubMirrorEnabled}
-					onValueChange={(githubMirrorBaseUrl) =>
-						patch({ githubMirrorBaseUrl })
-					}
-					onToggle={(githubMirrorEnabled) => patch({ githubMirrorEnabled })}
-				/>
-				<SettingsRow
-					label={t("general.institutionProxy.typeLabel")}
-					htmlFor="institution-proxy-type"
-				>
-					<Select
-						value={settings.institutionProxyType}
-						onValueChange={(institutionProxyType) =>
-							patch({ institutionProxyType })
-						}
-					>
-						<SelectTrigger
-							id="institution-proxy-type"
-							size="sm"
-							className="h-8 w-44 text-xs"
-							disabled={!isTauri()}
+							}
+							onToggleProxy={(networkProxyEnabled) =>
+								patch({ networkProxyEnabled })
+							}
+						/>
+						<GitHubMirrorRow
+							htmlFor="github-mirror-enabled"
+							label={t("general.githubMirror.label")}
+							value={settings.githubMirrorBaseUrl}
+							enabled={settings.githubMirrorEnabled}
+							onValueChange={(githubMirrorBaseUrl) =>
+								patch({ githubMirrorBaseUrl })
+							}
+							onToggle={(githubMirrorEnabled) => patch({ githubMirrorEnabled })}
+						/>
+						<SettingsRow
+							label={t("general.institutionProxy.typeLabel")}
+							htmlFor="institution-proxy-type"
 						>
-							<SelectValue />
-						</SelectTrigger>
-						<SelectContent>
-							<SelectItem value="ezproxy" className="text-xs">
-								{t("general.institutionProxy.typeEzproxy")}
-							</SelectItem>
-							<SelectItem value="wengine" className="text-xs">
-								{t("general.institutionProxy.typeWengine")}
-							</SelectItem>
-						</SelectContent>
-					</Select>
-				</SettingsRow>
-				<InstitutionProxyRow
-					htmlFor="institution-proxy-prefix"
-					label={t("general.institutionProxy.label")}
-					prefix={institutionProxyPrefixDraft}
-					cookie={institutionProxyCookieDraft}
-					prefixPlaceholder={
-						settings.institutionProxyType === "wengine"
-							? "https://webvpn.example.edu"
-							: "https://webvpn.example.edu/login?url="
-					}
-					cookiePlaceholder={t("general.institutionProxy.cookiePlaceholder")}
-					cookieLabel={t("general.institutionProxy.cookieLabel")}
-					testLabel={t("general.institutionProxy.test")}
-					testingLabel={t("general.institutionProxy.testing")}
-					presetsLabel={t("general.institutionProxy.presetsLabel")}
-					presets={institutionProxyPresets}
-					onPrefixChange={setInstitutionProxyPrefixDraft}
-					onCookieChange={setInstitutionProxyCookieDraft}
-					onPresetSelect={selectInstitutionProxyPreset}
-					onCommit={commitInstitutionProxy}
-					onTest={() => void testInstitutionProxy()}
-					testing={institutionProxyTesting}
-					probeStatus={institutionProxyProbeStatus}
-					probeLabel={institutionProxyProbeLabel}
-					probeDetail={institutionProxyResult?.message}
-				/>
-			</SettingsGroup>
-			<EasyScholarSettingsBlock
-				savedKey={settings.easyScholarKey}
-				keyDraft={easyScholarKeyDraft}
-				onKeyDraftChange={setEasyScholarKeyDraft}
-				onCommitKey={async (value) => {
-					const trimmed = value.trim();
-					const next = await saveSettingsAsync({
-						...settings,
-						easyScholarKey: trimmed,
-					});
-					setEasyScholarKeyDraft(next.easyScholarKey);
-				}}
-			/>
+							<Select
+								value={settings.institutionProxyType}
+								onValueChange={(institutionProxyType) =>
+									patch({ institutionProxyType })
+								}
+							>
+								<SelectTrigger
+									id="institution-proxy-type"
+									size="sm"
+									className="h-8 w-44 text-xs"
+									disabled={!isTauri()}
+								>
+									<SelectValue />
+								</SelectTrigger>
+								<SelectContent>
+									<SelectItem value="ezproxy" className="text-xs">
+										{t("general.institutionProxy.typeEzproxy")}
+									</SelectItem>
+									<SelectItem value="wengine" className="text-xs">
+										{t("general.institutionProxy.typeWengine")}
+									</SelectItem>
+								</SelectContent>
+							</Select>
+						</SettingsRow>
+						<InstitutionProxyRow
+							htmlFor="institution-proxy-prefix"
+							label={t("general.institutionProxy.label")}
+							prefix={institutionProxyPrefixDraft}
+							cookie={institutionProxyCookieDraft}
+							prefixPlaceholder={
+								settings.institutionProxyType === "wengine"
+									? "https://webvpn.example.edu"
+									: "https://webvpn.example.edu/login?url="
+							}
+							cookiePlaceholder={t(
+								"general.institutionProxy.cookiePlaceholder",
+							)}
+							cookieLabel={t("general.institutionProxy.cookieLabel")}
+							testLabel={t("general.institutionProxy.test")}
+							testingLabel={t("general.institutionProxy.testing")}
+							presetsLabel={t("general.institutionProxy.presetsLabel")}
+							presets={institutionProxyPresets}
+							onPrefixChange={setInstitutionProxyPrefixDraft}
+							onCookieChange={setInstitutionProxyCookieDraft}
+							onPresetSelect={selectInstitutionProxyPreset}
+							onCommit={commitInstitutionProxy}
+							onTest={() => void testInstitutionProxy()}
+							testing={institutionProxyTesting}
+							probeStatus={institutionProxyProbeStatus}
+							probeLabel={institutionProxyProbeLabel}
+							probeDetail={institutionProxyResult?.message}
+						/>
+					</SettingsGroup>
+					<EasyScholarSettingsBlock
+						savedKey={settings.easyScholarKey}
+						keyDraft={easyScholarKeyDraft}
+						onKeyDraftChange={setEasyScholarKeyDraft}
+						onCommitKey={async (value) => {
+							const trimmed = value.trim();
+							const next = await saveSettingsAsync({
+								...settings,
+								easyScholarKey: trimmed,
+							});
+							setEasyScholarKeyDraft(next.easyScholarKey);
+						}}
+					/>
+				</>
+			)}
+
 			<SettingsSectionLabel className="mt-4">
 				{t("general.sections.integrations")}
 			</SettingsSectionLabel>

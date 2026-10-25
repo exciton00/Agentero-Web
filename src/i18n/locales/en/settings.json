@@ -1020,6 +1020,14 @@
 		"title": "About",
 		"starGithub": "Star us on GitHub",
 		"version": "Version {{version}}",
+		"webProject": {
+			"name": "Agentero-Web",
+			"tagline": "Self-hosted web edition"
+		},
+		"legacyProject": {
+			"name": "Agentero",
+			"tagline": "Original desktop app"
+		},
 		"logs": {
 			"label": "Logs",
 			"open": "Open log folder",

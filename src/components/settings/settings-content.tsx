@@ -35,6 +35,7 @@ import type {
 } from "@/components/settings/types";
 import { Button } from "@/components/ui/button";
 import { scrollBehavior } from "@/lib/core/motion";
+import { isWebHost } from "@/lib/core/tauri";
 import { cn } from "@/lib/core/utils";
 import {
 	broadcastOnboardingRequest,
@@ -186,19 +187,36 @@ export function SettingsContent({
 	const { t } = useTranslation(["settings", "common"]);
 	const fallbackTitleId = useId();
 	const headingId = titleId ?? fallbackTitleId;
+	const webHost = isWebHost();
+	/**
+	 * `remote-access` is a desktop-only pane (SSH / remote host pairing). On the
+	 * web host it is removed from the nav and panes; a stale URL fallback to
+	 * `general` instead of rendering an empty settings page.
+	 */
+	const effectiveSection: SettingsSection =
+		webHost && section === "remote-access" ? "general" : section;
+	const visibleNav = useMemo(
+		() => NAV.filter((item) => !(webHost && item.id === "remote-access")),
+		[webHost],
+	);
 
 	// Keep visited panes mounted (hidden when inactive) so switching sections
 	// doesn't unmount/remount them — avoids re-running their load effects
 	// (agent list, connector status, cache stats, dynamic imports) and makes
 	// section switches instant instead of re-fetching on every visit.
 	const [visitedSections, setVisitedSections] = useState<SettingsSection[]>([
-		section,
+		effectiveSection,
 	]);
 	useEffect(() => {
 		setVisitedSections((prev) =>
-			prev.includes(section) ? prev : [...prev, section],
+			prev.includes(effectiveSection) ? prev : [...prev, effectiveSection],
 		);
-	}, [section]);
+	}, [effectiveSection]);
+	// A URL that points at the removed pane falls back to general (and informs
+	// the controller so the address/user state follows).
+	useEffect(() => {
+		if (webHost && section === "remote-access") onSectionChange("general");
+	}, [webHost, section, onSectionChange]);
 
 	// Warm every pane chunk in the background shortly after the window opens.
 	// Only the initial section is preloaded at boot; without this, the FIRST
@@ -208,7 +226,9 @@ export function SettingsContent({
 	// contends with the main window.
 	useEffect(() => {
 		let cancelled = false;
-		const sections = Object.keys(PANE_LOADERS) as SettingsSection[];
+		const sections = (Object.keys(PANE_LOADERS) as SettingsSection[]).filter(
+			(id) => !(webHost && id === "remote-access"),
+		);
 		let i = 0;
 		let timer: ReturnType<typeof setTimeout> | null = null;
 		const warmNext = () => {
@@ -223,7 +243,7 @@ export function SettingsContent({
 			cancelled = true;
 			if (timer) clearTimeout(timer);
 		};
-	}, []);
+	}, [webHost]);
 	const contentScrollRef = useRef<HTMLDivElement>(null);
 	const navListRef = useRef<HTMLUListElement>(null);
 	const navItemRefs = useRef<
@@ -237,12 +257,12 @@ export function SettingsContent({
 	// biome-ignore lint/correctness/useExhaustiveDependencies: section intentionally triggers a scroll-to-top on switch
 	useEffect(() => {
 		contentScrollRef.current?.scrollTo({ top: 0, behavior: scrollBehavior() });
-	}, [section]);
+	}, [effectiveSection]);
 
 	// Slide the sidebar highlight to the active item (motion-17).
 	const measureNavIndicator = useCallback(() => {
 		const list = navListRef.current;
-		const btn = navItemRefs.current[section];
+		const btn = navItemRefs.current[effectiveSection];
 		if (!list || !btn) return;
 		const listRect = list.getBoundingClientRect();
 		const btnRect = btn.getBoundingClientRect();
@@ -250,7 +270,7 @@ export function SettingsContent({
 			top: btnRect.top - listRect.top + list.scrollTop,
 			height: btnRect.height,
 		});
-	}, [section]);
+	}, [effectiveSection]);
 
 	useEffect(() => {
 		measureNavIndicator();
@@ -312,7 +332,7 @@ export function SettingsContent({
 			event: ReactKeyboardEvent<HTMLButtonElement>,
 			current: SettingsSection,
 		) => {
-			const ids = NAV.map((item) => item.id);
+			const ids = visibleNav.map((item) => item.id);
 			const index = ids.indexOf(current);
 			if (index < 0) return;
 			let next = index;
@@ -333,7 +353,7 @@ export function SettingsContent({
 			selectSection(id);
 			navItemRefs.current[id]?.focus();
 		},
-		[selectSection],
+		[selectSection, visibleNav],
 	);
 
 	return (
@@ -379,9 +399,9 @@ export function SettingsContent({
 							}}
 						/>
 					) : null}
-					{NAV.map((item) => {
+					{visibleNav.map((item) => {
 						const Icon = item.icon;
-						const active = section === item.id;
+						const active = effectiveSection === item.id;
 						return (
 							<Fragment key={item.id}>
 								{item.dividerBefore ? (
@@ -469,8 +489,8 @@ export function SettingsContent({
 					{visitedSections.includes("general") && (
 						<div
 							data-settings-pane
-							data-active={section === "general" ? "true" : "false"}
-							hidden={section !== "general"}
+							data-active={effectiveSection === "general" ? "true" : "false"}
+							hidden={effectiveSection !== "general"}
 						>
 							<Suspense fallback={<PaneFallback />}>
 								<GeneralPane
@@ -485,8 +505,8 @@ export function SettingsContent({
 					{visitedSections.includes("appearance") && (
 						<div
 							data-settings-pane
-							data-active={section === "appearance" ? "true" : "false"}
-							hidden={section !== "appearance"}
+							data-active={effectiveSection === "appearance" ? "true" : "false"}
+							hidden={effectiveSection !== "appearance"}
 						>
 							<Suspense fallback={<PaneFallback />}>
 								<AppearancePane
@@ -510,8 +530,8 @@ export function SettingsContent({
 					{visitedSections.includes("agent") && (
 						<div
 							data-settings-pane
-							data-active={section === "agent" ? "true" : "false"}
-							hidden={section !== "agent"}
+							data-active={effectiveSection === "agent" ? "true" : "false"}
+							hidden={effectiveSection !== "agent"}
 						>
 							<Suspense fallback={<PaneFallback />}>
 								{hostContext.kind === "remote" ? (
@@ -529,8 +549,8 @@ export function SettingsContent({
 					{visitedSections.includes("translate") && (
 						<div
 							data-settings-pane
-							data-active={section === "translate" ? "true" : "false"}
-							hidden={section !== "translate"}
+							data-active={effectiveSection === "translate" ? "true" : "false"}
+							hidden={effectiveSection !== "translate"}
 						>
 							<Suspense fallback={<PaneFallback />}>
 								<TranslatePane
@@ -544,8 +564,8 @@ export function SettingsContent({
 					{visitedSections.includes("layout") && (
 						<div
 							data-settings-pane
-							data-active={section === "layout" ? "true" : "false"}
-							hidden={section !== "layout"}
+							data-active={effectiveSection === "layout" ? "true" : "false"}
+							hidden={effectiveSection !== "layout"}
 						>
 							<Suspense fallback={<PaneFallback />}>
 								<LayoutPane
@@ -560,8 +580,8 @@ export function SettingsContent({
 					{visitedSections.includes("rag") && (
 						<div
 							data-settings-pane
-							data-active={section === "rag" ? "true" : "false"}
-							hidden={section !== "rag"}
+							data-active={effectiveSection === "rag" ? "true" : "false"}
+							hidden={effectiveSection !== "rag"}
 						>
 							<Suspense fallback={<PaneFallback />}>
 								<RagPane settings={settings} patch={patch} />
@@ -571,8 +591,8 @@ export function SettingsContent({
 					{visitedSections.includes("doctor") && (
 						<div
 							data-settings-pane
-							data-active={section === "doctor" ? "true" : "false"}
-							hidden={section !== "doctor"}
+							data-active={effectiveSection === "doctor" ? "true" : "false"}
+							hidden={effectiveSection !== "doctor"}
 						>
 							<Suspense fallback={<PaneFallback />}>
 								<DoctorPane vaultPath={vaultPath} hostContext={hostContext} />
@@ -582,19 +602,21 @@ export function SettingsContent({
 					{visitedSections.includes("keyboard") && (
 						<div
 							data-settings-pane
-							data-active={section === "keyboard" ? "true" : "false"}
-							hidden={section !== "keyboard"}
+							data-active={effectiveSection === "keyboard" ? "true" : "false"}
+							hidden={effectiveSection !== "keyboard"}
 						>
 							<Suspense fallback={<PaneFallback />}>
 								<KeyboardPane />
 							</Suspense>
 						</div>
 					)}
-					{visitedSections.includes("remote-access") && (
+					{!webHost && visitedSections.includes("remote-access") && (
 						<div
 							data-settings-pane
-							data-active={section === "remote-access" ? "true" : "false"}
-							hidden={section !== "remote-access"}
+							data-active={
+								effectiveSection === "remote-access" ? "true" : "false"
+							}
+							hidden={effectiveSection !== "remote-access"}
 						>
 							<Suspense fallback={<PaneFallback />}>
 								<RemoteAccessPane vaultPath={vaultPath} />
@@ -604,8 +626,8 @@ export function SettingsContent({
 					{visitedSections.includes("sync") && (
 						<div
 							data-settings-pane
-							data-active={section === "sync" ? "true" : "false"}
-							hidden={section !== "sync"}
+							data-active={effectiveSection === "sync" ? "true" : "false"}
+							hidden={effectiveSection !== "sync"}
 						>
 							<Suspense fallback={<PaneFallback />}>
 								<SyncPane vaultPath={vaultPath} />
@@ -615,8 +637,10 @@ export function SettingsContent({
 					{visitedSections.includes("experimental") && (
 						<div
 							data-settings-pane
-							data-active={section === "experimental" ? "true" : "false"}
-							hidden={section !== "experimental"}
+							data-active={
+								effectiveSection === "experimental" ? "true" : "false"
+							}
+							hidden={effectiveSection !== "experimental"}
 						>
 							<Suspense fallback={<PaneFallback />}>
 								<ExperimentalPane settings={settings} patch={patch} />
@@ -626,8 +650,8 @@ export function SettingsContent({
 					{visitedSections.includes("about") && (
 						<div
 							data-settings-pane
-							data-active={section === "about" ? "true" : "false"}
-							hidden={section !== "about"}
+							data-active={effectiveSection === "about" ? "true" : "false"}
+							hidden={effectiveSection !== "about"}
 						>
 							<Suspense fallback={<PaneFallback />}>
 								<AboutPane />

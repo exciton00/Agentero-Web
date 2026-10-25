@@ -6,7 +6,7 @@ import {
 	events,
 } from "@/lib/core/bindings";
 import { callApi } from "@/lib/core/ipc";
-import { hasHostTransport } from "@/lib/core/tauri";
+import { hasHostTransport, isWebHost } from "@/lib/core/tauri";
 import {
 	isPaperTreeLabelMode,
 	isPaperTreeSortMode,
@@ -145,6 +145,14 @@ export async function ensureSettingsLoaded(): Promise<AppSettings> {
 					fallback: "settings_get failed",
 				});
 				let next = normalizeSettings(fromSettingsWire(res.settings));
+
+				// Web host: sharing anonymous usage data is opt-in. The Host schema
+				// still defaults to `true` for desktop compatibility, so only flip
+				// the default when there is no persisted settings file yet; an
+				// explicit choice is preserved on later loads.
+				if (!res.existed && isWebHost()) {
+					next = { ...next, telemetryEnabled: false };
+				}
 
 				if (!res.existed) {
 					const legacy = readLegacyLocalStorage();

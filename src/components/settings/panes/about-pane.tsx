@@ -1,9 +1,9 @@
-import { getVersion } from "@tauri-apps/api/app";
 import { appLogDir } from "@tauri-apps/api/path";
 import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import {
 	Download,
 	FolderOpen,
+	Globe,
 	LoaderCircle,
 	MousePointerClick,
 	RefreshCw,
@@ -54,11 +54,14 @@ import {
 const CLI_BREW_INSTALL_COMMAND =
 	"brew tap poco-ai/agentero\nbrew install agentero";
 
-const GITHUB_REPO_URL = "https://github.com/poco-ai/Agentero";
+const WEB_REPO_URL = "https://github.com/exciton00/Agentero-Web";
+const LEGACY_REPO_URL = "https://github.com/poco-ai/Agentero";
+/** Fixed product versions shown on the About page (not the runtime app version). */
+const WEB_PROJECT_VERSION = "1.0.0";
+const LEGACY_PROJECT_VERSION = "0.12.0";
 
 export function AboutPane() {
 	const { t } = useTranslation("settings");
-	const [version, setVersion] = useState<string>();
 	const [update, setUpdate] = useState<UpdateSnapshot>(getUpdateSnapshot);
 	const [cli, setCli] = useState<CliInstallStatus | null>(null);
 	const [cliBusy, setCliBusy] = useState(false);
@@ -96,11 +99,6 @@ export function AboutPane() {
 		}
 	}, [isMac]);
 
-	useEffect(() => {
-		void getVersion()
-			.then(setVersion)
-			.catch(() => undefined);
-	}, []);
 	useEffect(() => subscribeUpdate(setUpdate), []);
 	useEffect(() => {
 		void refreshCli();
@@ -293,19 +291,36 @@ export function AboutPane() {
 
 	return (
 		<>
-			<PageTitle
-				title={t("about.title")}
-				actions={
+			<PageTitle title={t("about.title")} />
+			<SettingsGroup>
+				<div className="flex items-center justify-between gap-4 px-3.5 py-4">
+					<div className="flex min-w-0 items-center gap-3">
+						<span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-muted">
+							<Globe className="size-5 text-muted-foreground" aria-hidden />
+						</span>
+						<div className="min-w-0 space-y-0.5">
+							<p className="font-semibold text-base text-foreground">
+								{t("about.webProject.name")}
+							</p>
+							<p className="text-muted-foreground text-xs">
+								{t("about.version", { version: WEB_PROJECT_VERSION })}
+							</p>
+							<p className="text-muted-foreground text-xs">
+								{t("about.webProject.tagline")}
+							</p>
+						</div>
+					</div>
 					<Button
 						variant="outline"
 						size="sm"
-						onClick={() => openExternalUrl(GITHUB_REPO_URL)}
+						aria-label={`${t("about.starGithub")} — ${t("about.webProject.name")}`}
+						onClick={() => openExternalUrl(WEB_REPO_URL)}
 					>
 						<Star data-icon="inline-start" className="star-twinkle" />
 						{t("about.starGithub")}
 					</Button>
-				}
-			/>
+				</div>
+			</SettingsGroup>
 			<SettingsGroup>
 				<div className="flex items-center justify-between gap-4 px-3.5 py-4">
 					<div className="flex min-w-0 items-center gap-3">
@@ -317,39 +332,51 @@ export function AboutPane() {
 						/>
 						<div className="min-w-0 space-y-0.5">
 							<p className="font-semibold text-base text-foreground">
-								Agentero
+								{t("about.legacyProject.name")}
 							</p>
-							{version && (
-								<p className="text-muted-foreground text-xs">
-									{t("about.version", { version })}
-								</p>
-							)}
+							<p className="text-muted-foreground text-xs">
+								{t("about.version", { version: LEGACY_PROJECT_VERSION })}
+							</p>
+							<p className="text-muted-foreground text-xs">
+								{t("about.legacyProject.tagline")}
+							</p>
 						</div>
 					</div>
-					<div className="flex shrink-0 items-center">
-						{update.phase === "available" ? (
-							<Button size="sm" onClick={onInstall}>
-								<Download data-icon="inline-start" />
-								{t("about.update.downloadInstall")}
-							</Button>
-						) : update.phase === "unsupported" ? null : (
-							<Button
-								variant="outline"
-								size="sm"
-								disabled={checking || installing}
-								onClick={onCheck}
-							>
-								{checking || installing ? (
-									<LoaderCircle
-										data-icon="inline-start"
-										className="animate-spin"
-									/>
-								) : (
-									<RefreshCw data-icon="inline-start" />
-								)}
-								{t("about.update.check")}
-							</Button>
-						)}
+					<div className="flex shrink-0 items-center gap-2">
+						{isTauri() ? (
+							update.phase === "available" ? (
+								<Button size="sm" onClick={onInstall}>
+									<Download data-icon="inline-start" />
+									{t("about.update.downloadInstall")}
+								</Button>
+							) : update.phase === "unsupported" ? null : (
+								<Button
+									variant="outline"
+									size="sm"
+									disabled={checking || installing}
+									onClick={onCheck}
+								>
+									{checking || installing ? (
+										<LoaderCircle
+											data-icon="inline-start"
+											className="animate-spin"
+										/>
+									) : (
+										<RefreshCw data-icon="inline-start" />
+									)}
+									{t("about.update.check")}
+								</Button>
+							)
+						) : null}
+						<Button
+							variant="outline"
+							size="sm"
+							aria-label={`${t("about.starGithub")} — ${t("about.legacyProject.name")}`}
+							onClick={() => openExternalUrl(LEGACY_REPO_URL)}
+						>
+							<Star data-icon="inline-start" className="star-twinkle" />
+							{t("about.starGithub")}
+						</Button>
 					</div>
 				</div>
 				{update.phase === "available" && update.notes?.trim() ? (

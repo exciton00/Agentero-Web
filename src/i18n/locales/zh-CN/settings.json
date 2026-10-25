@@ -1020,6 +1020,14 @@
 		"title": "关于",
 		"starGithub": "Star us on GitHub",
 		"version": "版本 {{version}}",
+		"webProject": {
+			"name": "Agentero-Web",
+			"tagline": "可自部署的 Web 版"
+		},
+		"legacyProject": {
+			"name": "Agentero",
+			"tagline": "原桌面版"
+		},
 		"logs": {
 			"label": "运行日志",
 			"open": "打开日志文件夹",
