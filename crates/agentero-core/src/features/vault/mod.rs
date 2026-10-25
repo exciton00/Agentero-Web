@@ -157,19 +157,17 @@ fn seed_or_upgrade_bundled_file(
     Ok(())
 }
 
-/// Idempotent vault scaffold under `path` without overwriting existing user files.
+/// Shared implementation of the vault scaffold.
 ///
-/// Creates: `papers/`, `notes/`, `data/`, `.agentero/`, `.agents/` (+ `skills/`),
-/// `AGENTS.md` (if missing), seeds `.agents/README.md` and bundled skills from
-/// the app template, safely upgrades managed first-party skills (frontmatter
-/// `version`), seeds localized onboarding tutorial notes under `notes/`, seeds
-/// the `thesis/` LaTeX starter when that folder is absent, and initializes
-/// `.agentero/catalog.sqlite`.
-/// Does **not** create `PAPERS.md` / `library.bib`.
-///
-/// Safe to call on every vault open after an app update so newly shipped skills
-/// and onboarding notes appear while customized files stay intact.
-pub fn ensure_vault(path: &Path, locale: &str) -> Result<CreateVaultResult, AppError> {
+/// `upgrade_managed_skills` selects the legacy desktop/open behaviour (upgrade
+/// untouched first-party `SKILL.md` files whose frontmatter `version` is lower
+/// than the bundled template) vs. the Web seed-only behaviour. Seed-only never
+/// rewrites a file that already exists, regardless of its version or content.
+fn ensure_vault_impl(
+    path: &Path,
+    locale: &str,
+    upgrade_managed_skills: bool,
+) -> Result<CreateVaultResult, AppError> {
     // A moved or deleted vault must surface an error, never be re-scaffolded
     // from scratch at the old path.
     if !path.exists() {
@@ -219,7 +217,13 @@ pub fn ensure_vault(path: &Path, locale: &str) -> Result<CreateVaultResult, AppE
         &mut created,
     )?;
     for (rel, content) in bundled_skill_files() {
-        seed_or_upgrade_bundled_file(path, rel, content, &mut created, &mut updated)?;
+        if upgrade_managed_skills {
+            seed_or_upgrade_bundled_file(path, rel, content, &mut created, &mut updated)?;
+        } else {
+            // Seed-only (Web): an existing file is user-owned, even when it is
+            // an older bundled skill version. Never rewrite it.
+            seed_file_if_missing(path, rel, content, &mut created)?;
+        }
     }
 
     // Agents that read their own skill directory (Claude Code) get a link to the
@@ -273,6 +277,34 @@ pub fn ensure_vault(path: &Path, locale: &str) -> Result<CreateVaultResult, AppE
         updated,
         open_path,
     })
+}
+
+/// Idempotent vault scaffold under `path` without overwriting existing user files.
+///
+/// Creates: `papers/`, `notes/`, `data/`, `.agentero/`, `.agents/` (+ `skills/`),
+/// `AGENTS.md` (if missing), seeds `.agents/README.md` and bundled skills from
+/// the app template, safely upgrades untouched first-party skills (frontmatter
+/// `version`), seeds localized onboarding tutorial notes under `notes/`, seeds
+/// the `thesis/` LaTeX starter when that folder is absent, and initializes
+/// `.agentero/catalog.sqlite`.
+/// Does **not** create `PAPERS.md` / `library.bib`.
+///
+/// Safe to call on every vault open after an app update so newly shipped skills
+/// and onboarding notes appear while customized files stay intact.
+pub fn ensure_vault(path: &Path, locale: &str) -> Result<CreateVaultResult, AppError> {
+    ensure_vault_impl(path, locale, true)
+}
+
+/// Seed-only vault scaffold for the headless Web host.
+///
+/// Same layout as [`ensure_vault`], but **never** upgrades or overwrites a file
+/// that already exists — even an older bundled skill with a lower frontmatter
+/// `version`, or a user-edited `AGENTS.md` / `SKILL.md`. `updated` is always
+/// empty. Used on Web startup and by the `vault_ensure` RPC so opening a folder
+/// (e.g. an empty `AGENTERO_WEB_VAULT`) fills only the gaps and leaves the
+/// directory under the user's control.
+pub fn ensure_vault_seed_only(path: &Path, locale: &str) -> Result<CreateVaultResult, AppError> {
+    ensure_vault_impl(path, locale, false)
 }
 
 /// Create Agentero vault skeleton. Creates the root directory when missing;
@@ -636,6 +668,83 @@ mod tests {
             dir.display()
         );
     }
+}
+
+/// Web startup path: empty folder gets the default scaffold, but every
+/// existing file (even a downgraded bundled skill) is left untouched.
+#[test]
+fn seed_only_scaffolds_empty_vault_and_never_overwrites() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    let first = ensure_vault_seed_only(root, "en").expect("seed empty vault");
+    assert!(root.join("AGENTS.md").is_file());
+    assert!(root.join(".agents/README.md").is_file());
+    assert!(root.join(".agents/skills/README.md").is_file());
+    assert!(root.join(".agents/skills/paper-reader/SKILL.md").is_file());
+    assert!(root.join(".agents/skills/agentero-cli/SKILL.md").is_file());
+    assert!(root.join("papers").is_dir());
+    assert!(root.join(".agentero/catalog.sqlite").is_file());
+    assert!(first.updated.is_empty(), "seed-only never upgrades");
+    assert!(first.created.iter().any(|c| c == "AGENTS.md"));
+
+    // Idempotent: a second seed finds nothing missing and changes nothing.
+    let second = ensure_vault_seed_only(root, "en").expect("seed again");
+    assert!(second.created.is_empty(), "{:?}", second.created);
+    assert!(second.updated.is_empty());
+
+    // User edits survive, including an older versioned managed skill.
+    fs::write(root.join("AGENTS.md"), "# my agents\n").unwrap();
+    let (skill_rel, template) = bundled_skill_files()
+        .iter()
+        .find(|(rel, _)| *rel == ".agents/skills/paper-reader/SKILL.md")
+        .copied()
+        .expect("paper-reader skill bundled");
+    let downgraded = {
+        let mut out = String::with_capacity(template.len());
+        let mut replaced = false;
+        for line in template.lines() {
+            if !replaced && line.starts_with("version: ") {
+                out.push_str("version: 0");
+                replaced = true;
+            } else {
+                out.push_str(line);
+            }
+            out.push('\n');
+        }
+        out
+    };
+    assert_ne!(downgraded, template);
+    fs::write(root.join(skill_rel), &downgraded).unwrap();
+
+    let third = ensure_vault_seed_only(root, "en").expect("seed over user files");
+    assert_eq!(
+        fs::read_to_string(root.join("AGENTS.md")).unwrap(),
+        "# my agents\n"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join(skill_rel)).unwrap(),
+        downgraded,
+        "seed-only must not upgrade an existing skill"
+    );
+    assert!(third.updated.is_empty());
+
+    // The desktop/open path still upgrades the same untouched older skill;
+    // this is the behaviour the Web path deliberately opts out of.
+    let upgraded = ensure_vault(root, "en").expect("legacy ensure upgrades");
+    assert!(
+        upgraded.updated.iter().any(|rel| rel == skill_rel),
+        "{:?}",
+        upgraded.updated
+    );
+    assert_eq!(fs::read_to_string(root.join(skill_rel)).unwrap(), template);
+}
+
+#[test]
+fn seed_only_requires_an_existing_directory() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let missing = dir.path().join("missing");
+    assert!(ensure_vault_seed_only(&missing, "en").is_err());
 }
 
 pub mod agent_links;

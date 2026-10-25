@@ -66,6 +66,10 @@ pub async fn create(_ctx: &RpcCtx, args: &Value) -> HandlerResult {
 }
 
 /// `vault_ensure(path, locale)` → `ApiResult<CreateVaultResult>`.
+///
+/// Seed-only on the Web host: fills missing `AGENTS.md` / `.agents/...` files
+/// but never overwrites or version-upgrades an existing file. Explicit
+/// `vault_create` keeps the full create behaviour for brand-new folders.
 pub async fn ensure(_ctx: &RpcCtx, args: &Value) -> HandlerResult {
     let args: VaultCreateArgs = match parse_args(args) {
         Ok(args) => args,
@@ -74,7 +78,7 @@ pub async fn ensure(_ctx: &RpcCtx, args: &Value) -> HandlerResult {
     let result = blocking(move || {
         let path = absolute_path_arg(&args.path)?;
         let locale = vault::resolve_vault_locale(args.locale.as_deref().unwrap_or(""));
-        vault::ensure_vault(&path, locale).map_err(|error| error.to_string())
+        vault::ensure_vault_seed_only(&path, locale).map_err(|error| error.to_string())
     })
     .await;
     match result {

@@ -174,6 +174,25 @@ async fn run() {
 
     let state = Arc::new(AppState::new(config.clone()));
 
+    // Seed an empty (or partially populated) Vault with the bundled agent
+    // scaffold: AGENTS.md, .agents/README.md and .agents/skills/... Missing
+    // files are created from the embedded templates; existing files — even
+    // user-edited ones or older bundled skills — are never overwritten or
+    // version-upgraded on the Web host. A failure here must not block startup.
+    let vault_locale = state
+        .settings
+        .get()
+        .map(|current| current.settings.locale)
+        .unwrap_or_default();
+    if let Err(error) =
+        agentero_core::features::vault::ensure_vault_seed_only(&config.vault_root, &vault_locale)
+    {
+        log::warn!(
+            "vault scaffold seed skipped for {}: {error}",
+            config.vault_root.display()
+        );
+    }
+
     // Docker host ACP: a bind-mounted Dsh is registered automatically so users
     // do not have to add a custom agent in Settings.
     host_agent::ensure_host_dsh(&state.agents, state.settings.path());
