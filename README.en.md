@@ -58,6 +58,7 @@ docker compose up -d
 
 - The repo ships one `docker-compose.yml.example` plus `.env.example`; the copied working files are not committed. No reverse proxy or production orchestration is included.
 - The published image `ghcr.io/exciton00/agentero-web:latest` is used by default. To build it yourself instead, point `AGENTERO_IMAGE` in `.env` at a local tag and run `docker compose up -d --build`.
+- **Vault compatibility**: the current release supports desktop Agentero Vault catalogs at schema **v10**; older v1–v9 catalogs are migrated automatically on first open. Vault content is Markdown / PDF / `marks/` / `.agentero/catalog.sqlite`.
 - To migrate existing data from desktop Agentero: quit the old app first, then manually copy the contents of its Vault directory into `AGENTERO_VAULT_DIR`; do not let both apps write to the same Vault at the same time.
 - Cloud sync is not recommended for now: Agentero and Agentero-Web may use incompatible sync state/data formats, so mixing them can cause conflicts.
 

@@ -28,6 +28,10 @@ docker compose up -d
 `AGENTERO_VAULT_DIR`，不要两个应用同时写同一个 Vault。当前版本不建议开启云同步，
 Agentero 与 Agentero-Web 的同步状态/数据格式可能不兼容，混用可能产生冲突。
 
+Vault 兼容性：当前支持 Agentero 桌面版 Vault 的 catalog schema **v10**；更旧的
+v1–v9 catalog 会在首次打开时自动迁移到 v10。Vault 内容格式为 Markdown / PDF /
+`marks/` / `.agentero/catalog.sqlite`。
+
 ## 接入 Dsh Agent（宿主机挂载）
 
 镜像**不包含** Agent CLI。Chat 面板使用宿主机上已安装并登录的 Dsh：compose 把宿主机 Dsh

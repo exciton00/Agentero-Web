@@ -58,6 +58,7 @@ docker compose up -d
 
 - 仓库只提供一份 `docker-compose.yml.example` + `.env.example`，复制出的实际文件不会被提交；部署不包含反向代理或生产编排。
 - 默认使用已发布的 `ghcr.io/exciton00/agentero-web:latest` 镜像。需要自己构建时，把 `.env` 的 `AGENTERO_IMAGE` 改为本地 tag，执行 `docker compose up -d --build` 即可。
+- **Vault 兼容性**：当前支持 Agentero 桌面版 Vault 的 catalog schema **v10**；更旧的 v1–v9 catalog 在首次打开时会自动迁移到 v10。Vault 内容格式为 Markdown / PDF / `marks/` / `.agentero/catalog.sqlite`。
 - 如果要从原版 Agentero 迁移已有数据：先退出原应用，再把原 Agentero 的 Vault 目录内容手动复制到 `AGENTERO_VAULT_DIR`；不要让两个应用同时写入同一个 Vault。
 - 当前版本不建议开启云同步：Agentero 与 Agentero-Web 的同步状态/数据格式可能不兼容，混用可能产生冲突。
 
