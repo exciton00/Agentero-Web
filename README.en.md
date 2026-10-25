@@ -36,7 +36,7 @@ Agentero-Web brings Agentero's research workbench to the browser. Papers, PDFs, 
 - **Agent (ACP)**: chat with an Agent CLI installed on the host (Dsh is supported today), with paper and selection context; per-tab event routing.
 - **MCP server**: expose Vault papers/notes/files to external clients over Streamable HTTP MCP; tools and paper text are opt-in.
 - **External knowledge-base RAG**: sync papers as Markdown into external knowledge bases such as WeKnora, and expose read-only retrieval tools to MCP clients and the web agent.
-- **Sync & citations**: Vault cloud sync (git / S3 / WebDAV, optionally automatic); live BibTeX / BibLaTeX mount at `/agentero_online.bib`.
+- **Sync & citations**: Vault cloud sync (git / S3 / WebDAV; not recommended for now — see Quick start); live BibTeX / BibLaTeX mount at `/agentero_online.bib`.
 
 ## Quick start (Docker Compose)
 
@@ -58,7 +58,8 @@ docker compose up -d
 
 - The repo ships one `docker-compose.yml.example` plus `.env.example`; the copied working files are not committed. No reverse proxy or production orchestration is included.
 - The published image `ghcr.io/exciton00/agentero-web:latest` is used by default. To build it yourself instead, point `AGENTERO_IMAGE` in `.env` at a local tag and run `docker compose up -d --build`.
-- The first visit shows a welcome page; create or open a Vault to start.
+- To migrate existing data from desktop Agentero: quit the old app first, then manually copy the contents of its Vault directory into `AGENTERO_VAULT_DIR`; do not let both apps write to the same Vault at the same time.
+- Cloud sync is not recommended for now: Agentero and Agentero-Web may use incompatible sync state/data formats, so mixing them can cause conflicts.
 
 ### Dsh agent (mounted from the host)
 
@@ -116,7 +117,7 @@ Backup = copy the Vault directory plus the data directory. The Vault stays reada
 - **Settings → Agent**: detect host Dsh; use "Redetect" when Dsh is missing or an old data volume is reused.
 - **Settings → Translate**: pick a translation service; adjust full-document body / heading font sizes and reset to defaults.
 - **Settings → Layout**: choose layout-analysis and body-parse engines (e.g. self-hosted MinerU) and set the parsing page cap.
-- **Settings → Sync**: git / S3 / WebDAV cloud sync; optional automatic sync.
+- **Settings → Sync**: git / S3 / WebDAV cloud sync; not recommended for now (see Quick start).
 - **Settings → General → MCP server**: enable/disable the MCP listener port.
 - **Settings → RAG / External knowledge base**: configure an external knowledge base (see below).
 

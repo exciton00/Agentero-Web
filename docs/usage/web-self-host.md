@@ -24,6 +24,10 @@ docker compose up -d
 默认使用已发布镜像 `ghcr.io/exciton00/agentero-web:latest`。需要自己构建镜像时，在 `.env` 设
 `AGENTERO_IMAGE=agentero-web:local`，执行 `docker compose up -d --build`。
 
+如需从原版 Agentero 迁移已有数据：先退出原应用，再把原 Vault 目录内容手动复制到
+`AGENTERO_VAULT_DIR`，不要两个应用同时写同一个 Vault。当前版本不建议开启云同步，
+Agentero 与 Agentero-Web 的同步状态/数据格式可能不兼容，混用可能产生冲突。
+
 ## 接入 Dsh Agent（宿主机挂载）
 
 镜像**不包含** Agent CLI。Chat 面板使用宿主机上已安装并登录的 Dsh：compose 把宿主机 Dsh
@@ -99,7 +103,7 @@ Docker Compose 的用户配置统一放在 `.env`（由 `.env.example` 复制）
 - **Settings → Agent**：检测宿主机 Dsh；沿用旧数据卷时点「重新检测」。
 - **Settings → 翻译**：选择翻译服务；整篇翻译的「正文字号」「标题字号」可调，支持恢复默认。
 - **Settings → 版面解析**：选择版面 / 正文解析引擎（如自建 MinerU）、设置解析页数上限。
-- **Settings → 同步**：git / S3 / WebDAV 云同步，可开启自动同步。
+- **Settings → 同步**：git / S3 / WebDAV 云同步；当前版本不建议开启（见快速开始）。
 - **Settings → 通用 → MCP server**：开关 MCP 监听端口。
 - **Settings → RAG / External knowledge base**：配置外部知识库（见下）。
 

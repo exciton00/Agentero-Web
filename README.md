@@ -36,7 +36,7 @@ Agentero-Web 把 Agentero 的科研工作台搬到浏览器：论文、PDF、笔
 - **Agent（ACP）**：使用宿主机安装的 Agent CLI（当前支持 Dsh），在 Chat 面板里带论文与选区上下文对话；每个标签页的事件独立路由。
 - **MCP Server**：把 Vault 的论文/笔记/文件能力通过 Streamable HTTP MCP 提供给外部客户端；工具与论文正文默认按需开启。
 - **外部知识库 RAG**：把论文渲染成 Markdown 同步到 WeKnora 等外部知识库，并把只读检索工具提供给 MCP 客户端与 Web Agent。
-- **同步与引用**：Vault 云同步（git / S3 / WebDAV，可自动运行）；`/agentero_online.bib` 实时提供 BibTeX / BibLaTeX 文献列表。
+- **同步与引用**：Vault 云同步（git / S3 / WebDAV；当前版本不建议开启，见快速开始）；`/agentero_online.bib` 实时提供 BibTeX / BibLaTeX 文献列表。
 
 ## 快速开始（Docker Compose）
 
@@ -58,7 +58,8 @@ docker compose up -d
 
 - 仓库只提供一份 `docker-compose.yml.example` + `.env.example`，复制出的实际文件不会被提交；部署不包含反向代理或生产编排。
 - 默认使用已发布的 `ghcr.io/exciton00/agentero-web:latest` 镜像。需要自己构建时，把 `.env` 的 `AGENTERO_IMAGE` 改为本地 tag，执行 `docker compose up -d --build` 即可。
-- 首次打开进入欢迎页，新建或打开 Vault 即可使用。
+- 如果要从原版 Agentero 迁移已有数据：先退出原应用，再把原 Agentero 的 Vault 目录内容手动复制到 `AGENTERO_VAULT_DIR`；不要让两个应用同时写入同一个 Vault。
+- 当前版本不建议开启云同步：Agentero 与 Agentero-Web 的同步状态/数据格式可能不兼容，混用可能产生冲突。
 
 ### 接入 Dsh Agent（宿主机挂载）
 
@@ -116,7 +117,7 @@ AGENTERO_VAULT_CONTAINER_PATH=/srv/agentero/vault
 - **Settings → Agent**：检测宿主机 Dsh；Dsh 缺失或沿用旧数据卷时点「重新检测」。
 - **Settings → 翻译**：选择翻译服务；全文翻译的正文字号 / 标题字号可调并恢复默认。
 - **Settings → 版面解析**：选择版面分析与正文解析引擎（如自建 MinerU）、设置解析页数上限。
-- **Settings → 同步**：git / S3 / WebDAV 云同步；可开启自动同步。
+- **Settings → 同步**：git / S3 / WebDAV 云同步；当前版本不建议开启（见快速开始）。
 - **Settings → 通用 → MCP server**：开启/关闭 MCP 监听端口。
 - **Settings → RAG / External knowledge base**：配置外部知识库，见下文。
 
