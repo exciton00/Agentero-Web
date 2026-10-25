@@ -40,6 +40,12 @@ use crate::error::{blocking, fail_msg, parse_args, typed_err, typed_ok, HandlerR
 use crate::rpc::RpcCtx;
 use crate::tasks::{JobKind, JobLane, JobSnapshot, JobSpec, JobState, TaskCenter};
 
+// Declared with `#[path]` because `handlers/mod.rs` is owned by the platform
+// layer (same precedent as `handlers/runtime.rs`); keeps the jEV port free of
+// `main.rs` edits while a parallel change owns that file.
+#[path = "../jev.rs"]
+pub mod jev;
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct JobListArgs {
@@ -199,6 +205,9 @@ pub async fn dispatch(ctx: &RpcCtx, command: &str, args: &Value) -> Option<Handl
         "job_download_assets_enqueue" => job_download_assets_enqueue(ctx, args).await,
         "job_parse_body_enqueue" => job_parse_body_enqueue(ctx, args).await,
         "job_parse_refs_enqueue" => job_parse_refs_enqueue(ctx, args).await,
+        // jEV smart highlights (Settings → Experimental → Decision).
+        "job_jev_smart_highlights_enqueue" => jev::enqueue_smart_highlights(ctx, args).await,
+        "jev_probe_health" => jev::probe_health(ctx, args).await,
         "job_papers_needing_assets" => job_papers_needing_assets(ctx, args).await,
         "clear_parse_results" => clear_parse_results(ctx, args).await,
         "clear_and_reparse" => clear_and_reparse(ctx, args).await,

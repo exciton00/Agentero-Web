@@ -40,6 +40,8 @@ pub async fn dispatch(ctx: &RpcCtx, command: &str, args: &Value) -> Option<Handl
         | "job_download_assets_enqueue"
         | "job_parse_body_enqueue"
         | "job_parse_refs_enqueue"
+        | "job_jev_smart_highlights_enqueue"
+        | "jev_probe_health"
         | "job_papers_needing_assets"
         | "clear_parse_results"
         | "clear_and_reparse" => jobs::dispatch(ctx, command, args).await,

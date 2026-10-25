@@ -32,7 +32,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
@@ -308,6 +308,22 @@ impl JobHandle {
     /// Report coarse progress (0–100) / a phase label; emits `job:changed`.
     pub fn set_progress(&self, progress: Option<f32>, phase: Option<String>) {
         self.center.update_progress(&self.id, progress, phase);
+    }
+
+    /// Merge a result patch into the running job's `params`.
+    ///
+    /// The terminal `job:changed` snapshot carries the merged params, so a
+    /// renderer reads job results (e.g. smart-highlight suggestions) from the
+    /// same snapshot it already listens to — desktop
+    /// `JobCenter::merge_running_job_params` parity.
+    pub fn merge_params(&self, patch: Value) {
+        self.center.merge_running_job_params(&self.id, patch);
+    }
+
+    /// Cooperative cancellation token for long-running domain work that needs
+    /// to abort between network calls (mirrors the desktop runner contract).
+    pub fn cancel_token(&self) -> CancellationToken {
+        self.cancel.clone()
     }
 
     /// Bail out early when the job was cancelled.
@@ -804,6 +820,33 @@ impl TaskCenter {
             job.snapshot.clone()
         };
         self.emit_changed(&snapshot);
+    }
+
+    /// Merge a patch into a running job's `params` (desktop
+    /// `JobCenter::merge_running_job_params` parity).
+    ///
+    /// Terminal snapshots clone the params, so the following `job:changed` /
+    /// `job:completed` events expose the merged result without a second
+    /// registry update. Not emitted immediately: while the job is still
+    /// running no renderer consumes intermediate params.
+    fn merge_running_job_params(&self, id: &str, patch: Value) {
+        let mut state = self.lock();
+        let Some(job) = state.jobs.get_mut(id) else {
+            return;
+        };
+        if job.snapshot.state != JobState::Running {
+            return;
+        }
+        let mut params = job.snapshot.params.take().unwrap_or_else(|| json!({}));
+        match (params.as_object_mut(), patch.as_object()) {
+            (Some(dst), Some(src)) => {
+                for (key, value) in src {
+                    dst.insert(key.clone(), value.clone());
+                }
+            }
+            _ => params = patch,
+        }
+        job.snapshot.params = Some(params);
     }
 
     fn finish(&self, id: &str, outcome: JobOutcome) {
