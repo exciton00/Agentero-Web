@@ -852,6 +852,14 @@ pub fn repair_duplicates(vault_root: &Path) -> Result<DuplicateRepairResult, App
     })
 }
 
+/// A paper folder carries a direct-child `NOTES.md` or `metadata.json`.
+///
+/// Shared by the full rescan and the watcher-path locator: `PAPER.md`,
+/// `source/`, `assets/`, `marks/` and `attachments/` are not identity markers.
+fn dir_is_paper(dir: &Path) -> bool {
+    dir.join("NOTES.md").is_file() || dir.join(super::sidecar::SIDECAR_FILE).is_file()
+}
+
 /// Rebuild catalog rows by scanning `papers/` on disk.
 /// Detects paper folders by NOTES.md / metadata.json presence. Idempotent —
 /// disk-only papers are re-added (sidecar metadata preferred over a minimal
@@ -891,7 +899,7 @@ pub fn rebuild_from_disk(vault_root: &Path) -> Result<usize, AppError> {
                         (None, None) => Some(minimal_record_for(&dir, &rel_path)),
                     };
                     if let Some(record) = next {
-                        if upsert_conn(conn, &record).is_ok() {
+                        if import_disk_row(conn, &record).is_ok() {
                             count += 1;
                         }
                     }
@@ -923,12 +931,124 @@ pub fn ensure_row_for_path(
     let rel_path = crate::fs::normalize_rel_separators(rel_path);
     with_catalog(vault_root, |conn| {
         if let Some(row) = get_conn(conn, &rel_path)? {
+            // Same sidecar rule as `rebuild_from_disk`: a newer metadata.json
+            // (sync, or an external replace) updates this one row instead of
+            // being shadowed by the catalog copy until the next full rescan.
+            if let Some(sidecar) = super::sidecar::read_sidecar(vault_root, &rel_path) {
+                if crate::time::rfc3339_after(&sidecar.updated_at, &row.updated_at) {
+                    return import_disk_row(conn, &sidecar).map(Some);
+                }
+            }
             return Ok(Some(row));
         }
         let record = super::sidecar::read_sidecar(vault_root, &rel_path)
             .unwrap_or_else(|| minimal_record_for(&vault_root.join(&rel_path), &rel_path));
-        upsert_conn(conn, &record).map(Some)
+        import_disk_row(conn, &record).map(Some)
     })
+}
+
+/// How a batch of watcher paths was reconciled into the catalog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PaperRowsTouch {
+    /// Each path mapped onto one paper folder. `count` is rows inserted;
+    /// an existing row is left in place unless its sidecar is newer.
+    Ensured { count: usize },
+    /// A path under `papers/` did not belong to a single paper folder, so
+    /// the whole library was rebuilt.
+    Rescanned { count: usize },
+}
+
+/// Ensure catalog rows for watcher paths under `papers/`.
+///
+/// Each file or paper folder is resolved to the nearest paper directory
+/// (`NOTES.md` / `metadata.json`) and passed to [`ensure_row_for_path`], so an
+/// external create/replace under one paper folder costs one row instead of a
+/// full `papers/` walk. A `papers/` root, an organization folder, or any other
+/// path that does not belong to exactly one paper falls back to
+/// [`rebuild_from_disk`].
+pub fn ensure_rows_for_paths(
+    vault_root: &Path,
+    paths: &[String],
+) -> Result<PaperRowsTouch, AppError> {
+    let mut papers = std::collections::BTreeSet::new();
+    let mut unmapped = false;
+    for raw in paths {
+        match locate_paper_rel(vault_root, raw) {
+            PaperLocate::Paper(rel) => {
+                papers.insert(rel);
+            }
+            PaperLocate::Unmapped => unmapped = true,
+            PaperLocate::Ignore => {}
+        }
+    }
+    if unmapped {
+        let count = rebuild_from_disk(vault_root)?;
+        return Ok(PaperRowsTouch::Rescanned { count });
+    }
+    let mut count = 0usize;
+    for rel in papers {
+        let existing = get_by_path(vault_root, &rel)?.is_some();
+        if ensure_row_for_path(vault_root, &rel)?.is_some() && !existing {
+            count += 1;
+        }
+    }
+    Ok(PaperRowsTouch::Ensured { count })
+}
+
+enum PaperLocate {
+    Paper(String),
+    Unmapped,
+    Ignore,
+}
+
+/// Fold one watcher path (file, paper folder, deleted path) onto the nearest
+/// paper folder. Files and folders that are not exactly one paper folder are
+/// `Unmapped` (caller must rescan); paths outside `papers/` are `Ignore`.
+fn locate_paper_rel(vault_root: &Path, raw: &str) -> PaperLocate {
+    let rel = vault_rel_for_catalog(vault_root, raw);
+    if rel.is_empty() || rel.split('/').any(|part| part == "..") {
+        return PaperLocate::Ignore;
+    }
+    if rel == "papers" {
+        return PaperLocate::Unmapped;
+    }
+    if !rel.starts_with("papers/") {
+        return PaperLocate::Ignore;
+    }
+    let absolute = vault_root.join(&rel);
+    let mut cursor = if absolute.is_file() {
+        absolute.parent().map(std::path::Path::to_path_buf)
+    } else {
+        Some(absolute)
+    };
+    let papers_root = vault_root.join("papers");
+    while let Some(dir) = cursor {
+        if dir == papers_root || !dir.starts_with(&papers_root) {
+            break;
+        }
+        if dir_is_paper(&dir) {
+            let Some(found) = dir
+                .strip_prefix(vault_root)
+                .ok()
+                .and_then(|path| path.to_str())
+                .map(crate::fs::normalize_rel_separators)
+            else {
+                return PaperLocate::Unmapped;
+            };
+            if found.is_empty() || found == "papers" {
+                return PaperLocate::Unmapped;
+            }
+            return PaperLocate::Paper(found);
+        }
+        cursor = dir.parent().map(std::path::Path::to_path_buf);
+    }
+    PaperLocate::Unmapped
+}
+
+/// Vault-relative form of a watcher path; accepts canonical spellings of the
+/// same vault (`\\?\`, `/var` vs `/private/var`) instead of ignoring them.
+fn vault_rel_for_catalog(vault_root: &Path, raw: &str) -> String {
+    crate::fs::vault_relative(vault_root, raw).unwrap_or_default()
 }
 
 /// Fallback record when a paper folder has no sidecar: folder name as id/title.
@@ -1485,6 +1605,22 @@ pub fn set_page_counts(vault_root: &Path, counts: &[(String, i64)]) -> Result<()
         tx.commit().map_err(AppError::from)?;
         Ok(())
     })
+}
+
+/// Reconciliation imports an existing disk representation (rescan / watcher
+/// path / sync pull); it must not generate a new sidecar for a NOTES-only paper
+/// or turn a sync download into a new upload. The v12 catalog triggers queue
+/// every upsert in `pending_sidecars`; drop that queue entry in the same
+/// transaction because the source of truth is already on disk.
+fn import_disk_row(conn: &Connection, record: &PaperRecord) -> Result<PaperRecord, AppError> {
+    let tx = conn.unchecked_transaction()?;
+    let persisted = upsert_conn(&tx, record)?;
+    tx.execute(
+        "DELETE FROM pending_sidecars WHERE path = ?1",
+        [&persisted.path],
+    )?;
+    tx.commit()?;
+    Ok(persisted)
 }
 
 /// Single funnel for catalog writes. `path` is normalized and required here:
@@ -2333,6 +2469,151 @@ mod tests {
         let minimal = ensure_row_for_path(&dir, "papers/x").unwrap().unwrap();
         assert_eq!(minimal.title, "x");
         assert_eq!(minimal.year, None);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_row_for_path_refreshes_a_newer_sidecar() {
+        let dir = env::temp_dir().join(format!("agentero-ensure-sidecar-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("papers/x")).unwrap();
+        fs::write(dir.join("papers/x/NOTES.md"), "# notes\n").unwrap();
+        upsert_paper(
+            &dir,
+            &PaperRecord::local_pdf("x".into(), "Old".into()).at_path("papers/x"),
+        )
+        .unwrap();
+
+        // An external writer (sync client, desktop) replaced the sidecar with a
+        // newer row; the catalog copy must follow without a full library walk.
+        let sidecar_path = dir.join("papers/x/metadata.json");
+        let mut sidecar: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&sidecar_path).unwrap()).unwrap();
+        sidecar["title"] = serde_json::json!("New");
+        sidecar["updated_at"] = serde_json::json!("2099-01-01T00:00:00.000Z");
+        fs::write(&sidecar_path, serde_json::to_vec_pretty(&sidecar).unwrap()).unwrap();
+
+        let row = ensure_row_for_path(&dir, "papers/x").unwrap().unwrap();
+        assert_eq!(row.title, "New");
+        assert_eq!(get_by_path(&dir, "papers/x").unwrap().unwrap().title, "New");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_rows_for_paths_targets_one_paper_and_rescans_when_unmapped() {
+        let dir = env::temp_dir().join(format!("agentero-ensure-rows-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        for name in ["a", "b"] {
+            fs::create_dir_all(dir.join(format!("papers/{name}"))).unwrap();
+            fs::write(
+                dir.join(format!("papers/{name}/NOTES.md")),
+                format!("# {name}\n"),
+            )
+            .unwrap();
+        }
+        upsert_paper(
+            &dir,
+            &PaperRecord::local_pdf("a".into(), "Paper A".into()).at_path("papers/a"),
+        )
+        .unwrap();
+        upsert_paper(
+            &dir,
+            &PaperRecord::local_pdf("b".into(), "Paper B".into()).at_path("papers/b"),
+        )
+        .unwrap();
+        delete_under_path(&dir, "papers/b").unwrap();
+
+        // One watcher path under paper b restores only b; a's row is untouched.
+        let notes = dir.join("papers/b/NOTES.md");
+        let touched = ensure_rows_for_paths(&dir, &[notes.to_string_lossy().to_string()]).unwrap();
+        assert_eq!(touched, PaperRowsTouch::Ensured { count: 1 });
+        assert_eq!(
+            get_by_path(&dir, "papers/b").unwrap().unwrap().title,
+            "Paper B"
+        );
+        assert_eq!(
+            get_by_path(&dir, "papers/a").unwrap().unwrap().title,
+            "Paper A"
+        );
+
+        // A file nested inside a paper folder maps to that folder, and replaying
+        // the same watcher batch is a row no-op (existing rows are not rewritten).
+        let nested = dir.join("papers/b/source/main.pdf");
+        let replay = ensure_rows_for_paths(&dir, &[nested.to_string_lossy().to_string()]).unwrap();
+        assert_eq!(replay, PaperRowsTouch::Ensured { count: 0 });
+
+        // A path that is not one paper folder (an organization root) rescan.
+        delete_under_path(&dir, "papers/a").unwrap();
+        delete_under_path(&dir, "papers/b").unwrap();
+        let org = dir.join("papers");
+        let rescanned = ensure_rows_for_paths(&dir, &[org.to_string_lossy().to_string()]).unwrap();
+        assert!(matches!(rescanned, PaperRowsTouch::Rescanned { count: 2 }));
+        assert!(get_by_path(&dir, "papers/a").unwrap().is_some());
+        assert!(get_by_path(&dir, "papers/b").unwrap().is_some());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_rows_for_paths_follows_a_symlink_spelling() {
+        let base = env::temp_dir().join(format!("agentero-ensure-canon-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let real = base.join("real");
+        fs::create_dir_all(real.join("papers/a")).unwrap();
+        fs::write(real.join("papers/a/NOTES.md"), "# A\n").unwrap();
+        let link = base.join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        // The watcher may report the canonical spelling while the vault was
+        // opened through the symlink: still one paper, not an outside path.
+        let notes = real.join("papers/a/NOTES.md");
+        let touched = ensure_rows_for_paths(&link, &[notes.to_string_lossy().to_string()]).unwrap();
+        assert_eq!(touched, PaperRowsTouch::Ensured { count: 1 });
+        assert!(get_by_path(&link, "papers/a").unwrap().is_some());
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn concurrent_watcher_batches_do_not_lose_paper_rows() {
+        let dir =
+            env::temp_dir().join(format!("agentero-ensure-concurrent-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let names = ["a", "b", "c", "d"];
+        let mut notes = Vec::new();
+        for name in names {
+            let paper = dir.join(format!("papers/{name}"));
+            fs::create_dir_all(&paper).unwrap();
+            let file = paper.join("NOTES.md");
+            fs::write(&file, format!("# {name}\n")).unwrap();
+            notes.push(file.to_string_lossy().to_string());
+        }
+
+        // Two tabs / a server task and an external writer repair different
+        // papers at the same time: every path must land a row, none is skipped
+        // by the catalog connection serialization.
+        let handles: Vec<_> = notes
+            .into_iter()
+            .map(|note| {
+                let vault = dir.clone();
+                std::thread::spawn(move || ensure_rows_for_paths(&vault, &[note]))
+            })
+            .collect();
+        for handle in handles {
+            let touched = handle.join().expect("ensure worker");
+            assert_eq!(touched.unwrap(), PaperRowsTouch::Ensured { count: 1 });
+        }
+        for name in names {
+            assert!(
+                get_by_path(&dir, &format!("papers/{name}"))
+                    .unwrap()
+                    .is_some(),
+                "concurrent ensure lost papers/{name}"
+            );
+        }
 
         let _ = fs::remove_dir_all(&dir);
     }

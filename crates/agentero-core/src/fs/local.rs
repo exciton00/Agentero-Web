@@ -84,7 +84,9 @@ impl VaultFs for LocalFs {
         let path = self.resolve(rel)?;
         let meta = fs::metadata(&path)
             .await
-            .map_err(|e| AppError::message(format!("stat {}: {e}", path.display())))?;
+            // Keep the IO kind so `exists` can tell a missing path from a
+            // permission / transport failure instead of treating both as absent.
+            .map_err(|e| std::io::Error::new(e.kind(), format!("stat {}: {e}", path.display())))?;
         Ok(FsFileMeta {
             size: meta.len(),
             mtime: mtime_secs(&meta),
@@ -201,6 +203,30 @@ mod tests {
         let meta = fs.stat("notes/a.md").await.unwrap();
         assert_eq!(meta.size, 5);
         assert!(meta.is_file);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn exists_distinguishes_missing_paths_from_invalid_paths() {
+        let root = tmp_root();
+        let disk = LocalFs::new(&root);
+        std::fs::write(root.join("note.md"), b"note").unwrap();
+        assert!(disk.exists("note.md").await.unwrap());
+        assert!(!disk.exists("missing.md").await.unwrap());
+        // Path validation failures are real errors, not "absent".
+        assert!(disk.exists("../outside.md").await.is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn stat_preserves_not_found_error_kind() {
+        let root = tmp_root();
+        let disk = LocalFs::new(&root);
+        let error = disk.stat("missing.md").await.unwrap_err();
+        assert!(matches!(
+            error,
+            crate::error::AppError::Io(ref e) if e.kind() == std::io::ErrorKind::NotFound
+        ));
         let _ = std::fs::remove_dir_all(&root);
     }
 

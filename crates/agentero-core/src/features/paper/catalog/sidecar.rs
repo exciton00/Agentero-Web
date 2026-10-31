@@ -4,6 +4,12 @@
 //! (tags, is_read, urls, …) is projected into this file so a catalog row can
 //! be rebuilt from disk alone. This keeps the vault self-contained (backup /
 //! sync tools only need plain files) and honors local-first.
+//!
+//! Projects are therefore **durable** (schema v12): every catalog write records
+//! its path in `pending_sidecars` inside the same transaction, and
+//! [`flush_pending`] / [`retry_pending`] project committed-but-unwritten rows
+//! later. A crash between the catalog commit and the file write no longer drops
+//! metadata from disk.
 
 use super::papers::PaperRecord;
 use std::fs;
@@ -11,25 +17,138 @@ use std::path::Path;
 
 pub const SIDECAR_FILE: &str = "metadata.json";
 
+/// Serialize a catalog row as sidecar JSON, keeping top-level fields the Web
+/// does not model (desktop 0.14 `custom_props`, and any future addition) from
+/// the existing file.
+///
+/// A shared vault may be written by a newer desktop app: dropping unknown keys
+/// on every projection would quietly delete desktop-only metadata from disk.
+/// Known fields always win; only keys the row does not produce are carried.
+fn sidecar_bytes(existing: &Path, record: &PaperRecord) -> Result<Vec<u8>, crate::error::AppError> {
+    let mut value = serde_json::to_value(record)?;
+    if let (Some(map), Ok(raw)) = (value.as_object_mut(), fs::read_to_string(existing)) {
+        if let Ok(serde_json::Value::Object(previous)) =
+            serde_json::from_str::<serde_json::Value>(&raw)
+        {
+            for (key, previous_value) in previous {
+                map.entry(key).or_insert(previous_value);
+            }
+        }
+    }
+    Ok(serde_json::to_vec_pretty(&value)?)
+}
+
 /// Project a catalog row into `{vault}/{record.path}/metadata.json`.
-/// Best-effort: catalog write already succeeded; a failed projection only
-/// logs (next upsert rewrites it).
+/// Best-effort: catalog write already succeeded; a failed projection keeps the
+/// row queued (schema v12 `pending_sidecars`) for the next open / sync retry.
 pub fn write_sidecar(vault_root: &Path, record: &PaperRecord) {
     let dir = vault_root.join(&record.path);
     if !dir.is_dir() {
         return;
     }
-    let write = || -> std::io::Result<()> {
-        let raw = serde_json::to_vec_pretty(record)?;
-        crate::fs::atomic_write(&dir.join(SIDECAR_FILE), &raw)
+    let sidecar = dir.join(SIDECAR_FILE);
+    let write = || -> Result<(), crate::error::AppError> {
+        let raw = sidecar_bytes(&sidecar, record)?;
+        crate::fs::atomic_write(&sidecar, &raw)?;
+        Ok(())
     };
-    if let Err(e) = write() {
-        log::warn!(
+    match write() {
+        Ok(()) => {
+            // The projection landed; the durable queue entry is not pending.
+            // Best-effort: a failed cleanup is retried on the next open.
+            let cleanup = super::schema::with_catalog(vault_root, |conn| {
+                conn.execute(
+                    "DELETE FROM pending_sidecars WHERE path = ?1",
+                    [&record.path],
+                )?;
+                Ok(())
+            });
+            if let Err(error) = cleanup {
+                log::warn!(
+                    target: "agentero::catalog",
+                    "failed to clear pending sidecar for {}: {error}",
+                    record.path
+                );
+            }
+        }
+        Err(e) => log::warn!(
             target: "agentero::catalog",
             "failed to write sidecar for {}: {e}",
             record.path
+        ),
+    }
+}
+
+/// Retry committed metadata projections before reading files for sync.
+/// Missing directories are left pending: remote work mirrors are sparse, and
+/// projection must never recreate a deleted paper directory.
+pub fn flush_pending(vault_root: &Path) -> Result<(), crate::error::AppError> {
+    super::schema::with_catalog(vault_root, |conn| flush_pending_conn(vault_root, conn))
+}
+
+/// Best-effort retry used on catalog open: failure only logs, the paths stay
+/// queued for the next attempt.
+pub(crate) fn retry_pending(vault_root: &Path, conn: &rusqlite::Connection) {
+    if let Err(error) = flush_pending_conn(vault_root, conn) {
+        log::warn!(
+            target: "agentero::catalog",
+            "sidecar projection remains pending: {error}"
         );
     }
+}
+
+/// Project every queued row and clear its queue entry.
+pub(crate) fn flush_pending_conn(
+    vault_root: &Path,
+    conn: &rusqlite::Connection,
+) -> Result<(), crate::error::AppError> {
+    // The write reservation covers re-reading the rows through the atomic file
+    // replacement. Another process cannot commit a newer row halfway through.
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    let paths = tx
+        .prepare("SELECT path FROM pending_sidecars ORDER BY path")?
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    if paths.is_empty() {
+        tx.commit()?;
+        return Ok(());
+    }
+    let records: std::collections::HashMap<String, PaperRecord> =
+        super::papers::list_all_conn(&tx)?
+            .into_iter()
+            .map(|record| (record.path.clone(), record))
+            .collect();
+    for path in paths {
+        let Some(record) = records.get(&path) else {
+            // The row disappeared (and the delete trigger dropped the queue
+            // entry); a stale queue entry has nothing left to project.
+            continue;
+        };
+        let dir = vault_root.join(&path);
+        match fs::metadata(&dir) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+            Ok(_) => {}
+        }
+        // A file may have changed while the app was closed. Leave the conflict
+        // for the existing rescan reconciliation rather than overwrite it.
+        if read_sidecar(vault_root, &path).is_some_and(|sidecar| {
+            chrono::DateTime::parse_from_rfc3339(&sidecar.updated_at).is_ok()
+                && chrono::DateTime::parse_from_rfc3339(&record.updated_at).is_ok()
+                && crate::time::rfc3339_after(&sidecar.updated_at, &record.updated_at)
+        }) {
+            return Err(crate::error::AppError::domain(
+                "sidecar_conflict",
+                format!("metadata changed on disk for {path}; rescan before syncing"),
+            ));
+        }
+        let sidecar = dir.join(SIDECAR_FILE);
+        let raw = sidecar_bytes(&sidecar, record)?;
+        crate::fs::atomic_write(&sidecar, &raw)?;
+        tx.execute("DELETE FROM pending_sidecars WHERE path = ?1", [&path])?;
+    }
+    tx.commit()?;
+    Ok(())
 }
 
 /// Read `{vault}/{rel_path}/metadata.json` as a catalog row.
@@ -46,7 +165,7 @@ pub fn read_sidecar(vault_root: &Path, rel_path: &str) -> Option<PaperRecord> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::features::catalog::papers::PaperKind;
+    use crate::features::paper::catalog::papers::PaperKind;
     use uuid::Uuid;
 
     fn minimal_record(path: &str) -> PaperRecord {
@@ -63,13 +182,24 @@ mod tests {
         .expect("minimal record")
     }
 
+    /// Pending paths in a vault, ordered for deterministic asserts.
+    fn pending(vault: &Path) -> Vec<String> {
+        super::super::schema::with_catalog(vault, |conn| {
+            Ok(conn
+                .prepare("SELECT path FROM pending_sidecars ORDER BY path")?
+                .query_map([], |row| row.get(0))?
+                .collect::<Result<_, _>>()?)
+        })
+        .unwrap()
+    }
+
     #[test]
     fn sidecar_roundtrip_overrides_stale_path() {
         let vault = std::env::temp_dir().join(format!("agentero-sidecar-{}", Uuid::new_v4()));
         fs::create_dir_all(vault.join("papers/x")).unwrap();
         let mut record = minimal_record("papers/x");
         record.is_read = true;
-        write_sidecar(&vault, &record);
+        super::super::papers::upsert_paper(&vault, &record).unwrap();
 
         // Simulate a folder move: read back from the new location.
         fs::create_dir_all(vault.join("papers/nlp")).unwrap();
@@ -97,5 +227,119 @@ mod tests {
         assert_eq!(loaded.tags.len(), 1);
         assert_eq!(loaded.tags[0].name, "nlp");
         let _ = fs::remove_dir_all(&vault);
+    }
+
+    #[test]
+    fn upgrade_backfills_existing_rows_for_projection() {
+        use super::super::{ensure_catalog, evict_catalog_conn, papers};
+        let vault = tempfile::tempdir().unwrap();
+        fs::create_dir_all(vault.path().join("papers/x")).unwrap();
+        papers::upsert_paper(vault.path(), &minimal_record("papers/x")).unwrap();
+        fs::remove_file(vault.path().join("papers/x/metadata.json")).unwrap();
+        evict_catalog_conn(vault.path());
+        let conn = ensure_catalog(vault.path()).unwrap();
+        // Simulate a v11 database: drop the v12 queue/triggers and re-open.
+        conn.execute_batch(
+            "DROP TRIGGER paper_sidecar_insert;
+            DROP TRIGGER paper_sidecar_update; DROP TRIGGER paper_sidecar_delete;
+            DROP TABLE pending_sidecars;
+            UPDATE schema_meta SET value = '11' WHERE key = 'schema_version';",
+        )
+        .unwrap();
+        drop(conn);
+        ensure_catalog(vault.path()).unwrap();
+        assert_eq!(read_sidecar(vault.path(), "papers/x").unwrap().title, "T");
+        assert!(pending(vault.path()).is_empty());
+    }
+
+    #[test]
+    fn failed_projection_survives_reopen_and_writes_latest_row() {
+        use super::super::{ensure_catalog, evict_catalog_conn, papers};
+        let vault = tempfile::tempdir().unwrap();
+        let path = "papers/x";
+        // A file where the paper directory is expected makes the projection
+        // fail *after* the catalog transaction committed.
+        fs::create_dir_all(vault.path().join(path).join(SIDECAR_FILE)).unwrap();
+        papers::upsert_paper(vault.path(), &minimal_record(path)).unwrap();
+        papers::set_is_read(vault.path(), path, true).unwrap();
+        assert_eq!(pending(vault.path()), [path]);
+        assert!(flush_pending(vault.path()).is_err());
+        evict_catalog_conn(vault.path());
+        fs::remove_dir(vault.path().join(path).join(SIDECAR_FILE)).unwrap();
+        ensure_catalog(vault.path()).unwrap();
+        assert!(read_sidecar(vault.path(), path).unwrap().is_read);
+        assert!(pending(vault.path()).is_empty());
+        // A delayed retry has no captured stale row to overwrite newer values.
+        flush_pending(vault.path()).unwrap();
+        assert!(read_sidecar(vault.path(), path).unwrap().is_read);
+    }
+
+    #[test]
+    fn pending_paths_follow_moves_and_deletes_without_creating_directories() {
+        use super::super::papers;
+        let vault = tempfile::tempdir().unwrap();
+        papers::upsert_paper(vault.path(), &minimal_record("papers/x")).unwrap();
+        assert!(!vault.path().join("papers/x").exists());
+        papers::move_under_path(vault.path(), "papers/x", "papers/y").unwrap();
+        assert_eq!(pending(vault.path()), ["papers/y"]);
+        flush_pending(vault.path()).unwrap();
+        assert!(!vault.path().join("papers/y").exists());
+        papers::delete_under_path(vault.path(), "papers/y").unwrap();
+        assert!(pending(vault.path()).is_empty());
+    }
+
+    #[test]
+    fn reopen_preserves_newer_external_sidecar_until_rescan() {
+        use super::super::{ensure_catalog, evict_catalog_conn, papers};
+        let vault = tempfile::tempdir().unwrap();
+        let path = "papers/x";
+        let file = vault.path().join(path).join(SIDECAR_FILE);
+        fs::create_dir_all(&file).unwrap();
+        papers::upsert_paper(vault.path(), &minimal_record(path)).unwrap();
+        fs::remove_dir(&file).unwrap();
+        let mut external = minimal_record(path);
+        external.title = "External edit".into();
+        external.updated_at = "2099-01-01T00:00:00Z".into();
+        let bytes = serde_json::to_vec(&external).unwrap();
+        fs::write(&file, &bytes).unwrap();
+        evict_catalog_conn(vault.path());
+        ensure_catalog(vault.path()).unwrap();
+        assert_eq!(fs::read(&file).unwrap(), bytes);
+        assert!(flush_pending(vault.path()).is_err());
+        papers::rebuild_from_disk(vault.path()).unwrap();
+        flush_pending(vault.path()).unwrap();
+        assert_eq!(
+            read_sidecar(vault.path(), path).unwrap().title,
+            "External edit"
+        );
+        assert!(pending(vault.path()).is_empty());
+    }
+
+    /// Projecting a Web-known row must not delete desktop-only JSON fields
+    /// (`custom_props`, future additions) that the existing sidecar carries.
+    #[test]
+    fn projection_preserves_unmodeled_desktop_fields() {
+        use super::super::papers;
+        let vault = tempfile::tempdir().unwrap();
+        let file = vault.path().join("papers/x").join(SIDECAR_FILE);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(
+            &file,
+            r#"{"title":"Stale title","custom_props":{"priority":"high"},
+                "openreview_url":"https://openreview.net/forum?id=abc"}"#,
+        )
+        .unwrap();
+        papers::upsert_paper(vault.path(), &minimal_record("papers/x")).unwrap();
+
+        let value: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+        // Known fields are rewritten from the catalog row…
+        assert_eq!(value["title"], "T");
+        // …while unmodeled desktop fields survive the projection.
+        assert_eq!(value["custom_props"]["priority"], "high");
+        assert_eq!(
+            value["openreview_url"],
+            "https://openreview.net/forum?id=abc"
+        );
     }
 }

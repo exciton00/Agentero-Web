@@ -4,6 +4,7 @@
  */
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
+import { invoke } from "@tauri-apps/api/core";
 import i18n from "@/i18n";
 import {
 	commands,
@@ -139,6 +140,53 @@ export async function listPapers(
 		fallback: "paper_list failed",
 	});
 	return rows.map(paperFromWire);
+}
+
+/** `ApiResult<T>` envelope returned by Host commands called through `invoke`. */
+type HostEnvelope<T> = {
+	ok?: boolean;
+	data?: T | null;
+	error?: { message?: string } | null;
+};
+
+type PaperEnsureRowsWire = {
+	count?: unknown;
+	rescanned?: unknown;
+};
+
+/**
+ * Ensure catalog rows for the paper folders touched by FS-watcher paths.
+ *
+ * The Host resolves each absolute/relative path to at most one paper folder and
+ * inserts only missing rows, so one external write never walks the whole
+ * `papers/` tree. A path that is not one paper folder makes the Host fall back
+ * to the full rescan itself. Returns `null` when the command is unsupported
+ * (desktop build / older server), so callers keep the `rescanPapers` fallback.
+ */
+export async function ensurePaperRows(
+	vaultPath: string,
+	paths: readonly string[],
+): Promise<{ count: number; rescanned: boolean } | null> {
+	if (!hasHostTransport() || paths.length === 0) return null;
+	const { isRemoteVaultHandle } = await import(
+		"@/lib/vault/remote/remote-vault"
+	);
+	if (isRemoteVaultHandle(vaultPath)) return null;
+	try {
+		const response = await invoke<HostEnvelope<PaperEnsureRowsWire>>(
+			"paper_ensure_rows",
+			{ args: { vaultPath, paths: [...paths] } },
+		);
+		if (response?.ok !== true) return null;
+		return {
+			count:
+				typeof response.data?.count === "number" ? response.data.count : 0,
+			rescanned: response.data?.rescanned === true,
+		};
+	} catch {
+		// Unknown command on an older host: the caller falls back to a rescan.
+		return null;
+	}
 }
 
 /** Rebuild catalog rows from papers/ on disk (recover disk-only papers). */

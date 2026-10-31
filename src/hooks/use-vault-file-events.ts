@@ -16,7 +16,7 @@ type VaultFileEventsParams = {
 	/** Refresh the file tree after a structural change (create/delete/rename). */
 	onStructuralChange: (changedAbsPaths: string[]) => void;
 	/** Refresh catalog-backed Library state after external paper/catalog changes. */
-	onLibraryChange?: () => void;
+	onLibraryChange?: (absolutePaths: string[]) => void;
 	/**
 	 * Any touched path (content or structural). Used to (debounced) rebuild the
 	 * wiki / backlinks / graph index so it never goes stale after external writes.
@@ -91,8 +91,11 @@ export function useVaultFileEvents({
 		return listenVaultFileChangedGated(async (payload) => {
 			const h = handlersRef.current;
 			if (h.shouldIgnoreEvent?.(payload)) return;
-			if (h.onLibraryChange && payloadAffectsLibrary(payload)) {
-				h.onLibraryChange();
+			// A structural burst names the touched paper folders: the catalog can
+			// repair just those rows instead of rescanning the whole library.
+			const libraryPaths = libraryPathsOf(payload);
+			if (h.onLibraryChange && libraryPaths.length > 0) {
+				h.onLibraryChange(libraryPaths);
 			}
 			if (payload.rename) {
 				await h.onExternalRename?.(payload.rename, payload);
@@ -115,12 +118,12 @@ export function useVaultFileEvents({
 	}, []);
 }
 
-function payloadAffectsLibrary(payload: VaultFileChangedPayload): boolean {
+function libraryPathsOf(payload: VaultFileChangedPayload): string[] {
 	// CLI/import tools materialize paper folders and metadata under papers/.
 	// Plain content edits to NOTES.md should not hit the catalog path, and
 	// asset writes (marks/source/assets) never change catalog rows at all.
-	return (
-		payload.kind !== "modify" &&
-		payload.paths.some((p) => isUnderPapers(p) && !isPaperAssetPath(p))
+	if (payload.kind === "modify") return [];
+	return payload.paths.filter(
+		(p) => isUnderPapers(p) && !isPaperAssetPath(p),
 	);
 }

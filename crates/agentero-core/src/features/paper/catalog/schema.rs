@@ -13,6 +13,8 @@
 //!   `arxiv_rec_state` (kept for old DBs; no longer written)
 //! - v9: manually maintained `code_repo` link (no auto resolution yet)
 //! - v10: `openreview_url` link for OpenReview papers (desktop 0.12 vaults)
+//! - v11: `custom_properties` table + `papers.custom_props_json` (desktop 0.14)
+//! - v12: durable `pending_sidecars` queue + projection triggers (desktop 0.14)
 
 use crate::error::AppError;
 use crate::sqlite::MigrationStep;
@@ -23,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// Current catalog schema version written to `schema_meta`.
-pub const SCHEMA_VERSION: i32 = 10;
+pub const SCHEMA_VERSION: i32 = 12;
 
 const DDL_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -160,6 +162,45 @@ const MIGRATE_V9_TO_V10: &str = r#"
 ALTER TABLE papers ADD COLUMN openreview_url TEXT;
 "#;
 
+/// Schema v11: custom properties table and paper custom properties JSON column
+/// (written by desktop Agentero 0.14 vaults).
+///
+/// `custom_props_json` maps property id → option id; the definitions
+/// (`custom_properties`) are owned by the desktop's `properties.json` layer.
+/// The Web keeps the data untouched until the custom-property feature lands.
+const MIGRATE_V10_TO_V11: &str = r#"
+CREATE TABLE IF NOT EXISTS custom_properties (
+    id           TEXT PRIMARY KEY NOT NULL,
+    name         TEXT NOT NULL,
+    type         TEXT NOT NULL DEFAULT 'select',
+    options_json TEXT NOT NULL DEFAULT '[]',
+    order_index  INTEGER NOT NULL DEFAULT 0,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+ALTER TABLE papers ADD COLUMN custom_props_json TEXT NOT NULL DEFAULT '{}';
+"#;
+
+/// Schema v12: durable pending metadata-sidecar queue (desktop Agentero 0.14).
+///
+/// Every catalog write records its path here inside the same transaction, so a
+/// failed `metadata.json` projection is retried later instead of being lost.
+/// The triggers keep direct SQL updates, moves and deletes in the same contract.
+const MIGRATE_V11_TO_V12: &str = r#"
+CREATE TABLE IF NOT EXISTS pending_sidecars (path TEXT PRIMARY KEY NOT NULL);
+INSERT OR IGNORE INTO pending_sidecars SELECT path FROM papers;
+CREATE TRIGGER IF NOT EXISTS paper_sidecar_insert AFTER INSERT ON papers BEGIN
+    INSERT OR REPLACE INTO pending_sidecars(path) VALUES (NEW.path);
+END;
+CREATE TRIGGER IF NOT EXISTS paper_sidecar_update AFTER UPDATE ON papers BEGIN
+    DELETE FROM pending_sidecars WHERE path = OLD.path;
+    INSERT OR REPLACE INTO pending_sidecars(path) VALUES (NEW.path);
+END;
+CREATE TRIGGER IF NOT EXISTS paper_sidecar_delete AFTER DELETE ON papers BEGIN
+    DELETE FROM pending_sidecars WHERE path = OLD.path;
+END;
+"#;
+
 /// Absolute path to `{vault}/.agentero/catalog.sqlite`.
 pub fn catalog_db_path(vault_root: &Path) -> std::path::PathBuf {
     vault_root.join(".agentero").join("catalog.sqlite")
@@ -174,6 +215,10 @@ pub fn ensure_catalog(vault_root: &Path) -> Result<Connection, AppError> {
     let conn = crate::sqlite::open_standard(&db_path, crate::sqlite::DbMsgs::CATALOG)?;
 
     migrate(&conn)?;
+    // Retry metadata projections that were committed but not written before
+    // the previous shutdown. Best-effort: failures stay queued for the next
+    // open / sync / catalog write.
+    super::sidecar::retry_pending(vault_root, &conn);
     Ok(conn)
 }
 
@@ -270,7 +315,7 @@ pub fn with_catalog<T>(
 
 /// Migration ladder, applied by [`crate::sqlite::run_migrations`] (per-step
 /// version re-read, stamping, `newer than app` guard).
-const MIGRATION_STEPS: [MigrationStep; 10] = [
+const MIGRATION_STEPS: [MigrationStep; 12] = [
     MigrationStep::batch(1, DDL_V1),
     // SQLite ADD COLUMN is not fully batch-safe across existing cols; the
     // v2–v4 entries run one-by-one and ignore duplicate-column errors.
@@ -283,6 +328,8 @@ const MIGRATION_STEPS: [MigrationStep; 10] = [
     MigrationStep::script(8, MIGRATE_V7_TO_V8),
     MigrationStep::script_tolerant(9, MIGRATE_V8_TO_V9),
     MigrationStep::script_tolerant(10, MIGRATE_V9_TO_V10),
+    MigrationStep::script_tolerant(11, MIGRATE_V10_TO_V11),
+    MigrationStep::batch(12, MIGRATE_V11_TO_V12),
 ];
 
 fn migrate(conn: &Connection) -> Result<(), AppError> {
@@ -377,16 +424,37 @@ mod tests {
             .unwrap();
         assert_eq!(has_zotero, 2);
 
-        // v9 manual code-repo + v10 OpenReview URL columns exist.
-        let has_v9_v10: i64 = conn
+        // v9 manual code-repo + v10 OpenReview URL + v11 custom props columns.
+        let has_v9_v10_v11: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('papers')
-                 WHERE name IN ('code_repo', 'openreview_url')",
+                 WHERE name IN ('code_repo', 'openreview_url', 'custom_props_json')",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(has_v9_v10, 2);
+        assert_eq!(has_v9_v10_v11, 3);
+
+        // v11 custom_properties + v12 pending_sidecars tables.
+        let has_new_tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table'
+                 AND name IN ('custom_properties', 'pending_sidecars')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_new_tables, 2);
+        // v12 projection triggers keep the pending queue in sync with papers.
+        let triggers: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN
+                 ('paper_sidecar_insert', 'paper_sidecar_update', 'paper_sidecar_delete')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(triggers, 3);
 
         // v6 recommendation caches + v8 multi-row discovery runs exist
         let has_rec_tables: i64 = conn
@@ -417,9 +485,9 @@ mod tests {
 
     /// v1 databases predate the whole migration ladder: build one by hand
     /// (v1 DDL + version stamp + legacy-shaped row) and walk it through every
-    /// step — v2…v10 must all land.
+    /// step — v2…v12 must all land.
     #[test]
-    fn migrates_v1_to_v10_through_full_ladder() {
+    fn migrates_v1_to_current_through_full_ladder() {
         let dir = env::temp_dir().join(format!(
             "agentero-catalog-v1-{}-{}",
             std::process::id(),
@@ -448,7 +516,7 @@ mod tests {
             .unwrap();
         }
 
-        let conn = ensure_catalog(&dir).expect("migrate v1 to v10");
+        let conn = ensure_catalog(&dir).expect("migrate v1 to current");
         assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
 
         // v2 Translator columns exist (spot-check a few of the 16).
@@ -461,27 +529,29 @@ mod tests {
             )
             .unwrap();
         assert_eq!(has_v2, 4);
-        // v3 read flag + v4 Zotero linkage + v9 code-repo + v10 OpenReview.
-        let has_v3_v4_v9_v10: i64 = conn
+        // v3 read flag + v4 Zotero linkage + v9/v10 links + v11 custom props.
+        let has_later_columns: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('papers')
                  WHERE name IN ('is_read', 'zotero_item_id', 'zotero_last_synced',
-                                'code_repo', 'openreview_url')",
+                                'code_repo', 'openreview_url', 'custom_props_json')",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(has_v3_v4_v9_v10, 5);
-        // v5 page-count cache + v6 recommendation caches + v8 discovery runs.
+        assert_eq!(has_later_columns, 6);
+        // v5 page-count cache + v6 recommendation caches + v8 discovery runs
+        // + v11 custom properties + v12 pending sidecars.
         let tables: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN
-                 ('pdf_page_counts', 'embed_cache', 'arxiv_rec_state', 'discovery_runs')",
+                 ('pdf_page_counts', 'embed_cache', 'arxiv_rec_state', 'discovery_runs',
+                  'custom_properties', 'pending_sidecars')",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(tables, 4);
+        assert_eq!(tables, 6);
 
         // v7 normalized the legacy timestamps in place; the row itself and its
         // legacy `type` spelling survive the data-only migration.
@@ -625,8 +695,11 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// A desktop Agentero 0.12 vault carries schema v10. Opening it must not
+    /// trip the "newer than app" guard, must migrate to v12, and must keep the
+    /// OpenReview URL and custom-property data intact.
     #[test]
-    fn opens_current_v10_catalog_and_preserves_openreview_url() {
+    fn migrates_v10_catalog_and_preserves_openreview_url() {
         let dir = env::temp_dir().join(format!(
             "agentero-catalog-v10-{}-{}",
             std::process::id(),
@@ -635,10 +708,19 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        fs::create_dir_all(&dir).unwrap();
+        fs::create_dir_all(dir.join(".agentero")).unwrap();
+        fs::create_dir_all(dir.join("papers/openreview")).unwrap();
 
         {
-            let conn = ensure_catalog(&dir).expect("ensure");
+            let conn = Connection::open(catalog_db_path(&dir)).unwrap();
+            crate::sqlite::run_migrations(
+                &conn,
+                crate::sqlite::DbMsgs::CATALOG,
+                10,
+                &MIGRATION_STEPS[..10],
+                set_schema_version,
+            )
+            .unwrap();
             assert_eq!(schema_version(&conn).unwrap(), 10);
             conn.execute(
                 "INSERT INTO papers
@@ -651,18 +733,195 @@ mod tests {
             .unwrap();
         }
 
-        // A desktop Agentero 0.12 vault has schema_version 10 already; opening
-        // it must not run an older-schema guard and must leave the URL intact.
         let conn = ensure_catalog(&dir).expect("open v10");
-        assert_eq!(schema_version(&conn).unwrap(), 10);
-        let url: String = conn
+        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
+        let (url, custom_props): (String, String) = conn
             .query_row(
-                "SELECT openreview_url FROM papers WHERE path = 'papers/openreview'",
+                "SELECT openreview_url, custom_props_json FROM papers WHERE path = 'papers/openreview'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(url, "https://openreview.net/forum?id=abc");
+        assert_eq!(custom_props, "{}");
+        // v12 seeded the pending queue from existing rows and the open retry
+        // projected the row into metadata.json.
+        assert!(dir.join("papers/openreview/metadata.json").is_file());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A desktop Agentero 0.14 vault carries schema v11. Opening it must migrate
+    /// to v12 and preserve custom-property definitions/values.
+    #[test]
+    fn opens_v11_catalog_and_keeps_custom_properties() {
+        let dir = env::temp_dir().join(format!(
+            "agentero-catalog-v11-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(dir.join(".agentero")).unwrap();
+        fs::create_dir_all(dir.join("papers/props")).unwrap();
+        // Desktop 0.14 projects custom props into metadata.json; the Web
+        // `PaperRecord` does not model that field yet.
+        fs::write(
+            dir.join("papers/props/metadata.json"),
+            r#"{"custom_props":{"priority":"high"}}"#,
+        )
+        .unwrap();
+
+        {
+            let conn = Connection::open(catalog_db_path(&dir)).unwrap();
+            crate::sqlite::run_migrations(
+                &conn,
+                crate::sqlite::DbMsgs::CATALOG,
+                11,
+                &MIGRATION_STEPS[..11],
+                set_schema_version,
+            )
+            .unwrap();
+            assert_eq!(schema_version(&conn).unwrap(), 11);
+            conn.execute(
+                "INSERT INTO custom_properties
+                 (id, name, type, options_json, order_index, created_at, updated_at)
+                 VALUES ('priority', 'Priority', 'select',
+                         '[{\"id\":\"high\",\"name\":\"High\"}]', 0, 't', 't')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO papers
+                 (path, id, type, title, added_at, updated_at, custom_props_json)
+                 VALUES ('papers/props', 'props', 'article', 'Props', 't', 't',
+                         '{\"priority\":\"high\"}')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let conn = ensure_catalog(&dir).expect("open v11");
+        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
+        let (name, props): (String, String) = conn
+            .query_row(
+                "SELECT p.title, p.custom_props_json FROM papers p
+                 JOIN custom_properties c ON c.id = 'priority'
+                 WHERE p.path = 'papers/props'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(name, "Props");
+        assert_eq!(props, "{\"priority\":\"high\"}");
+        let options: String = conn
+            .query_row(
+                "SELECT options_json FROM custom_properties WHERE id = 'priority'",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(url, "https://openreview.net/forum?id=abc");
+        assert_eq!(options, "[{\"id\":\"high\",\"name\":\"High\"}]");
+        // The v12 open retry projected the migrated row into metadata.json.
+        // `PaperRecord` does not model `custom_props` yet, so the projection
+        // must carry the unmodeled desktop field over from the existing file.
+        let sidecar: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(dir.join("papers/props/metadata.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(sidecar["title"], "Props");
+        assert_eq!(sidecar["custom_props"]["priority"], "high");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A current desktop vault (v12) opens without re-running migrations and
+    /// retries committed-but-unprojected sidecars.
+    #[test]
+    fn opens_v12_catalog_and_retries_pending_sidecars() {
+        let dir = env::temp_dir().join(format!(
+            "agentero-catalog-v12-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(dir.join(".agentero")).unwrap();
+        fs::create_dir_all(dir.join("papers/v12")).unwrap();
+
+        {
+            let conn = Connection::open(catalog_db_path(&dir)).unwrap();
+            crate::sqlite::run_migrations(
+                &conn,
+                crate::sqlite::DbMsgs::CATALOG,
+                12,
+                &MIGRATION_STEPS,
+                set_schema_version,
+            )
+            .unwrap();
+            assert_eq!(schema_version(&conn).unwrap(), 12);
+            conn.execute(
+                "INSERT INTO papers (path, id, type, title, added_at, updated_at)
+                 VALUES ('papers/v12', 'v12', 'article', 'V12 paper', 't', 't')",
+                [],
+            )
+            .unwrap();
+            // The insert trigger queued the projection, like a crash would.
+            let pending: i64 = conn
+                .query_row("SELECT COUNT(*) FROM pending_sidecars", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(pending, 1);
+        }
+
+        let conn = ensure_catalog(&dir).expect("open v12");
+        assert_eq!(schema_version(&conn).unwrap(), 12);
+        let title: String = conn
+            .query_row(
+                "SELECT title FROM papers WHERE path = 'papers/v12'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(title, "V12 paper");
+        let pending: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pending_sidecars", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(pending, 0, "open must flush the pending projection");
+        let sidecar: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(dir.join("papers/v12/metadata.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(sidecar["title"], "V12 paper");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A vault written by a newer desktop app is still rejected with the
+    /// upgrade hint instead of being silently downgraded.
+    #[test]
+    fn rejects_newer_than_supported_catalog() {
+        let dir = env::temp_dir().join(format!(
+            "agentero-catalog-future-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        {
+            let conn = ensure_catalog(&dir).expect("ensure");
+            conn.execute(
+                "UPDATE schema_meta SET value = '13' WHERE key = 'schema_version'",
+                [],
+            )
+            .unwrap();
+        }
+        let error = ensure_catalog(&dir).expect_err("v13 must be rejected");
+        let message = error.to_string();
+        assert!(
+            message.contains("newer than this app supports"),
+            "unexpected error: {message}"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -161,9 +161,14 @@ async fn run_sync<S: RemoteStore>(
     let mut local_files = {
         let vault = vault.to_path_buf();
         let scope = cfg.scope;
-        tokio::task::spawn_blocking(move || snapshot::scan_vault(&vault, &base, &scope))
-            .await
-            .map_err(|e| AppError::message(format!("scan task: {e}")))??
+        tokio::task::spawn_blocking(move || {
+            // Committed-but-unprojected metadata sidecars must land before the
+            // scan, otherwise sync would upload a stale metadata.json.
+            crate::features::paper::catalog::sidecar::flush_pending(&vault)?;
+            snapshot::scan_vault(&vault, &base, &scope)
+        })
+        .await
+        .map_err(|e| AppError::message(format!("scan task: {e}")))??
     };
 
     let mut outcome = SyncOutcome::default();
@@ -825,6 +830,34 @@ mod tests {
         let (gets, puts) = store.counts();
         assert_eq!((gets - before.0, puts - before.1), (1, 0));
 
+        let _ = fs::remove_dir_all(&vault);
+    }
+
+    /// A pending metadata projection that cannot be written must stop the pass
+    /// before any remote I/O: uploading a stale metadata.json would spread the
+    /// loss to every other device.
+    #[tokio::test]
+    async fn projection_failure_stops_sync_before_remote_io() {
+        use crate::features::paper::catalog::papers::{self, PaperRecord};
+        let vault = temp_vault("projection-failure");
+        // A directory where metadata.json should be makes the projection fail.
+        fs::create_dir_all(vault.join("papers/x").join("metadata.json")).unwrap();
+        papers::upsert_paper(
+            &vault,
+            &PaperRecord::local_pdf("x".into(), "X".into()).at_path("papers/x"),
+        )
+        .unwrap();
+
+        let store = MemStore::default();
+        assert!(run_sync(
+            &vault,
+            &SyncBackendConfig::default(),
+            &store,
+            noop_progress()
+        )
+        .await
+        .is_err());
+        assert_eq!(store.counts(), (0, 0));
         let _ = fs::remove_dir_all(&vault);
     }
 

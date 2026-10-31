@@ -7,7 +7,7 @@
 import { createStore } from "zustand/vanilla";
 import { hasHostTransport } from "@/lib/core/tauri";
 import type { PaperLibraryRow, PaperMetadata } from "@/lib/paper";
-import { listPapers, rescanPapers, setPaperTags } from "@/lib/paper/api";
+import { listPapers, rescanPapers, ensurePaperRows, setPaperTags } from "@/lib/paper/api";
 import type { LocalPdfImportEntry } from "@/lib/paper/lookup";
 import type { CitingScanResult } from "@/lib/paper/refs";
 import type { PaperTagInput } from "@/lib/paper/tags";
@@ -184,8 +184,23 @@ export async function setLibraryPaperTags(
 
 /** Quiet catalog reload coalesced across external-change bursts (CLI, sync). */
 let libraryRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+/** Watcher paths queued for a targeted catalog repair (empty = full rescan). */
+let libraryRefreshPaths = new Set<string>();
+/** A full rescan was requested during the debounce window. */
+let libraryRefreshFull = false;
 
-export async function runLibraryRefresh(): Promise<void> {
+/**
+ * Reload catalog rows and Library state.
+ *
+ * `paths` are absolute watcher paths from one debounced burst: the Host maps
+ * them onto their paper folders and repairs only those rows. Without paths the
+ * whole `papers/` tree is rescanned (lifecycle callers and manual refresh).
+ * Hosts without the targeted command, remote vaults and unmapped paths still
+ * fall back to the full rescan, so disk-only papers are never lost.
+ */
+async function refreshLibraryRows(
+	paths: readonly string[] | null,
+): Promise<void> {
 	libraryRefreshTimer = null;
 	const vaultPath = getVaultPath();
 	if (!vaultPath || !hasHostTransport()) {
@@ -194,9 +209,14 @@ export async function runLibraryRefresh(): Promise<void> {
 	}
 	try {
 		// External moves (especially cross-directory drags in Finder) may not
-		// arrive as a trustworthy rename pair. Rebuild catalog rows from disk
+		// arrive as a trustworthy rename pair. Repair catalog rows from disk
 		// sidecars first so titles/metadata follow the new paths, then list.
-		await rescanPapers(vaultPath);
+		if (paths && paths.length > 0) {
+			const ensured = await ensurePaperRows(vaultPath, paths);
+			if (ensured === null) await rescanPapers(vaultPath);
+		} else {
+			await rescanPapers(vaultPath);
+		}
 		const papers = await listPapers(vaultPath);
 		if (getVaultPath() === vaultPath) setLibraryPapers(papers);
 	} catch {
@@ -204,15 +224,38 @@ export async function runLibraryRefresh(): Promise<void> {
 	}
 }
 
+/** Full quiet catalog reload (manual / lifecycle refresh). */
+export async function runLibraryRefresh(): Promise<void> {
+	libraryRefreshPaths = new Set();
+	libraryRefreshFull = false;
+	await refreshLibraryRows(null);
+}
+
+async function runScheduledLibraryRefresh(): Promise<void> {
+	const full = libraryRefreshFull;
+	const paths = [...libraryRefreshPaths];
+	libraryRefreshFull = false;
+	libraryRefreshPaths = new Set();
+	await refreshLibraryRows(full || paths.length === 0 ? null : paths);
+}
+
 /**
  * Quiet, debounced catalog reload for external tools (CLI, sync clients).
  * Avoids loading-state flicker while still updating tree labels and table rows.
  * Background / unfocused shells use a longer coalesce window.
+ *
+ * Passing the watcher burst's `paths` narrows the repair to the touched paper
+ * folders; a later path-less call upgrades it back to a full rescan.
  */
-export function scheduleLibraryRefresh(): void {
+export function scheduleLibraryRefresh(paths?: readonly string[]): void {
 	if (libraryRefreshTimer) clearTimeout(libraryRefreshTimer);
+	if (paths && paths.length > 0) {
+		for (const path of paths) libraryRefreshPaths.add(path);
+	} else {
+		libraryRefreshFull = true;
+	}
 	libraryRefreshTimer = setTimeout(
-		runLibraryRefresh,
+		() => void runScheduledLibraryRefresh(),
 		refreshDelayMs(watchRefreshDelayMs("library")),
 	);
 }
@@ -228,6 +271,8 @@ export function clearLibraryVaultState(): void {
 		clearTimeout(libraryRefreshTimer);
 		libraryRefreshTimer = null;
 	}
+	libraryRefreshPaths = new Set();
+	libraryRefreshFull = false;
 	libraryStore.setState({
 		papers: [],
 		paperMetaByRelPath: new Map(),

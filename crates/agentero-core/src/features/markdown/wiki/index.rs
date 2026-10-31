@@ -17,7 +17,7 @@ use crate::features::wiki::util::{stem_of, without_markdown_extension};
 use crate::fs::normalize_rel_lexical;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 const IGNORE_NAMES: &[&str] = &[
@@ -177,12 +177,11 @@ fn walk_wiki_targets(
     Ok(())
 }
 
+/// Vault-relative form of an absolute or already-relative path. Accepts the
+/// canonical spelling of the same vault (`/var` vs `/private/var`, `\\?\`),
+/// matching paths the FS watcher reports.
 fn to_vault_rel(vault_root: &Path, path: &str) -> String {
-    let p = PathBuf::from(path);
-    if let Ok(rel) = p.strip_prefix(vault_root) {
-        return normalize_rel_lexical(&rel.to_string_lossy());
-    }
-    normalize_rel_lexical(path)
+    crate::fs::vault_relative(vault_root, path).unwrap_or_else(|| normalize_rel_lexical(path))
 }
 
 #[derive(Debug, Default)]
@@ -988,6 +987,7 @@ impl Default for WikiIndexState {
 mod tests {
     use super::*;
     use crate::features::wiki::models::{BlockAnchor, HeadingAnchor, LinkResolutionStatus};
+    use std::path::PathBuf;
     use uuid::Uuid;
 
     fn test_vault() -> PathBuf {

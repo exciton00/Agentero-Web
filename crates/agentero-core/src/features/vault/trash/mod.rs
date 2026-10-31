@@ -16,7 +16,9 @@ use std::path::Path;
 /// which skips dot-entries).
 const TRASH_REL: &str = ".agentero/.trash";
 
-#[derive(Debug, Serialize, Deserialize)]
+/// One manifest entry. Field names stay camelCase so existing `manifest.json`
+/// files (and manifests written by the desktop app) still deserialize.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TrashItem {
     /// Original vault-relative path the item lived at.
@@ -26,9 +28,79 @@ struct TrashItem {
     /// Catalog rows removed for this item (empty when not under `papers/`).
     #[serde(default)]
     catalog_rows: Vec<PaperRecord>,
+    /// Durable move intent: a retry can tell "already moved back" from
+    /// "never moved" without guessing from the filesystem alone.
+    #[serde(default)]
+    phase: TrashPhase,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+/// Restore phases. Old manifests already describe trashed files, hence the
+/// `Trashed` default.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum TrashPhase {
+    Prepared,
+    #[default]
+    Trashed,
+    Restoring,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RestoreAction {
+    /// Stored copy still in the bin, original path free: move it back.
+    Move,
+    /// A previous attempt already moved the files; only the catalog is left.
+    Finish,
+    /// A prepared item was never moved: nothing to restore.
+    Unmoved,
+}
+
+/// Decide how a restore attempt for one item proceeds.
+///
+/// `stored` = the copy is still in the batch directory, `target` = the original
+/// vault path currently exists.
+fn restore_action(item: &TrashItem, stored: bool, target: bool) -> Result<RestoreAction, AppError> {
+    match (stored, target, item.phase) {
+        (true, false, _) => Ok(RestoreAction::Move),
+        (false, true, TrashPhase::Restoring) => Ok(RestoreAction::Finish),
+        (false, true, TrashPhase::Prepared) => Ok(RestoreAction::Unmoved),
+        (_, true, _) => Err(AppError::message(format!(
+            "cannot restore: '{}' already exists",
+            item.rel
+        ))),
+        _ => Err(AppError::message(format!(
+            "trash content missing: {}",
+            item.rel
+        ))),
+    }
+}
+
+/// Sidecar location relative to the stored item, including organization folders.
+fn restore_sidecar_path(
+    item: &TrashItem,
+    row: &PaperRecord,
+) -> Result<std::path::PathBuf, AppError> {
+    let item_path = crate::fs::normalize_rel_separators(&item.rel);
+    let row_path = crate::fs::normalize_rel_separators(&row.path);
+    let suffix = Path::new(&row_path)
+        .strip_prefix(&item_path)
+        .map_err(|_| AppError::message("catalog snapshot is outside its trash item"))?;
+    Ok(suffix.join(crate::features::catalog::sidecar::SIDECAR_FILE))
+}
+
+/// Re-insert removed catalog rows, but never overwrite metadata observed after
+/// the interrupted restore (watcher indexing, user edit, sync pull).
+fn restore_catalog(vault: &Path, item: &TrashItem) -> Result<(), AppError> {
+    for row in &item.catalog_rows {
+        if papers::get_by_path(vault, &row.path)?.is_none() {
+            papers::upsert_paper(vault, row)?;
+        }
+    }
+    Ok(())
+}
+
+/// Recycle-bin batch manifest (`manifest.json`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TrashManifest {
     batch_id: String,
@@ -162,6 +234,7 @@ pub fn trash_paths(vault_root: &Path, rels: &[String]) -> Result<TrashResult, Ap
             rel,
             stored,
             catalog_rows,
+            phase: TrashPhase::Trashed,
         });
     }
 
@@ -276,37 +349,73 @@ pub fn delete_paths(
 
 /// Restore a recycle-bin batch: move files back and re-insert catalog rows.
 ///
-/// Aborts without changes if any original path has since been re-created, so a
-/// restore never clobbers newer content.
+/// Retryable: the per-item phase is persisted before the file move, so an
+/// interrupted restore (crash, catalog failure, killed process) can be re-run
+/// and only finishes what is left. Aborts without changes if any original path
+/// was re-created by something else, so a restore never clobbers newer content.
 pub fn restore_batch(vault_root: &Path, batch_id: &str) -> Result<usize, AppError> {
     crate::fs::ensure_vault_dir(vault_root)?;
     validate_batch_id(batch_id)?;
     let batch_dir = vault_root.join(TRASH_REL).join(batch_id);
-    let manifest = read_manifest(&batch_dir)?;
-
-    // Pre-check: never overwrite a path that has reappeared since deletion.
+    let mut manifest = read_manifest(&batch_dir)?;
+    let count = manifest.items.len();
+    // Preflight all targets before changing any files.
     for item in &manifest.items {
-        if vault_root.join(&item.rel).exists() {
-            return Err(AppError::message(format!(
-                "cannot undo: '{}' already exists",
-                item.rel
-            )));
-        }
+        restore_action(
+            item,
+            batch_dir.join(&item.stored).try_exists()?,
+            vault_root.join(&item.rel).try_exists()?,
+        )?;
     }
-
-    for item in &manifest.items {
-        let target = vault_root.join(&item.rel);
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::rename(batch_dir.join(&item.stored), &target)?;
-        for row in &item.catalog_rows {
-            papers::upsert_paper(vault_root, row)?;
-        }
+    for index in 0..count {
+        restore_local_entry(vault_root, &batch_dir, &mut manifest, index)?;
     }
+    fs::remove_dir_all(&batch_dir)?;
+    Ok(count)
+}
 
-    let _ = fs::remove_dir_all(&batch_dir);
-    Ok(manifest.items.len())
+/// Restore one manifest entry, resumable from its persisted phase.
+fn restore_local_entry(
+    vault_root: &Path,
+    batch_dir: &Path,
+    manifest: &mut TrashManifest,
+    index: usize,
+) -> Result<(), AppError> {
+    let item = &manifest.items[index];
+    let target = vault_root.join(&item.rel);
+    match restore_action(
+        item,
+        batch_dir.join(&item.stored).try_exists()?,
+        target.try_exists()?,
+    )? {
+        RestoreAction::Unmoved => return Ok(()),
+        RestoreAction::Move => {
+            manifest.items[index].phase = TrashPhase::Restoring;
+            write_manifest(batch_dir, manifest)?;
+            let item = &manifest.items[index];
+            // Project the snapshot metadata into the restored folder *before*
+            // the move: a watcher may index the directory as soon as it
+            // reappears, and without the sidecar it would insert a minimal row
+            // and lose the paper's metadata.
+            for row in &item.catalog_rows {
+                let sidecar = batch_dir
+                    .join(&item.stored)
+                    .join(restore_sidecar_path(item, row)?);
+                // The catalog may still contain a child whose folder was
+                // removed outside the app; never recreate those directories.
+                if !sidecar.parent().expect("sidecar parent").try_exists()? {
+                    continue;
+                }
+                crate::fs::atomic_write(&sidecar, &serde_json::to_vec_pretty(row)?)?;
+            }
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::rename(batch_dir.join(&manifest.items[index].stored), &target)?;
+        }
+        RestoreAction::Finish => {}
+    }
+    restore_catalog(vault_root, &manifest.items[index])
 }
 
 /// List every item currently in the recycle bin, newest batch first.
@@ -325,6 +434,11 @@ pub fn list_trash(vault_root: &Path) -> Result<Vec<TrashEntry>, AppError> {
             continue;
         };
         for item in &manifest.items {
+            // A prepared-but-unmoved entry is not visible content (the file is
+            // still at its live path); only its intent is recorded.
+            if item.phase == TrashPhase::Prepared && !batch_dir.join(&item.stored).try_exists()? {
+                continue;
+            }
             let is_dir = batch_dir.join(&item.stored).is_dir();
             let name = Path::new(&item.rel)
                 .file_name()
@@ -348,7 +462,7 @@ pub fn list_trash(vault_root: &Path) -> Result<Vec<TrashEntry>, AppError> {
 }
 
 /// Restore a single recycle-bin item to its original path (files + catalog rows).
-/// Aborts if the original path has reappeared. Returns the restored rel path.
+/// Retryable like [`restore_batch`]. Returns the restored rel path.
 pub fn restore_item(vault_root: &Path, batch_id: &str, stored: &str) -> Result<String, AppError> {
     crate::fs::ensure_vault_dir(vault_root)?;
     validate_batch_id(batch_id)?;
@@ -360,23 +474,10 @@ pub fn restore_item(vault_root: &Path, batch_id: &str, stored: &str) -> Result<S
         .position(|i| i.stored == stored)
         .ok_or_else(|| AppError::message("trash item not found"))?;
 
-    let target = vault_root.join(&manifest.items[idx].rel);
-    if target.exists() {
-        return Err(AppError::message(format!(
-            "cannot restore: '{}' already exists",
-            manifest.items[idx].rel
-        )));
-    }
-    if let Some(parent) = target.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    restore_local_entry(vault_root, &batch_dir, &mut manifest, idx)?;
     let item = manifest.items.remove(idx);
-    fs::rename(batch_dir.join(&item.stored), &target)?;
-    for row in &item.catalog_rows {
-        papers::upsert_paper(vault_root, row)?;
-    }
     if manifest.items.is_empty() {
-        let _ = fs::remove_dir_all(&batch_dir);
+        fs::remove_dir_all(&batch_dir)?;
     } else {
         write_manifest(&batch_dir, &manifest)?;
     }
@@ -596,5 +697,141 @@ mod tests {
         assert!(!notes.join("b.md").exists());
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A paper directory whose metadata.json is missing (e.g. a failed
+    /// projection) must get the snapshot metadata written back *before* the
+    /// rename, so a watcher indexing the restored folder cannot lose it.
+    #[test]
+    fn restore_projects_metadata_before_move() {
+        let root = tempfile::tempdir().unwrap();
+        let paper_dir = root.path().join("papers/x");
+        fs::create_dir_all(&paper_dir).unwrap();
+        fs::write(paper_dir.join("NOTES.md"), "# hi\n").unwrap();
+        papers::upsert_paper(root.path(), &sample_record("papers/x", "x")).unwrap();
+        fs::remove_file(paper_dir.join("metadata.json")).unwrap();
+
+        let res = trash_paths(root.path(), &["papers/x".into()]).unwrap();
+        restore_batch(root.path(), &res.batch_id).unwrap();
+
+        let sidecar = paper_dir.join(crate::features::catalog::sidecar::SIDECAR_FILE);
+        assert!(sidecar.is_file(), "restore must project metadata from the manifest");
+        let value: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&sidecar).unwrap()).unwrap();
+        assert_eq!(value["title"], "T");
+        assert_eq!(
+            papers::get_by_path(root.path(), "papers/x").unwrap().unwrap().title,
+            "T"
+        );
+    }
+
+    /// Crash after the files moved but before the catalog restore: the retry
+    /// must finish the job instead of aborting on the reappeared path.
+    #[test]
+    fn restore_retries_after_interrupted_move() {
+        let root = tempfile::tempdir().unwrap();
+        let paper_dir = root.path().join("papers/x");
+        fs::create_dir_all(&paper_dir).unwrap();
+        fs::write(paper_dir.join("NOTES.md"), "# hi\n").unwrap();
+        papers::upsert_paper(root.path(), &sample_record("papers/x", "x")).unwrap();
+        let res = trash_paths(root.path(), &["papers/x".into()]).unwrap();
+        assert!(papers::get_by_path(root.path(), "papers/x").unwrap().is_none());
+
+        // Simulate the crash: phase=restoring persisted, file rename done,
+        // catalog rows not restored yet.
+        let batch_dir = root.path().join(TRASH_REL).join(&res.batch_id);
+        let mut manifest = read_manifest(&batch_dir).unwrap();
+        manifest.items[0].phase = TrashPhase::Restoring;
+        write_manifest(&batch_dir, &manifest).unwrap();
+        let stored = batch_dir.join(&manifest.items[0].stored);
+        fs::rename(stored, &paper_dir).unwrap();
+
+        let restored = restore_batch(root.path(), &res.batch_id).unwrap();
+        assert_eq!(restored, 1);
+        assert!(paper_dir.join("NOTES.md").exists());
+        assert_eq!(
+            papers::get_by_path(root.path(), "papers/x").unwrap().unwrap().title,
+            "T"
+        );
+        assert!(list_trash(root.path()).unwrap().is_empty());
+    }
+
+    /// Catalog failure after the file move: re-running the restore finishes the
+    /// missing catalog work (the old pre-check used to abort forever here).
+    #[test]
+    fn restore_retries_after_catalog_failure() {
+        let root = tempfile::tempdir().unwrap();
+        let paper_dir = root.path().join("papers/x");
+        fs::create_dir_all(&paper_dir).unwrap();
+        fs::write(paper_dir.join("NOTES.md"), "# hi\n").unwrap();
+        papers::upsert_paper(root.path(), &sample_record("papers/x", "x")).unwrap();
+        let res = trash_paths(root.path(), &["papers/x".into()]).unwrap();
+
+        crate::features::catalog::with_catalog(root.path(), |conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER fail_restore BEFORE INSERT ON papers
+                 BEGIN SELECT RAISE(FAIL, 'injected'); END;",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let error = restore_batch(root.path(), &res.batch_id).unwrap_err();
+        assert!(error.to_string().contains("injected"), "{error}");
+        // Files are back already; only the catalog restore failed.
+        assert!(paper_dir.join("NOTES.md").exists());
+
+        crate::features::catalog::with_catalog(root.path(), |conn| {
+            conn.execute_batch("DROP TRIGGER fail_restore")?;
+            Ok(())
+        })
+        .unwrap();
+        restore_batch(root.path(), &res.batch_id).unwrap();
+        assert_eq!(
+            papers::get_by_path(root.path(), "papers/x").unwrap().unwrap().title,
+            "T"
+        );
+        assert!(list_trash(root.path()).unwrap().is_empty());
+    }
+
+    /// A retry must not roll metadata back to the trash snapshot when the
+    /// catalog meanwhile holds a newer row (watcher index or user edit).
+    #[test]
+    fn restore_preserves_newer_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("papers/x")).unwrap();
+        papers::upsert_paper(root.path(), &sample_record("papers/x", "x")).unwrap();
+        let res = trash_paths(root.path(), &["papers/x".into()]).unwrap();
+
+        let mut newer = sample_record("papers/x", "x");
+        newer.title = "Latest".into();
+        newer.updated_at = "2099-01-01T00:00:00.000Z".into();
+        papers::upsert_paper(root.path(), &newer).unwrap();
+
+        restore_batch(root.path(), &res.batch_id).unwrap();
+        assert_eq!(
+            papers::get_by_path(root.path(), "papers/x").unwrap().unwrap().title,
+            "Latest"
+        );
+    }
+
+    /// Catalog snapshot rows for children removed outside the app are restored
+    /// as rows only; the restore must not recreate their directories.
+    #[test]
+    fn restore_parent_skips_orphan_catalog_rows_without_creating_directories() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("papers/group")).unwrap();
+        fs::write(root.path().join("papers/group/note.md"), "keep").unwrap();
+        papers::upsert_paper(
+            root.path(),
+            &sample_record("papers/group/missing", "missing"),
+        )
+        .unwrap();
+        let res = trash_paths(root.path(), &["papers/group".into()]).unwrap();
+        restore_batch(root.path(), &res.batch_id).unwrap();
+        assert_eq!(
+            fs::read_to_string(root.path().join("papers/group/note.md")).unwrap(),
+            "keep"
+        );
+        assert!(!root.path().join("papers/group/missing").exists());
     }
 }

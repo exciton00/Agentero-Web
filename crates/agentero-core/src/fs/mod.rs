@@ -10,7 +10,7 @@ pub use local::LocalFs;
 pub use path::{
     canonicalize_best_effort, ensure_vault_dir, join_remote, normalize_rel, normalize_rel_lexical,
     normalize_rel_separators, path_escapes_root, resolve_paper_dir, resolve_vault,
-    safe_relative_path, sanitize_vault_rel, FsCaps, FsDirEntry, FsFileMeta,
+    safe_relative_path, sanitize_vault_rel, vault_relative, FsCaps, FsDirEntry, FsFileMeta,
 };
 pub use store::{atomic_write, atomic_write_with, json_store, json_store_with, AtomicOpts};
 
@@ -42,22 +42,12 @@ pub trait VaultFs: Send + Sync {
 
     async fn remove(&self, rel: &str, recursive: bool) -> Result<(), AppError>;
 
+    /// Only a missing path is false; permission, transport and validation
+    /// errors propagate so callers never mistake a failure for "absent".
     async fn exists(&self, rel: &str) -> Result<bool, AppError> {
         match self.stat(rel).await {
             Ok(_) => Ok(true),
-            Err(e) if e.code() == "io" || e.code() == "message" => {
-                // Treat missing path as false; other errors bubble via message text.
-                let msg = e.to_string().to_lowercase();
-                if msg.contains("not found")
-                    || msg.contains("no such file")
-                    || msg.contains("not a directory")
-                {
-                    Ok(false)
-                } else {
-                    // Ambiguous: try again as false only for NotFound-ish
-                    Ok(false)
-                }
-            }
+            Err(AppError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
             Err(e) => Err(e),
         }
     }

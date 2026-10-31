@@ -32,6 +32,7 @@
 `WikiIndex::rebuild` 是增量流水线，语义与全量重建等价：
 
 - **指纹热路径**：每次 rebuild 先 walk + stat 出全库 `(path, size, mtime)` 指纹。若与内存中上一次构建完全一致，直接返回上次结果；若部分变化，仅重读变更文件，未变文件复用内存中的解析产物（documents + occurrences）。rename 事务前后的两次 rebuild 因此在生产中都是廉价的新鲜度检查。
+- **路径拼写**：链接/反链/搜索等入参里的绝对路径（watcher 路径、前端回传的绝对路径）先经 `fs::vault_relative` 折成 Vault 相对路径；`/var` 与 `/private/var`、Windows `\\?\` 等同一 Vault 的规范写法视为同一资料库，不因前缀对不上被误判为库外路径。
 - **Resolve 查找表**：`resolve.rs::DocumentLookup` 按精确路径 / ASCII 小写路径 / 路径段后缀 / stem / alias 预分桶，把逐 occurrence 的线性扫描（O(E×D)）降到哈希查找（≈O(E)），解析优先级与线性实现逐字节等价（有对照测试）。
 - **快照只存解析产物**：`.sqlite` 缓存（schema v3）按文件粒度存 documents 与 occurrences（`(source, ordinal)` 主键），行级 SHA-256 校验替代整份 JSON 快照哈希。resolve 结果**不**入库——加载时对完整文档集重跑解析，因此“别的文件改变了某条链接的解析结果”不会让缓存变脏。
 - **增量写盘**：磁盘缓存与内存快照同步时，持久化只 upsert/delete 变更文件的行；缓存缺失、schema/parser 版本不符或上次写盘失败则整体重写。

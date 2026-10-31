@@ -116,6 +116,14 @@ struct PaperRescanArgs {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct PaperEnsureRowsArgs {
+    vault_path: String,
+    /// Absolute or vault-relative paths under `papers/` touched by the watcher.
+    paths: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct PaperSetPageCountsArgs {
     vault_path: String,
     counts: HashMap<String, i64>,
@@ -184,6 +192,16 @@ struct PaperOpenBundle {
 #[serde(rename_all = "camelCase")]
 struct PaperRescanResult {
     count: usize,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PaperEnsureRowsResult {
+    /// Rows inserted; existing rows are left as they are unless newer on disk.
+    count: usize,
+    /// True when a path could not be pinned to one paper folder and the
+    /// command rebuilt the catalog from `papers/`.
+    rescanned: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -476,6 +494,43 @@ pub async fn rescan(ctx: &RpcCtx, args: &Value) -> HandlerResult {
     }
 }
 
+/// `paper_ensure_rows({vaultPath, paths})` → `ApiResult<PaperEnsureRowsResult>`.
+///
+/// Targeted catalog repair for FS-watcher paths: each path maps to at most one
+/// paper folder, so an external create/replace costs one row instead of a full
+/// `papers/` walk. `paper_rescan` stays the explicit whole-library rebuild; only
+/// a path that is not one paper folder (the `papers/` root, an organization
+/// folder, a delete outside a paper) falls back to it.
+pub async fn ensure_rows(_ctx: &RpcCtx, args: &Value) -> HandlerResult {
+    let args: PaperEnsureRowsArgs = match parse_args(args) {
+        Ok(args) => args,
+        Err(error) => return fail_msg(error),
+    };
+    let result = blocking(move || {
+        let vault = vault_root(&args.vault_path)?;
+        let touch = papers::ensure_rows_for_paths(&vault, &args.paths)
+            .map_err(|error| error.to_string())?;
+        // Only touched rows can change the tag projection; the fingerprinted
+        // rebuild inside the tag index makes this a no-op when nothing changed.
+        tag_index::ensure_tag_index_best_effort(&vault);
+        Ok(match touch {
+            papers::PaperRowsTouch::Ensured { count } => PaperEnsureRowsResult {
+                count,
+                rescanned: false,
+            },
+            papers::PaperRowsTouch::Rescanned { count } => PaperEnsureRowsResult {
+                count,
+                rescanned: true,
+            },
+        })
+    })
+    .await;
+    match result {
+        Ok(result) => ok(result),
+        Err(error) => fail_msg(error),
+    }
+}
+
 /// `paper_set_page_counts({vaultPath, counts})` → `ApiResult<null>`.
 pub async fn set_page_counts(_ctx: &RpcCtx, args: &Value) -> HandlerResult {
     let args: PaperSetPageCountsArgs = match parse_args(args) {
@@ -584,7 +639,6 @@ pub async fn activity_record_events(_ctx: &RpcCtx, args: &Value) -> HandlerResul
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // Library row assets: status badges + delete-from-context-menu
 // ---------------------------------------------------------------------------
@@ -625,10 +679,7 @@ struct PaperDeleteAssetsResult {
 
 /// Status rows for every catalog paper (deduped by logical id, same set the
 /// Library table shows).
-fn collect_assets_status(
-    vault: &Path,
-    caps: &CapsCache,
-) -> Result<Vec<PaperAssetStatus>, String> {
+fn collect_assets_status(vault: &Path, caps: &CapsCache) -> Result<Vec<PaperAssetStatus>, String> {
     let rows = papers::list_all_unique_by_id(vault).map_err(|error| error.to_string())?;
     let mut out = Vec::with_capacity(rows.len());
     for paper in rows {
@@ -670,7 +721,10 @@ fn delete_paper_assets(vault: &Path, paper_path: &str, kind: &str) -> Result<Vec
                 .map_err(|error| format!("read paper dir {rel}: {error}"))?;
             for entry in entries.flatten() {
                 let path = entry.path();
-                let is_file = entry.file_type().map(|kind| kind.is_file()).unwrap_or(false);
+                let is_file = entry
+                    .file_type()
+                    .map(|kind| kind.is_file())
+                    .unwrap_or(false);
                 let is_pdf = path
                     .extension()
                     .and_then(|extension| extension.to_str())
@@ -687,7 +741,10 @@ fn delete_paper_assets(vault: &Path, paper_path: &str, kind: &str) -> Result<Vec
         }
         "layout" => {
             let source = paper_source_dir(&paper_dir);
-            for name in [layout_index::LAYOUT_RAW_FILE, layout_index::LAYOUT_INDEX_FILE] {
+            for name in [
+                layout_index::LAYOUT_RAW_FILE,
+                layout_index::LAYOUT_INDEX_FILE,
+            ] {
                 let target = source.join(name);
                 if target.is_file() && std::fs::remove_file(&target).is_ok() {
                     removed.push(format!("{rel}/source/{name}"));
@@ -745,7 +802,6 @@ pub async fn delete_assets(ctx: &RpcCtx, args: &Value) -> HandlerResult {
         Err(error) => fail_msg(error),
     }
 }
-
 
 #[cfg(test)]
 mod asset_tests {

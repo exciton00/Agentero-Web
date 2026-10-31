@@ -1289,6 +1289,15 @@ Agent：`agent_run_once` / `agent_warm` 在 vault 为 `remote:…` 时经 SSH `b
 - **行为**：递归遍历 `papers/`，遇含 `NOTES.md` 的文件夹即为 paper 叶子；创建最小化 paper 记录并 `upsert` 进 catalog。不删行、不改磁盘文件。
 - **前端**：`src/lib/paper/api.ts` → `rescanPapers`；论文库空态「重新扫描 papers/」按钮。
 
+#### `paper_ensure_rows`
+
+按 FS watcher 批次路径**定向补齐** catalog 行：每个路径折到最近的一个论文文件夹后只补那一行，避免外部小改动触发整库 `papers/` walk。Web Host 专用命令；桌面 Host / 旧服务端没有它时前端自动回退 `paper_rescan`。
+
+- **参数**（invoke 字段名 `args`）：`{ vaultPath: string; paths: string[] }`（绝对路径或 Vault 相对路径；`papers/` 之外的路径忽略）。
+- **返回**：`{ ok: true; data: { count: number; rescanned: boolean } }`（`count` = 新插入行数；`rescanned` = 有路径无法归属单篇、已回退整库重建）。
+- **行为**：`papers/` 根、组织目录、论文外删除等无法映射到单篇的路径触发一次 `rebuild_from_disk`；已有行在 `metadata.json` 的 `updated_at` 更新时用 sidecar 覆盖（同步/外部替换不打回旧值）。不删行、不改磁盘文件。
+- **前端**：`src/lib/paper/api.ts` → `ensurePaperRows`；`src/lib/paper/library-store.ts` 的 watcher 刷新在有路径时走它，手动「重新扫描」仍走 `paper_rescan`。
+
 > **Catalog 行删除**：不再有独立的 `paper_delete` command；删除走 `path_trash`（`trashPaths`），catalog 行随回收站快照清理（底层 `papers::delete_under_path`，CLI `agentero paper rm` 亦复用）。
 
 #### `paper_move`

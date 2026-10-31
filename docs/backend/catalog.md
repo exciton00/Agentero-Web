@@ -28,6 +28,7 @@
 - `tags_json`：字符串或 `{name,color}`（Apple 8 色）。`@zotero:` / `@arxiv:` 前缀为内部隐标签（Connector 来源 / arXiv 学科分类），UI 与 CLI 默认不展示。`#submitted:`（arXiv LaTeX 模板推断的投稿目标）与 `#easyscholar:`（Host 解析的期刊指标）是 Host 写入的**只读投影**，前端只展示不编辑；`publication` 是唯一权威 venue 字段，`#venue:` 已废弃并在同步时清理。**契约缺口**：`impl Serialize for PaperTag` 无色时输出裸字符串，而 specta 生成的类型是 `{ name, color }` 对象，因此前端必须保留 `PaperTagInput[]` + `coercePaperTags`
 - `paper_list` 对前端 Library 返回按 `id` 去重的视图：同一逻辑论文若因历史原因出现在多个路径，只保留一条（优先存在磁盘的路径，其次 `updated_at` 最新、路径最短/字典序最小）。远端 `remote_paper_list` 不做该去重、返回裸 `PaperRecord`，为已知 wire 差异（见 [remote.md](remote.md)）
 - `paper_rescan`：盘上有、库内无则补齐。远端 rescan 为独立的 SFTP 回填扫描（见 [remote.md](remote.md)）
+- `paper_ensure_rows`：FS watcher 批次路径的定向补行。每个绝对/相对路径折到最近的一个论文目录（`NOTES.md` / `metadata.json` 判定的 `papers/` 子目录）后走 `ensure_row_for_path`，不再全库 walk；只有无法归属单篇的路径（`papers/` 根、组织目录、论文外删除）才回退 `rebuild_from_disk`。返回 `{count, rescanned}`。Web 前端在外部结构变化时用它替代 `paper_rescan`，手动全量重扫仍走 `paper_rescan`。`ensure_row_for_path` 补缺失行时遵循与 rescan 相同的 sidecar 规则：已有行若 `metadata.json` 的 `updated_at` 更新，用 sidecar 覆盖这一行（同步/外部替换不打回旧值）；路径比较接受同一 Vault 的规范写法（`\\?\`、`/var` 与 `/private/var` 软链接拼写）
 - 本地/远端命令共享实现入口：`paper_get` / `paper_set_tags` / `paper_set_is_read` 的校验、错误文案与 catalog 写入与 `remote_paper_*` 对应命令共用 `src-tauri/src/features/paper/catalog/service.rs`；远端侧只补 session 解析与 `RemoteSession::push_catalog`
 - **同 Vault 移动**：core `catalog/move_paper.rs::move_with_index` 统一文件移动、Wiki 改链、Catalog 与页数路径更新；后两者在同一个 SQLite 事务内提交，提交失败由既有 rename 事务补偿文件和链接。桌面/本地 Connector 经 Host `catalog/service.rs` 适配，CLI 经 `move_paper_under` 构造 Wiki 索引；业务不再放在 commands。重复移动到当前父目录统一成功返回原路径和空 `linkUpdate.updatedSources`（桌面原先报错，CLI/Connector 保持幂等）；桌面 `dirty_paths` 仍在写入前校验。跨 Vault migrate 与远端移动保持原实现。
 - 删除：回收站快照；恢复 upsert。`list_under_path` / `delete_under_path` / `move_under_path` 共用转义后的 SQL 子路径 pattern，`%`、`_` 与 escape 字符 `!` 按文件名的字面值匹配；保留 `/` 组件边界、Windows 分隔符归一及 SQLite 既有 LIKE 大小写规则，避免修改相似兄弟路径。
@@ -36,6 +37,7 @@
 - `pdf_page_counts`：PDF 页数缓存表（随移动/删除同步），阅读热力图不再整文件打开 PDF 数页；缺缓存时仅对可视行按需补数并回写
 - `embed_cache`（schema v6）：广场 arXiv 推荐的摘要向量缓存，按 sha256(title+abstract)+model 存小端 f32，使论文库语料只 embed 一次。
 - `discovery_runs`（schema v8）：广场 arXiv 推荐的多行运行结果，按 `key = sha256(source|model|top_n|分类)` 分槽，`recommend_arxiv_last` 取最新一行。取代 v6 的单行 `arxiv_rec_state`（保留给旧库、不再写入）。均不触碰 `papers` 表；规格见 [../development/plaza.md](../development/plaza.md) §3.4
+- 自定义属性（schema v11，Web 已实现功能层）：定义存 `custom_properties` 表并以 `.agentero/properties.json` 为可移植镜像（表为空时首次读取会从镜像导入）；论文取值存 `papers.custom_props_json`（`{propertyId: optionId|text}`，空 map 为 `{}`）。Web 端实现在 `crates/agentero-core/src/features/paper/catalog/properties.rs`：值读写用独立 SQL（不扩展 `PaperRecord`），因此 Web 写论文不会覆盖桌面写入的自定义属性值。RPC：`custom_properties_list` / `_create` / `_update` / `_delete` / `_set_paper_value` / `_create_option` / `_delete_option` / `_paper_values`。已知边界：Web 的 `metadata.json` sidecar 投影暂不含 `custom_props`（catalog 权威；桌面版打开后按自身规则补齐）。
 - `paper_reading_activity_batch`：批量读取 `papers/<id>/marks/*.json` 侧车（highlight/ask/translate），一次 IPC 返回热力图所需最小活动点（kind/page/y/weight），替代前端逐论文 3 次 IPC 的读取风暴（`features/pdf/marks/activity.rs`）
 - 重复行检测与修复：`catalog::papers::find_duplicates` / `repair_duplicates`，并在 Vault Doctor 中暴露
 
@@ -46,10 +48,16 @@
 | `paper_list` / `paper_get` | 读 |
 | `paper_set_tags` / `paper_set_is_read` | 写 |
 | `paper_update_meta` | 手动编辑元数据（patch 语义：只更新传入字段，空串清空；置 `meta_source=manual`；改标题时同步 NOTES.md：合并 aliases 旧+新标题，占位 H1 替换为新标题，用户自拟标题保留）。时间字段传 `date`：接受 `YYYY` / `YYYY-MM` / `YYYY-MM-DD`（兼容 `2017-06-12T00:00:00Z`、`Spring 2017` 等松散串），规范化后写回并派生 `year`；无法解析则报错。远程 Vault 暂不支持 |
-| `paper_rescan` | 盘 → 库 |
+| `paper_rescan` | 盘 → 库（显式全量重扫） |
+| `paper_ensure_rows` | watcher 路径 → 只补对应论文行（无法归属单篇时回退全量） |
 | `paper_export` / `paper_import` | Bib 等 |
 | `paper_page_counts` / `paper_set_page_counts` | 页数缓存读写 |
 | `paper_reading_activity_batch` | 批量读 marks 活动点（热力图） |
+| `custom_properties_list` | 读自定义属性定义（`{properties}`） |
+| `custom_properties_create` / `custom_properties_update` / `custom_properties_delete` | 定义增改删（类型创建后不可变；删属性/选项会清理所有论文取值） |
+| `custom_properties_set_paper_value` | 设置/清除单篇取值（select 传 optionId；text 传原文，≤2000 字符；空值清除） |
+| `custom_properties_create_option` / `custom_properties_delete_option` | 选项「创建并赋值」/ 删除并清理引用 |
+| `custom_properties_paper_values` | 全库 `{path → {propertyId → value}}`（空 map 即无取值） |
 
 CLI：`agentero paper …` / `paper tag *`。
 

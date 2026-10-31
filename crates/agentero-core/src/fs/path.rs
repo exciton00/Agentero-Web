@@ -171,6 +171,62 @@ pub fn canonicalize_best_effort(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
+/// Vault-relative form of `raw`, or `None` when it escapes the vault.
+///
+/// Absolute paths may use another spelling of the same directory: a symlink
+/// (`/var` vs `/private/var`) or the Windows `\\?\` prefix. A relative `raw`
+/// is only lexically normalized.
+pub fn vault_relative(vault_root: &Path, raw: &str) -> Option<String> {
+    let root_owned = vault_root.to_string_lossy();
+    let root = Path::new(without_verbatim_prefix(root_owned.as_ref()));
+    let raw_plain = without_verbatim_prefix(raw);
+    let file = Path::new(raw_plain);
+    let slash = raw_plain.replace('\\', "/");
+    let rel = if file.is_absolute() || slash.starts_with('/') {
+        strip_under_vault(root, file)?
+    } else {
+        slash
+    };
+    let rel = normalize_rel_lexical(&rel);
+    if rel.split('/').any(|part| part == "..") {
+        None
+    } else {
+        Some(rel)
+    }
+}
+
+/// `\\?\D:\...` → `D:\...`. UNC and device paths keep the prefix.
+fn without_verbatim_prefix(path: &str) -> &str {
+    match path.strip_prefix(r"\\?\") {
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => rest,
+        _ => path,
+    }
+}
+
+fn strip_under_vault(root: &Path, file: &Path) -> Option<String> {
+    fn rel_string(rel: &Path) -> String {
+        rel.to_string_lossy().replace('\\', "/")
+    }
+    if let Ok(rel) = file.strip_prefix(root) {
+        return Some(rel_string(rel));
+    }
+    let canonical_root = canonicalize_best_effort(root);
+    if canonical_root.as_path() != root {
+        if let Ok(rel) = file.strip_prefix(&canonical_root) {
+            return Some(rel_string(rel));
+        }
+    }
+    let canonical_file = canonicalize_best_effort(file);
+    if canonical_file.as_path() == file {
+        return None;
+    }
+    canonical_file
+        .strip_prefix(&canonical_root)
+        .or_else(|_| canonical_file.strip_prefix(root))
+        .ok()
+        .map(rel_string)
+}
+
 /// Validate that `root` is an existing directory — shared vault guard for
 /// callers that already hold a resolved vault `&Path`.
 pub fn ensure_vault_dir(root: &Path) -> Result<(), AppError> {
@@ -283,5 +339,74 @@ mod tests {
         assert_eq!(empty.to_string(), "invalid paper path");
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn vault_relative_normalizes_relative_and_rejects_escapes() {
+        let root = Path::new("/vault");
+        assert_eq!(
+            vault_relative(root, "papers/a/NOTES.md").as_deref(),
+            Some("papers/a/NOTES.md")
+        );
+        assert_eq!(
+            vault_relative(root, "/vault/papers/a/NOTES.md").as_deref(),
+            Some("papers/a/NOTES.md")
+        );
+        assert_eq!(
+            vault_relative(root, "/vault/papers/./a/../a/NOTES.md").as_deref(),
+            Some("papers/a/NOTES.md")
+        );
+        assert_eq!(vault_relative(root, "/etc/passwd"), None);
+        assert_eq!(vault_relative(root, "papers/../../etc/passwd"), None);
+        assert_eq!(vault_relative(root, ""), Some(String::new()));
+    }
+
+    #[test]
+    fn without_verbatim_prefix_keeps_unc() {
+        assert_eq!(without_verbatim_prefix(r"\\?\D:\vault"), r"D:\vault");
+        assert_eq!(
+            without_verbatim_prefix(r"\\?\UNC\server\share"),
+            r"\\?\UNC\server\share"
+        );
+        assert_eq!(without_verbatim_prefix("/var/vault"), "/var/vault");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn vault_relative_strips_verbatim_drive_prefix() {
+        assert_eq!(
+            vault_relative(Path::new(r"D:\vault"), r"\\?\D:\vault\papers\a\NOTES.md").as_deref(),
+            Some("papers/a/NOTES.md")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn vault_relative_accepts_symlink_spellings() {
+        let base =
+            std::env::temp_dir().join(format!("agentero-vault-rel-{}", uuid::Uuid::new_v4()));
+        let real = base.join("real");
+        std::fs::create_dir_all(real.join("papers/a")).expect("create paper");
+        let notes = real.join("papers/a/NOTES.md");
+        std::fs::write(&notes, "# A\n").expect("write notes");
+        let link = base.join("link");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink vault");
+
+        let through_link = link.join("papers/a/NOTES.md");
+        assert_eq!(
+            vault_relative(&real, through_link.to_str().expect("utf8")).as_deref(),
+            Some("papers/a/NOTES.md")
+        );
+        assert_eq!(
+            vault_relative(&link, notes.to_str().expect("utf8")).as_deref(),
+            Some("papers/a/NOTES.md")
+        );
+        assert_eq!(
+            vault_relative(&link, "papers/a/NOTES.md").as_deref(),
+            Some("papers/a/NOTES.md")
+        );
+        assert_eq!(vault_relative(&link, "/etc/passwd"), None);
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
