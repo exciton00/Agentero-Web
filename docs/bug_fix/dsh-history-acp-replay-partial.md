@@ -151,3 +151,27 @@ settlement 结构不同。
 修复：运行时镜像安装 `bubblewrap`，让 Dsh 的 `workspace-write` 沙箱在容器
 内可用，避免正常的 bash/工具调用因“no sandbox backend”失败并连带中止 turn。
 历史侧仍保留“未保存最终回答”提示；已经中断且未落盘的旧 turn 无法恢复。
+
+### 沙箱后续
+
+容器内安装了 `bubblewrap`，但 Docker 默认 seccomp 仍会阻止它创建 namespace
+（`bwrap: Creating new namespace failed: Operation not permitted`）。实测只有
+同时设置以下 Docker 选项才可用：
+
+```yaml
+cap_add:
+  - SYS_ADMIN
+security_opt:
+  - seccomp=unconfined
+```
+
+为避免要求用户扩大容器 capability，运行时镜像默认设置：
+
+```text
+DSH_PERMISSION_MODE=danger-full-access
+```
+
+Dsh 官方说明该 preset 适用于 disposable container；Agentero-Web 是单用户
+容器，vault 与 data 都在容器可写范围内。需要重新启用 workspace-write 的
+部署可在 compose 中覆盖 `DSH_PERMISSION_MODE=workspace-write` 并加上上述
+capability/seccomp 配置。

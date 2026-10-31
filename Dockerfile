@@ -70,6 +70,14 @@ ENV DEBIAN_FRONTEND=noninteractive \
 	HOME=/data/home \
 	RUST_LOG=info
 
+# Dsh's workspace-write sandbox needs bubblewrap + namespace privileges in
+# this container. Compose deployments that cannot grant those (the default
+# Docker seccomp profile blocks bwrap namespace creation) run the agent with
+# its supported danger-full-access preset inside this single-user container.
+# Override DSH_PERMISSION_MODE=workspace-write only together with the
+# cap_add/seccomp settings documented in docker-compose.yml.example.
+ENV DSH_PERMISSION_MODE=danger-full-access
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
 		ca-certificates libstdc++6 libgcc-s1 tini bubblewrap \
 	&& rm -rf /var/lib/apt/lists/*

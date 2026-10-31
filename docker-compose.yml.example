@@ -56,6 +56,12 @@ services:
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      # The image defaults to Dsh's danger-full-access preset because Docker's
+      # default seccomp profile cannot create bwrap namespaces. To keep Dsh's
+      # workspace-write sandbox instead, set this to workspace-write and add:
+      #   cap_add: [SYS_ADMIN]
+      #   security_opt: ["seccomp=unconfined"]
+      DSH_PERMISSION_MODE: ${DSH_PERMISSION_MODE:-danger-full-access}
     volumes:
       - ${AGENTERO_VAULT_DIR:-./vault}:${AGENTERO_VAULT_CONTAINER_PATH:-/vault}
       - ${AGENTERO_DATA_DIR:-./data}:/data
