@@ -324,6 +324,21 @@ impl ReplayBuilder {
         }
     }
 
+    /// Visible assistant answer text assembled so far, used by the durable
+    /// reader's last-resort recovery for settlement event generations it does
+    /// not know yet.
+    fn agent_answer_text(&self) -> String {
+        self.lines
+            .iter()
+            .filter(|line| !line.is_user)
+            .flat_map(|line| line.parts.iter())
+            .filter_map(|part| match part {
+                AcpHistoryPart::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn finish(self) -> (Vec<AcpHistoryLine>, Option<String>) {
         let mut out = Vec::new();
         for mut line in self.lines {
@@ -499,6 +514,14 @@ async fn replay_acp_history(
                 )
                 .await?;
 
+                if let Some(info) = &init.agent_info {
+                    log::info!(
+                        "dsh history: ACP bridge name={} version={} load_session={}",
+                        info.name,
+                        info.version,
+                        init.agent_capabilities.load_session
+                    );
+                }
                 if !init.agent_capabilities.load_session {
                     return Ok(false);
                 }
@@ -530,6 +553,11 @@ async fn replay_acp_history(
                 .map(|mut g| std::mem::take(&mut *g))
                 .unwrap_or_default();
             let (lines, title) = taken.finish();
+            log::info!(
+                "dsh history: ACP replay session={} lines={}",
+                session_id,
+                lines.len()
+            );
             Ok(AcpReplayOutcome::Loaded(AcpLoadSessionResult {
                 session_id: session_id.to_string(),
                 title,
@@ -636,7 +664,9 @@ pub async fn load_acp_session(
         match durable_dsh_history(home, &session_id, &cwd).await {
             Ok(history) => durable_history = Some(history),
             Err(error) => {
-                log::debug!("dsh durable history unavailable session={session_id}: {error}");
+                log::info!(
+                    "dsh history: durable log unavailable session={session_id}; falling back to ACP replay: {error}"
+                );
                 durable_error = Some(error);
             }
         }
@@ -644,14 +674,23 @@ pub async fn load_acp_session(
 
     if let Some(durable) = durable_history {
         if !history_lacks_agent_text(&durable) {
-            log::debug!("dsh durable history restored session={session_id}");
+            log::info!(
+                "dsh history: durable log restored session={session_id} lines={} lines_with_agent_text={}",
+                durable.lines.len(),
+                durable
+                    .lines
+                    .iter()
+                    .filter(|line| line.kind == "agent" && line_has_visible_text(line))
+                    .count()
+            );
             return Ok(durable);
         }
         // Durable content is kept on every failure path below, so the user still
         // sees the saved user turn, reasoning and tools with the UI interruption
         // hint instead of an empty history.
-        log::debug!(
-            "dsh durable history has no agent text session={session_id}; complementing via ACP replay"
+        log::info!(
+            "dsh history: durable log restored session={session_id} lines={} but no saved agent text; complementing via ACP replay",
+            durable.lines.len()
         );
         match tokio::time::timeout(
             COMPLEMENT_REPLAY_TIMEOUT,
@@ -661,25 +700,27 @@ pub async fn load_acp_session(
         {
             Ok(Ok(AcpReplayOutcome::Loaded(acp))) => {
                 let merged = merge_histories(durable, acp);
-                log::debug!(
-                    "dsh durable history complemented session={session_id} agent_text={}",
+                log::info!(
+                    "dsh history: ACP complement session={session_id} recovered_agent_text={}",
                     !history_lacks_agent_text(&merged)
                 );
                 return Ok(merged);
             }
             Ok(Ok(AcpReplayOutcome::Unsupported)) => {
-                log::debug!("dsh durable history kept (agent cannot replay) session={session_id}");
+                log::info!(
+                    "dsh history: durable log kept session={session_id}; agent cannot replay history"
+                );
                 return Ok(durable);
             }
             Ok(Err(error)) => {
                 log::warn!(
-                    "dsh complementary ACP replay failed session={session_id}: {error}; keeping durable history"
+                    "dsh history: ACP complement failed session={session_id}: {error}; keeping durable history"
                 );
                 return Ok(durable);
             }
             Err(_) => {
                 log::warn!(
-                    "dsh complementary ACP replay timed out session={session_id}; keeping durable history"
+                    "dsh history: ACP complement timed out session={session_id}; keeping durable history"
                 );
                 return Ok(durable);
             }

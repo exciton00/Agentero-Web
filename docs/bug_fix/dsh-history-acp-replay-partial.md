@@ -99,3 +99,34 @@
   （只有 user/ reasoning/tool），在末尾追加 i18n 提示
   `messages.sessionAnswerNotSaved`（中英文），明确“没有保存最终回答，可能
   已中断，可展开 Chain of Thought 查看已保存推理”，不再看起来像空会话。
+
+## 三次修复（用户“等待完成”的会话仍无正文）
+
+用户在新构建（含 attempt 解析）上重测：`589d39d6…` 的
+`agent_load_session` 仍只返回 reasoning + tool、无 text；最新会话只有 user
+行。说明上一轮的 attempt 解析没有触达该日志，高概率是读取层更早失败或
+settlement 结构不同。
+
+本次加固（全部只读、保留安全校验）：
+
+- 格式 generation：接受 v2–v6（`MAX_SUPPORTED_FORMAT`），v7+ 仍拒绝；
+  header version 兼容数字/数字字符串，文件名兼容 `.jsonl.zst`。
+- 目录/id 拼写：同时尝试裸 UUID 与 `session-<uuid>` 目录，并校验 header
+  id、workspace、seq；响应仍返回请求的 session id。新增 flat
+  `sessions/<id>` 与 `storages/sessions/**` 兜底布局。
+- settlement 合并修正：之前“存在 assistant/message 就跳过 attempt”会漏掉
+  “message 只有 reasoning/tool、正文在 attempt stream”的情形；现在按
+  “该 message 是否有可见 text”决定，并把 attempt 的 text 合入同一 step 的
+  message 位置（reasoning/tool 不重复）；同 step 多次 attempt 取文本最多者。
+- content/stream shape：`message.content` 支持数组 / 数组嵌套 /
+  字符串 / `text` 字段；stream 支持 `data.stream`、`data.message.stream`、
+  `data.attempt.stream`；message 空 content 时从 stream 恢复。
+- 未知 settlement 兜底：已知事件都取不到可见正文时，扫描未知
+  `assistant/*` 事件里的文本（message/content/stream/text），去重后恢复，
+  以兼容未来 generation 重命名事件。
+- 诊断日志（INFO，默认可见）：每次 durable 读取打印
+  `dsh history: restored path=… version=… events=… lines=… agent_text_chars=…
+  merged_steps=… attempt_steps=… recovered_events=… event_types=…`；
+  fallback/complement 路径也打印 INFO；header 不匹配时错误里带
+  expected/actual id、version、cwd 匹配结果。`history.rs` 会打印 ACP 桥
+  name/version 与 replay 行数。
