@@ -115,10 +115,7 @@ pub fn render(
 /// Used by the WeKnora renderer so a synced document always carries the exact
 /// same key / entry as the mounted `.bib` URL (including mount filters and the
 /// duplicate-key suffix assignment).
-pub fn entries(
-    vault_root: &Path,
-    mount: &BibtexMountSettings,
-) -> Result<Vec<BibEntry>, AppError> {
+pub fn entries(vault_root: &Path, mount: &BibtexMountSettings) -> Result<Vec<BibEntry>, AppError> {
     Ok(matched_records(vault_root, mount)?
         .into_iter()
         .map(|(record, key)| BibEntry {
@@ -187,46 +184,90 @@ pub fn record_matches(record: &PaperRecord, tags: &[String], dirs: &[String]) ->
 // entry keys
 // ---------------------------------------------------------------------------
 
+/// Is `character` forbidden in a BibTeX citation key?
+///
+/// BibTeX disallows whitespace and the reserved delimiters
+/// `" # % ' ( ) , = { }` inside a citation key.
+fn is_forbidden_key_char(character: char) -> bool {
+    character.is_whitespace()
+        || matches!(
+            character,
+            '"' | '#' | '%' | '\'' | '(' | ')' | ',' | '=' | '{' | '}'
+        )
+}
+
+/// Sanitize a citation key into a legal BibTeX key.
+///
+/// Forbidden characters (and whitespace) become `_`, consecutive `_` are
+/// collapsed, and leading/trailing `_` are trimmed. Every other character —
+/// including its case — is preserved, so a valid key comes back unchanged.
+/// Returns an empty string when nothing legal remains (caller falls back).
+fn sanitize_citation_key(raw: &str) -> String {
+    let mut key = String::with_capacity(raw.len());
+    for character in raw.chars() {
+        let character = if is_forbidden_key_char(character) {
+            '_'
+        } else {
+            character
+        };
+        if character == '_' && key.ends_with('_') {
+            continue;
+        }
+        key.push(character);
+    }
+    key.trim_matches('_').to_string()
+}
+
 /// Primary key component: explicit `bibtex_key`, else first-author surname +
 /// year. Falls back to `paper` when neither is available.
+///
+/// Both the explicit and the generated key go through
+/// [`sanitize_citation_key`]: the catalog's `bibtex_key` is import/user
+/// controlled and may contain characters BibTeX forbids (for example `foo(bar)`).
 fn key_base(record: &PaperRecord) -> String {
     if let Some(key) = record
         .bibtex_key
         .as_deref()
-        .map(str::trim)
+        .map(sanitize_citation_key)
         .filter(|key| !key.is_empty())
     {
-        let cleaned: String = key.chars().filter(|c| !c.is_whitespace()).collect();
-        if !cleaned.is_empty() {
-            return cleaned;
-        }
+        return key;
     }
     let author_part: String = first_author_surname(record)
         .chars()
         .filter(|character| character.is_ascii_alphanumeric())
         .flat_map(char::to_lowercase)
         .collect();
-    if !author_part.is_empty() {
-        return match year_of(record) {
+    let generated = if !author_part.is_empty() {
+        match year_of(record) {
             Some(year) => format!("{author_part}{year}"),
             None => author_part,
+        }
+    } else {
+        // No usable author: fall back to the (folder-safe) catalog id.
+        let id_part: String = record
+            .id
+            .chars()
+            .filter(|character| character.is_ascii_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect();
+        let id_part = if id_part.is_empty() {
+            "paper".to_string()
+        } else {
+            id_part
         };
-    }
-    // No usable author: fall back to the (folder-safe) catalog id.
-    let id_part: String = record
-        .id
-        .chars()
-        .filter(|character| character.is_ascii_alphanumeric())
-        .flat_map(char::to_lowercase)
-        .collect();
-    let id_part = if id_part.is_empty() {
+        match year_of(record) {
+            Some(year) => format!("{id_part}{year}"),
+            None => id_part,
+        }
+    };
+    // Generated keys only use ASCII alphanumerics today, but keep the single
+    // sanitize path for both branches so the rule cannot drift.
+    let generated = sanitize_citation_key(&generated);
+    if generated.is_empty() {
         "paper".to_string()
     } else {
-        id_part
-    };
-    match year_of(record) {
-        Some(year) => format!("{id_part}{year}"),
-        None => id_part,
+        generated
     }
 }
 
@@ -269,7 +310,11 @@ fn first_author_surname(record: &PaperRecord) -> String {
                 .map(str::trim)
                 .filter(|name| !name.is_empty())
             {
-                return name.split_whitespace().next_back().unwrap_or(name).to_string();
+                return name
+                    .split_whitespace()
+                    .next_back()
+                    .unwrap_or(name)
+                    .to_string();
             }
         }
     }
@@ -330,12 +375,11 @@ fn entry_type(record: &PaperRecord, format: BibFormat) -> &'static str {
             BibFormat::Biblatex => "online",
             BibFormat::Bibtex => "misc",
         },
-        "webpage" | "blogpost" | "forum post" | "forumpost" | "encyclopediaarticle" => {
-            match format {
-                BibFormat::Biblatex => "online",
-                BibFormat::Bibtex => "misc",
-            }
-        }
+        "webpage" | "blogpost" | "forum post" | "forumpost" | "encyclopediaarticle" => match format
+        {
+            BibFormat::Biblatex => "online",
+            BibFormat::Bibtex => "misc",
+        },
         _ => {
             if record.arxiv_id.is_some() && record.publication.is_none() {
                 match format {
@@ -451,7 +495,11 @@ fn push_field(fields: &mut Vec<(&'static str, String)>, name: &'static str, valu
     }
 }
 
-fn push_optional(fields: &mut Vec<(&'static str, String)>, name: &'static str, value: Option<&str>) {
+fn push_optional(
+    fields: &mut Vec<(&'static str, String)>,
+    name: &'static str,
+    value: Option<&str>,
+) {
     if let Some(value) = value {
         push_field(fields, name, value);
     }
@@ -639,7 +687,12 @@ mod tests {
         assert!(rendered.body.contains("@misc{beta,"));
 
         // Dir prefix: `papers/tag1` must not match `papers/tag10`.
-        let rendered = render(vault.path(), BibFormat::Bibtex, &mount(&[], &["papers/tag1"])).unwrap();
+        let rendered = render(
+            vault.path(),
+            BibFormat::Bibtex,
+            &mount(&[], &["papers/tag1"]),
+        )
+        .unwrap();
         assert_eq!(rendered.count, 1);
         assert!(rendered.body.contains("Alpha"));
 
@@ -684,7 +737,9 @@ mod tests {
         let rendered = render(vault.path(), BibFormat::Bibtex, &mount(&[], &[])).unwrap();
         assert_eq!(rendered.count, 2);
         assert!(rendered.body.contains("@article{vaswani2017,"));
-        assert!(rendered.body.contains("author = {Vaswani, Ashish and Shazeer, Noam}"));
+        assert!(rendered
+            .body
+            .contains("author = {Vaswani, Ashish and Shazeer, Noam}"));
         assert!(rendered.body.contains("journal = {NeurIPS}"));
         assert!(rendered.body.contains("pages = {5998--6008}"));
         assert!(rendered.body.contains("doi = {10.5555/3295222}"));
@@ -706,6 +761,89 @@ mod tests {
         assert_eq!(rendered.count, 2);
         assert!(rendered.body.contains("@misc{vaswani2017,"));
         assert!(rendered.body.contains("@misc{vaswani2017a,"));
+    }
+
+    /// Citation keys (`@type{key,`) extracted from a rendered bibliography.
+    fn citation_keys(body: &str) -> Vec<String> {
+        body.lines()
+            .filter(|line| line.starts_with('@'))
+            .filter_map(|line| line.split_once('{'))
+            .map(|(_, rest)| rest.split(',').next().unwrap_or("").to_string())
+            .collect()
+    }
+
+    #[test]
+    fn sanitizes_bibtex_forbidden_key_characters() {
+        assert_eq!(sanitize_citation_key("foo(bar)"), "foo_bar");
+        assert_eq!(sanitize_citation_key("a # b%c"), "a_b_c");
+        assert_eq!(sanitize_citation_key("x,y=z{1}"), "x_y_z_1");
+        assert_eq!(sanitize_citation_key("O'Brien"), "O_Brien");
+        assert_eq!(sanitize_citation_key("\"quoted\""), "quoted");
+        // Runs of forbidden characters/whitespace collapse into a single `_`.
+        assert_eq!(sanitize_citation_key("  a \t\n = b  "), "a_b");
+        assert_eq!(sanitize_citation_key("a_(b)"), "a_b");
+        // Nothing legal survives.
+        assert_eq!(sanitize_citation_key(" \t\n"), "");
+        assert_eq!(sanitize_citation_key("()\"#%',={}"), "");
+        // Legal keys are untouched, including their case.
+        assert_eq!(
+            sanitize_citation_key("Vaswani2017-ABC.1:2_x"),
+            "Vaswani2017-ABC.1:2_x"
+        );
+    }
+
+    #[test]
+    fn renders_sanitized_and_unique_citation_keys() {
+        let vault = tempfile::tempdir().unwrap();
+        let mut parens = record("papers/a-parens", "Parens");
+        parens.bibtex_key = Some("foo(bar)".into());
+        let mut hash_percent = record("papers/b-hash", "Hash");
+        hash_percent.bibtex_key = Some("a # b%c".into());
+        let mut commas = record("papers/c-commas", "Commas");
+        commas.bibtex_key = Some("x,y=z{1}".into());
+        // Nothing legal survives: fall back to the existing author+year logic.
+        let mut invalid = record("papers/d-invalid", "Invalid");
+        invalid.bibtex_key = Some(" ()\"= ".into());
+        invalid.authors = vec!["Ada Lovelace".into()];
+        invalid.year = Some(1843);
+        // Collides with `foo_bar` case-insensitively after sanitizing.
+        let mut duplicate = record("papers/e-duplicate", "Duplicate");
+        duplicate.bibtex_key = Some("Foo(Bar)".into());
+        // A legal explicit key keeps its case verbatim.
+        let mut legal = record("papers/f-legal", "Legal");
+        legal.bibtex_key = Some("Smith2020-XYZ".into());
+        for paper in [
+            &parens,
+            &hash_percent,
+            &commas,
+            &invalid,
+            &duplicate,
+            &legal,
+        ] {
+            papers::upsert_paper(vault.path(), paper).unwrap();
+        }
+
+        let rendered = render(vault.path(), BibFormat::Bibtex, &mount(&[], &[])).unwrap();
+        assert_eq!(rendered.count, 6);
+        assert!(rendered.body.contains("@misc{foo_bar,"));
+        assert!(rendered.body.contains("@misc{a_b_c,"));
+        assert!(rendered.body.contains("@misc{x_y_z_1,"));
+        assert!(rendered.body.contains("@misc{lovelace1843,"));
+        assert!(rendered.body.contains("@misc{Foo_Bara,"));
+        assert!(rendered.body.contains("@misc{Smith2020-XYZ,"));
+
+        // Every emitted key (both dialects) is non-empty and BibTeX-legal.
+        let keys = citation_keys(&rendered.body);
+        assert_eq!(keys.len(), 6);
+        for key in &keys {
+            assert!(!key.is_empty());
+            assert!(
+                !key.chars().any(is_forbidden_key_char),
+                "illegal citation key: {key}"
+            );
+        }
+        let biblatex = render(vault.path(), BibFormat::Biblatex, &mount(&[], &[])).unwrap();
+        assert_eq!(citation_keys(&biblatex.body), keys);
     }
 
     #[test]
@@ -731,9 +869,17 @@ mod tests {
         cjk.authors = vec!["张三".into()];
         cjk.year = Some(2024);
         papers::upsert_paper(vault.path(), &cjk).unwrap();
-        let rendered = render(vault.path(), BibFormat::Biblatex, &mount(&[], &["papers/cjk"])).unwrap();
+        let rendered = render(
+            vault.path(),
+            BibFormat::Biblatex,
+            &mount(&[], &["papers/cjk"]),
+        )
+        .unwrap();
         assert!(rendered.body.contains("注意力就是你所需要的一切"));
-        assert!(rendered.body.contains("@misc{cjk2024,"), "non-ASCII author key falls back to id");
+        assert!(
+            rendered.body.contains("@misc{cjk2024,"),
+            "non-ASCII author key falls back to id"
+        );
     }
 
     #[test]
