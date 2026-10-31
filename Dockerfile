@@ -71,7 +71,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 	RUST_LOG=info
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-		ca-certificates libstdc++6 libgcc-s1 tini \
+		ca-certificates libstdc++6 libgcc-s1 tini bubblewrap \
 	&& rm -rf /var/lib/apt/lists/*
 
 # Node 22 is the runtime for bundled ACP adapters (claude/codex agent CLIs).

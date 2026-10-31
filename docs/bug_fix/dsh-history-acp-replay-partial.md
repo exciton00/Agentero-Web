@@ -130,3 +130,24 @@ settlement 结构不同。
   fallback/complement 路径也打印 INFO；header 不匹配时错误里带
   expected/actual id、version、cwd 匹配结果。`history.rs` 会打印 ACP 桥
   name/version 与 replay 行数。
+
+## 四次修复（用户“等待完成”的会话根因确认：turn 被中断，而非 parser 漏正文）
+
+用户把 `589d39d6…` 的 durable log 复制到 Vault 后，直接解压 29 条事件确认：
+
+- assistant 的 settlement 只有 `reasoning` 和一个失败的 `bash` tool-call；
+- 该 bash 失败原因是容器内没有可用的 workspace-write 沙箱后端：
+  `sandbox mode "workspace-write" is requested but no sandbox backend is usable
+  on this host; refusing to run the command unconfined`；
+- 随后 `step/start` 了 step 2，但没有任何 `assistant/message` 文本，紧接着
+  `step/end` / `turn/end { reason: { kind: "interrupted" } }`；
+- 日志里不存在最终回答正文，因此历史加载正确显示了“未保存最终回答”。
+
+这不是 durable parser 的问题；是 Dsh turn 在工具失败后/模型输出前被中断，
+最终文本从未落盘。容器镜像原先没有安装 `bubblewrap`，Dsh 默认
+`workspace-write` 无法启动 bash 沙箱，Agentero 的论文/工具类 turn 会在执行
+工具时失败，进而出现这种无最终回答的会话。
+
+修复：运行时镜像安装 `bubblewrap`，让 Dsh 的 `workspace-write` 沙箱在容器
+内可用，避免正常的 bash/工具调用因“no sandbox backend”失败并连带中止 turn。
+历史侧仍保留“未保存最终回答”提示；已经中断且未落盘的旧 turn 无法恢复。
