@@ -61,6 +61,7 @@ pub fn parse(input: &str) -> Vec<RefDraft> {
             let year = latex::extract_year(&raw);
             RefDraft {
                 key: (!key.is_empty()).then_some(key),
+                number: None,
                 raw: (!raw.is_empty()).then_some(raw),
                 title: None,
                 authors: Vec::new(),

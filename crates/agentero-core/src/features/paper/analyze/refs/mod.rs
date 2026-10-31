@@ -8,7 +8,9 @@
 
 pub mod bbl;
 pub mod bib;
+pub mod body;
 pub mod citing;
+pub mod enrich;
 pub mod latex;
 
 use crate::error::AppError;
@@ -23,7 +25,8 @@ use std::sync::{Arc, OnceLock};
 use tokio::sync::{Mutex, Notify};
 
 pub const SIDECAR_FILE: &str = "agentero-cite.json";
-pub const SCHEMA_VERSION: u32 = 1;
+/// v2: adds offline `PAPER.md` bibliography parsing and DOI enrichment.
+pub const SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -97,6 +100,9 @@ pub struct LocalMatch {
 #[derive(Debug, Clone)]
 pub struct RefDraft {
     pub key: Option<String>,
+    /// 1-based bibliography number when the source preserved it (`[12]` in
+    /// `PAPER.md`, or `.bbl` order); drives the card marker.
+    pub number: Option<u32>,
     pub raw: Option<String>,
     pub title: Option<String>,
     pub authors: Vec<String>,
@@ -114,6 +120,9 @@ struct PreparedParseRefs {
     doi: Option<String>,
     arxiv: Option<String>,
     files: Vec<PathBuf>,
+    /// `PAPER.md` when the paper body carries a bibliography (last-resort local
+    /// source; also part of the input fingerprint).
+    body_md: Option<PathBuf>,
     fingerprint: String,
     sidecar_path: PathBuf,
 }
@@ -224,7 +233,17 @@ fn prepare_parse_refs(
         .filter(|s| !s.trim().is_empty());
 
     let files = collect_ref_files(&paper_dir);
-    let fingerprint = fingerprint(doi.as_deref(), arxiv.as_deref(), online_enabled, &files);
+    let body_md = {
+        let candidate = paper_dir.join(body::BODY_FILE);
+        candidate.is_file().then_some(candidate)
+    };
+    let fingerprint = fingerprint(
+        doi.as_deref(),
+        arxiv.as_deref(),
+        online_enabled,
+        &files,
+        body_md.as_deref(),
+    );
     let sidecar_path = paper_dir.join("source").join(SIDECAR_FILE);
     Ok(PreparedParseRefs {
         vault: vault.to_path_buf(),
@@ -232,6 +251,7 @@ fn prepare_parse_refs(
         doi,
         arxiv,
         files,
+        body_md,
         fingerprint,
         sidecar_path,
     })
@@ -287,6 +307,7 @@ async fn parse_paper_refs_prepared(
         doi,
         arxiv,
         files,
+        body_md,
         fingerprint,
         sidecar_path,
     } = prepared;
@@ -295,7 +316,7 @@ async fn parse_paper_refs_prepared(
     // plus CPU-heavy TeX/BibTeX parsing. Keep it off the tokio worker.
     let (mut drafts, local_mode, numbered, mut messages) = tokio::task::spawn_blocking(move || {
         let mut messages = Vec::new();
-        let (drafts, local_mode, numbered) = parse_local(&files, &mut messages);
+        let (drafts, local_mode, numbered) = parse_local(&files, body_md.as_deref(), &mut messages);
         (drafts, local_mode, numbered, messages)
     })
     .await
@@ -310,8 +331,19 @@ async fn parse_paper_refs_prepared(
         messages.extend(outcome.messages);
         if let Some(p) = outcome.provider {
             provider = Some(p);
-            let online_drafts: Vec<RefDraft> =
+            let mut online_drafts: Vec<RefDraft> =
                 outcome.refs.into_iter().map(draft_from_api_paper).collect();
+            // Crossref reference lists commonly contain DOI-only rows (no
+            // title/authors/year). Resolve those before matching so they can
+            // enrich the local raw citations, and remain displayable when the
+            // paper has no local bibliography at all.
+            let report = enrich::enrich_doi_only(&mut online_drafts).await;
+            if report.attempted > 0 {
+                messages.push(format!(
+                    "doi enrichment: {}/{} resolved, {} failed",
+                    report.resolved, report.attempted, report.failed
+                ));
+            }
             if drafts.is_empty() {
                 drafts = online_drafts;
                 online_only = true;
@@ -452,7 +484,13 @@ fn collect_ref_files(paper_dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-fn fingerprint(doi: Option<&str>, arxiv: Option<&str>, online: bool, files: &[PathBuf]) -> String {
+fn fingerprint(
+    doi: Option<&str>,
+    arxiv: Option<&str>,
+    online: bool,
+    files: &[PathBuf],
+    body_md: Option<&Path>,
+) -> String {
     let mut h = Sha256::new();
     h.update(
         format!(
@@ -476,6 +514,20 @@ fn fingerprint(doi: Option<&str>, arxiv: Option<&str>, online: bool, files: &[Pa
             .unwrap_or((0, 0));
         h.update(format!("|{}|{len}|{mtime}", f.to_string_lossy()).as_bytes());
     }
+    if let Some(body) = body_md {
+        let (len, mtime) = fs::metadata(body)
+            .map(|m| {
+                let mtime = m
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                (m.len(), mtime)
+            })
+            .unwrap_or((0, 0));
+        h.update(format!("|{}|{len}|{mtime}", body.to_string_lossy()).as_bytes());
+    }
     hex::encode(h.finalize())
 }
 
@@ -484,6 +536,7 @@ fn fingerprint(doi: Option<&str>, arxiv: Option<&str>, online: bool, files: &[Pa
 /// Returns (drafts, mode label, numbered = order matches in-text `[n]`).
 fn parse_local(
     files: &[PathBuf],
+    body_md: Option<&Path>,
     messages: &mut Vec<String>,
 ) -> (Vec<RefDraft>, Option<&'static str>, bool) {
     let read = |p: &PathBuf| fs::read_to_string(p).ok();
@@ -554,6 +607,16 @@ fn parse_local(
         return (drafts, Some("bib"), false);
     }
 
+    // L4: bibliography printed in the paper body (`PAPER.md`). No TeX needed —
+    // this is the offline fallback for PDF-only paper units.
+    if let Some(body_md) = body_md {
+        let drafts = body::parse_body_file(body_md);
+        if !drafts.is_empty() {
+            messages.push(format!("local: {} entries (paper_md)", drafts.len()));
+            return (drafts, Some("paper_md"), true);
+        }
+    }
+
     (Vec::new(), None, false)
 }
 
@@ -576,6 +639,7 @@ pub fn draft_from_api_paper(paper: crate::features::scholar_api::ApiPaper) -> Re
     use crate::features::scholar_api::identifiers::strip_arxiv_version;
     RefDraft {
         key: None,
+        number: None,
         raw: paper.raw,
         title: Some(paper.title).filter(|s| !s.trim().is_empty()),
         authors: paper.authors,
@@ -597,6 +661,7 @@ fn draft_from_bib(e: &bib::BibEntry) -> RefDraft {
     let nonempty = |s: &String| !s.trim().is_empty();
     RefDraft {
         key: Some(e.key.clone()),
+        number: None,
         raw: None,
         title: f.get("title").filter(|s| nonempty(s)).cloned(),
         authors: f
@@ -762,7 +827,10 @@ fn apply_online(d: &mut RefDraft, o: &RefDraft) {
     if o.title.is_some() {
         d.title = o.title.clone();
     }
-    if !o.authors.is_empty() {
+    // The parsed local bibliography usually carries the full author list. A
+    // sparse online row (Crossref reference items sometimes put a single family
+    // name in `author`) must not shorten it.
+    if !o.authors.is_empty() && (d.authors.is_empty() || o.authors.len() >= d.authors.len()) {
         d.authors = o.authors.clone();
     }
     if o.year.is_some() {
@@ -790,7 +858,10 @@ fn citation_from_draft(d: &RefDraft, idx: usize, numbered: bool, source: String)
     Citation {
         id,
         raw_key: d.key.clone(),
-        display: numbered.then(|| format!("[{}]", idx + 1)),
+        display: d
+            .number
+            .map(|number| format!("[{number}]"))
+            .or_else(|| numbered.then(|| format!("[{}]", idx + 1))),
         raw: d.raw.clone(),
         metadata: CitationMeta {
             title: d.title.clone(),
@@ -978,6 +1049,7 @@ K.~He.
         let mut base = bbl::parse(BBL);
         let online = vec![RefDraft {
             key: None,
+            number: None,
             raw: None,
             title: Some("Attention Is All You Need".into()),
             authors: vec!["Ashish Vaswani".into()],
@@ -996,5 +1068,116 @@ K.~He.
             Some(true)
         );
         assert!(base[1].title.is_none());
+    }
+
+    #[test]
+    fn sparse_online_authors_do_not_replace_the_local_author_list() {
+        let mut base = vec![RefDraft {
+            key: None,
+            number: Some(2),
+            raw: Some("Y. Uemoto, D. Shibata, and D. Ueda, “Some title,” IEDM, 2007.".into()),
+            title: Some("Some title".into()),
+            authors: vec!["Y. Uemoto".into(), "D. Shibata".into(), "D. Ueda".into()],
+            year: Some(2007),
+            venue: None,
+            doi: None,
+            arxiv_id: None,
+            url: None,
+            source: "paper_md",
+        }];
+        let online = vec![RefDraft {
+            key: None,
+            number: None,
+            raw: None,
+            title: Some("Some title".into()),
+            authors: vec!["uemoto".into()],
+            year: Some(2007),
+            venue: Some("IEDM".into()),
+            doi: None,
+            arxiv_id: None,
+            url: None,
+            source: "crossref",
+        }];
+        let matched = merge_online(&mut base, &online);
+        assert_eq!(matched, vec![0]);
+        assert_eq!(base[0].authors.len(), 3);
+        assert_eq!(base[0].venue.as_deref(), Some("IEDM"));
+    }
+
+    const BODY_MD: &str = r#"# A Paper
+
+## Introduction
+
+Body text cites [1] and [2].
+
+## REFERENCES
+
+[1] Y. F. Wu, M. Moore, A. Burk, “High-voltage millimeter-wave GaN HEMTs,” in IEDM Tech. Dig., 2007, pp. 405–407.
+
+[2] S. C. Binari, P. B. Klein, and T. E. Kazior, “Trapping effects in GaN and SiC microwave FETs,” Proc. IEEE, vol. 90, no. 6, pp. 1048–1058, Jun. 2002.
+"#;
+
+    #[tokio::test]
+    async fn parses_references_from_paper_md_body_offline() {
+        let vault = temp_vault("body");
+        fs::write(vault.join("papers/demo/PAPER.md"), BODY_MD).unwrap();
+
+        let sidecar = parse_paper_refs(&vault, "papers/demo", false, false)
+            .await
+            .unwrap();
+        assert_eq!(sidecar.source.mode, "paper_md");
+        assert_eq!(sidecar.citations.len(), 2);
+
+        let first = &sidecar.citations[0];
+        assert_eq!(first.id, "ref-1");
+        assert_eq!(first.display.as_deref(), Some("[1]"));
+        assert_eq!(first.source, "paper_md");
+        assert_eq!(first.status, "resolved");
+        assert_eq!(
+            first.metadata.title.as_deref(),
+            Some("High-voltage millimeter-wave GaN HEMTs")
+        );
+        assert_eq!(first.metadata.authors.len(), 3);
+        assert_eq!(first.metadata.year, Some(2007));
+        assert_eq!(first.metadata.venue.as_deref(), Some("IEDM Tech. Dig."));
+        assert!(first
+            .raw
+            .as_deref()
+            .is_some_and(|raw| raw.starts_with("Y. F. Wu")));
+
+        let second = &sidecar.citations[1];
+        assert_eq!(second.display.as_deref(), Some("[2]"));
+        assert_eq!(second.metadata.venue.as_deref(), Some("Proc. IEEE"));
+        assert_eq!(second.metadata.year, Some(2002));
+        assert!(sidecar.messages.iter().any(|m| m.contains("paper_md")));
+        let _ = fs::remove_dir_all(&vault);
+    }
+
+    #[tokio::test]
+    async fn body_reference_changes_invalidate_the_cached_sidecar() {
+        let vault = temp_vault("body-cache");
+        fs::write(vault.join("papers/demo/PAPER.md"), BODY_MD).unwrap();
+        let first = parse_paper_refs(&vault, "papers/demo", false, false)
+            .await
+            .unwrap();
+        assert_eq!(first.source.mode, "paper_md");
+
+        // Different size guarantees the (mtime, size) stamp changes even on a
+        // coarse-mtime filesystem.
+        fs::write(
+            vault.join("papers/demo/PAPER.md"),
+            BODY_MD.replace("High-voltage", "Updated-title-token"),
+        )
+        .unwrap();
+        let second = parse_paper_refs(&vault, "papers/demo", false, false)
+            .await
+            .unwrap();
+        assert_ne!(second.source.fingerprint, first.source.fingerprint);
+        assert!(second.citations[0]
+            .metadata
+            .title
+            .as_deref()
+            .is_some_and(|title| title.contains("Updated-title-token")));
+        let _ = fs::remove_dir_all(&vault);
     }
 }

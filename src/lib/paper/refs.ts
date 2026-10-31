@@ -71,21 +71,44 @@ export async function paperRefsParse(
 }
 
 /**
+ * Sidecar schema the current parser writes (`refs::SCHEMA_VERSION` in
+ * `agentero-core`). Older sidecars lack the offline `PAPER.md` bibliography
+ * enrichment, so opening a paper transparently re-parses them in the
+ * background instead of showing `ref-N` placeholders forever.
+ */
+export const CITE_SCHEMA_VERSION = 2;
+
+/** One in-flight backfill request per paper (panel + hover hook both read). */
+const pendingReparseRequests = new Set<string>();
+
+function requestReparse(vaultPath: string, path: string): void {
+	const key = `${vaultPath}\u0000${path}`;
+	if (pendingReparseRequests.has(key)) return;
+	pendingReparseRequests.add(key);
+	void callApiResult(
+		() => commands.jobParseRefsEnqueue({ vaultPath, path, force: false }),
+		{ fallback: "refs parse enqueue failed" },
+	)
+		.catch(() => undefined)
+		.finally(() => {
+			pendingReparseRequests.delete(key);
+		});
+}
+
+/**
  * Load the reference sidecar for a paper (read-only). When it does not yet
- * exist, enqueue a JobCenter `ParseRefs` job to backfill it; the caller
- * reloads on `job:changed`. Replaces the old blocking list→parse fallback
- * (`loadPaperRefsAuto`), whose dedup is now the JobCenter's fingerprint key.
+ * exist — or predates the current parser schema — enqueue a JobCenter
+ * `ParseRefs` job; the caller reloads on `job:changed`. Replaces the old
+ * blocking list→parse fallback (`loadPaperRefsAuto`), whose dedup is now the
+ * JobCenter's fingerprint key.
  */
 export async function loadPaperRefsReadOnly(
 	vaultPath: string,
 	path: string,
 ): Promise<CiteSidecar | null> {
 	const sidecar = await paperRefsList(vaultPath, path).catch(() => null);
-	if (!sidecar) {
-		void callApiResult(
-			() => commands.jobParseRefsEnqueue({ vaultPath, path, force: false }),
-			{ fallback: "refs parse enqueue failed" },
-		).catch(() => undefined);
+	if (!sidecar || sidecar.schemaVersion < CITE_SCHEMA_VERSION) {
+		requestReparse(vaultPath, path);
 	}
 	return sidecar;
 }

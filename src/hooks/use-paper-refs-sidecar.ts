@@ -1,7 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { useTauriEvent } from "@/hooks/use-tauri-event";
 import { events } from "@/lib/core/bindings";
-import { type CiteSidecar, loadPaperRefsReadOnly } from "@/lib/paper/refs";
+import {
+	CITE_SCHEMA_VERSION,
+	type CiteSidecar,
+	loadPaperRefsReadOnly,
+} from "@/lib/paper/refs";
 
 const normPaperPath = (p: string | null | undefined) =>
 	(p ?? "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
@@ -17,10 +21,16 @@ export function usePaperRefsSidecar(
 ): {
 	sidecar: CiteSidecar | null;
 	loading: boolean;
+	/**
+	 * A stale (older-schema) sidecar is shown while its background re-parse
+	 * runs; panels can show an "enriching" hint instead of a flash of placeholders.
+	 */
+	upgrading: boolean;
 	setSidecar: (sidecar: CiteSidecar | null) => void;
 } {
 	const [sidecar, setSidecar] = useState<CiteSidecar | null>(null);
 	const [loading, setLoading] = useState(false);
+	const [upgrading, setUpgrading] = useState(false);
 	const reloadRef = useRef<(() => void) | null>(null);
 
 	// Reload when this paper's ParseRefs backfill settles (event-driven,
@@ -39,6 +49,7 @@ export function usePaperRefsSidecar(
 
 	useEffect(() => {
 		setSidecar(null);
+		setUpgrading(false);
 		if (!vaultPath || !paperPath) {
 			reloadRef.current = null;
 			return;
@@ -48,7 +59,9 @@ export function usePaperRefsSidecar(
 		const reload = () => {
 			loadPaperRefsReadOnly(vaultPath, paperPath)
 				.then((s) => {
-					if (!cancelled) setSidecar(s);
+					if (cancelled) return;
+					setSidecar(s);
+					setUpgrading(Boolean(s && s.schemaVersion < CITE_SCHEMA_VERSION));
 				})
 				.catch(() => {
 					if (!cancelled) setSidecar(null);
@@ -65,5 +78,5 @@ export function usePaperRefsSidecar(
 		};
 	}, [vaultPath, paperPath]);
 
-	return { sidecar, loading, setSidecar };
+	return { sidecar, loading, upgrading, setSidecar };
 }

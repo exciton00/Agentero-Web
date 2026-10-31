@@ -76,7 +76,7 @@ export function ReferencesPanel({
 	compact,
 }: ReferencesPanelProps) {
 	const { t } = useTranslation("viewer");
-	const { sidecar, loading, setSidecar } = usePaperRefsSidecar(
+	const { sidecar, loading, upgrading, setSidecar } = usePaperRefsSidecar(
 		vaultPath,
 		paperPath,
 	);
@@ -166,6 +166,12 @@ export function ReferencesPanel({
 		</EmptyState>
 	) : (
 		<>
+			{upgrading ? (
+				<div className="flex shrink-0 items-center gap-1.5 border-b px-2 py-1 text-muted-foreground text-xs">
+					<Loader2 className="size-3 animate-spin" aria-hidden />
+					<span>{t("references.upgrading")}</span>
+				</div>
+			) : null}
 			{compact ? null : (
 				<div className="border-b px-2 py-1.5">
 					<Input
@@ -301,7 +307,12 @@ function ReferenceCardBody({
 					m.title ? "text-foreground" : "text-muted-foreground",
 				)}
 			>
-				{m.title ?? citation.raw ?? citation.rawKey ?? citation.id}
+				{m.title ??
+					citation.raw ??
+					citation.rawKey ??
+					m.doi ??
+					m.arxivId ??
+					t("references.unparsed")}
 			</p>
 			{metaParts.length > 0 ? (
 				<p className="mt-0.5 truncate text-xs text-muted-foreground">

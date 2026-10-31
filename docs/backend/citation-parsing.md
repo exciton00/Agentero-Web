@@ -1,6 +1,6 @@
 # 参考文献解析（Citation Parsing）
 
-> 状态：**M1 + M2 + M3(PDF 内交互) + 反向引用发现 已实现**（M1：Host `features/refs/` — L1 在线 S2/Crossref + L2 本地 bib/bbl/thebibliography + sidecar + 库内匹配，命令契约见 [api.md](api.md) `paper_refs_parse` / `paper_refs_list`；M2：右侧栏 References tab 引用卡片，见 [../frontend/shell.md](../frontend/shell.md)；M3：PDF Link annotation 覆盖层 — 点击 GoTo 跳页 / URI 外链、hover 引用锚文本显示元数据预览并联动引用卡片高亮；反向引用发现：`library_citing_scan`，见 §7）。剩余草稿：卡片 → PDF 反向 hover 高亮、Agent `#` 提及。
+> 状态：**M1 + M2 + M3(PDF 内交互) + 反向引用发现 已实现**（M1：Host `features/refs/` — L1 在线 S2/Crossref + L2 本地 bib/bbl/thebibliography + L3 `PAPER.md` 参考文献段离线解析 + sidecar + 库内匹配，命令契约见 [api.md](api.md) `paper_refs_parse` / `paper_refs_list`；M2：右侧栏 References tab 引用卡片，见 [../frontend/shell.md](../frontend/shell.md)；M3：PDF Link annotation 覆盖层 — 点击 GoTo 跳页 / URI 外链、hover 引用锚文本显示元数据预览并联动引用卡片高亮；反向引用发现：`library_citing_scan`，见 §7）。剩余草稿：卡片 → PDF 反向 hover 高亮、Agent `#` 提及。
 
 ## 1. 背景与现状
 
@@ -31,18 +31,21 @@
 - 正文 `\cite{}` 系列命令扫描建立 key → 文中位置映射。
 - 与 L1 的合并：L1 成功时 L2 仍提供 **cite key → 文中位置** 与编号顺序（S2 返回顺序不保证与文中编号一致）；条目元数据以 L1 为准，按 DOI / arXiv id / 归一化标题对齐合并。
 
-### L3 — 纯 PDF：文本层切分（最后兜底，延后实现）
+### L3 — 纯 PDF：`PAPER.md` 文本层切分（最后兜底，已实现离线解析）
 
 回答「PDF 转 Markdown 解析，还是直接解析 PDF？」——**两者结合，各取所长**：
 
 - PDF 对参考文献**没有语义结构**，可提取的只有文本层；「直接解析 PDF」拿不到比 liteparse 文本更多的元数据。元数据解析统一走文本层（liteparse word-boxes 输出；`PAPER.md` 仅作回退语料）。
 - PDF 独有的价值是 **Link annotation（GoTo 内部链接）与坐标**：文中 `[12]` 的锚点用于**交互跳转与 hover**（§4），不用于元数据提取。
-- 做法：定位 References / Bibliography 标题段 → 按编号模式（`[1]` / `1.` / 悬挂缩进的 author-year）切分条目 → 每条保留 raw string，正则提取 year / DOI / arXiv id / URL；title 不强行猜。
-- raw string 可逐条经 Crossref `query.bibliographic` 匹配富化（限速，随 L3 一起延后）。
+- 做法（`crates/agentero-core/src/features/paper/analyze/refs/body.rs`）：定位 `references / bibliography / literature cited / 参考文献` 标题段 → 按 `[n]` 编号切分条目（空行结束一条，换行续接同一段；编号后的作者简介/脚注不会被并入末条）→ 每条保留 raw string（剥 HTML/Markdown 标记与实体），并**离线解析**出 title（弯/直引号形式）、authors、year、venue（引号后到 `vol./no./pp./年份` 前）、DOI / arXiv id / URL；无引号时用逗号分段启发式兜底（title 段要求 ≥3 词且含小写词，解析不出就保持 raw 展示，不硬猜）。
+- 该层仅在无 `.bib`/`.bbl`/`.tex` 时作为本地兜底（不覆盖 TeX 解析结果），sidecar `mode`/`source` 记为 `paper_md`；对 MinerU/Paddle 产出的纯 PDF 论文单元，References 无网络也有标题/作者/年份/venue。
+- 在线 sparse 条目富化（`refs/enrich.rs`）：Crossref `reference` 列表里常只有 DOI 的行，在 `online_enabled` 时逐条走 Crossref work 查询补 title/authors/year/venue/url（最多 40 条、沿用 scholar_api 全局并发 4、整批 20s deadline），富化后的标题可再与本地 raw 条目对齐合并，把 DOI/链接补到本地卡片上；失败/超时只记入 `messages`，不影响离线结果。
+- 限制：只识别 `[n]` 编号列表；条目标题必须能从 raw 文本解析或经 DOI 富化成功，否则卡片回退展示 raw / DOI / 「未解析参考文献」。
 
 ## 3. 持久化
 
-- **事实来源：`{paper}/source/agentero-cite.json` sidecar**，可重建、可删除、不碰用户文件——这同时回答「没有 bib 文件时的持久化」：L1 在线结果与 L3 的 raw + 尽力字段都写入 sidecar，重开应用不重解析、不重复请求 API（fingerprint 判断；`source` 字段记 `s2 | crossref | bib | bbl | tex | pdf-text`）。
+- **事实来源：`{paper}/source/agentero-cite.json` sidecar**，可重建、可删除、不碰用户文件——这同时回答「没有 bib 文件时的持久化」：L1 在线结果与 L3 的 raw + 尽力字段都写入 sidecar，重开应用不重解析、不重复请求 API（fingerprint 判断；`source` 字段记 `s2 | crossref | bib | bbl | tex | paper_md`）。
+- Sidecar `schemaVersion` 当前为 **2**（v2 = L3 `PAPER.md` 解析 + DOI 富化）；fingerprint 已把 `PAPER.md` 的 (size, mtime) 计入，正文变化会触发重解析。前端打开 References 时若读到旧 schema 会自动后台 enqueue `job_parse_refs_enqueue`，完成后面板事件驱动刷新。
 - 库内匹配（`localMatch`）：DOI → arXiv id → 归一化 title+author+year，只查本地 catalog。
 - **catalog 建 `paper_refs` 索引表**推迟到需要大规模跨论文查询 / 被引统计时再评估，避免双写；MVP 单论文 sidecar 足够。
 - 导出：右键论文提供 **导出 references.bib**（本地 BibTeX 序列化 sidecar 条目），非默认落盘。
@@ -89,7 +92,7 @@
 | M1（首版） | **L1 在线（S2 / Crossref）+ L2 本地（含 `.bbl`）** + sidecar 写入 + 库内匹配 + 在线开关设置 | 已实现 |
 | M2 | Paper Content 侧栏 Citations 卡片 + hover/click 双向联动 | 已实现 PDF→预览/卡片单向联动 |
 | M3 | Agent：`@` 分组 + 拖拽 + **`#` 编号提及** + prompt 注入 | 部分实现 |
-| M5 | L3 文本层切分 + Crossref raw string 富化 + references.bib 导出 + 未入库一键导入 | 延后 |
+| M5 | L3 文本层切分 + Crossref raw string 富化 + references.bib 导出 + 未入库一键导入 | L3 离线解析 + DOI 富化已实现；导出/未入库一键导入延后 |
 
 ## 7. 反向引用发现（谁引用了我的库）
 
@@ -160,9 +163,9 @@ L2 方案实测对比（阈值统一取自己论文 p10）：
 ## 8. 风险与开放问题
 
 - L1 依赖外部服务可用性与限速（S2 共享池很挤）：失败必须静默落 L2，不弹错误；缓存进 sidecar 避免重复请求。
-- S2 references 顺序与文中 `[n]` 编号可能不一致：编号真相来自 L2 的 bbl/tex 顺序或 L3 文本；纯 L1（无 TeX 的 DOI 论文，M1 阶段无 L3）时卡片可暂无编号、仅按 API 顺序列出。
+- S2 references 顺序与文中 `[n]` 编号可能不一致：编号真相来自 L2 的 bbl/tex 顺序或 L3 文本；纯 L1（无 TeX、`PAPER.md` 也没有参考文献段）时卡片可暂无编号、仅按 API 顺序列出。
 - `.bbl` 格式方差大（各 bst 输出不同），按「raw 必存、字段尽力」设计，不追求完美解析。
-- 双栏 / 断词 PDF 的 L3 切分质量有限；raw 卡片兜底 + Crossref 富化补救（均在 M4）。
+- 双栏 / 断词 PDF 的 L3 切分质量有限：仅识别 `[n]` 编号条；解析不出 title 时卡片回退 raw / DOI /「未解析参考文献」，Crossref DOI 富化只补标题类字段、不覆盖本地已解析值。
 - EmbedPDF 封装下 PDFium link/text bbox API 可用性需先 spike。
 - author-year 引用样式（`(Smith et al., 2020)`）的文中匹配难于数字编号，首版允许 `unresolved` 降级。
 - i18n：新增文案先登记 `en` 再同步 `zh-CN`。
