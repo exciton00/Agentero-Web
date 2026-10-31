@@ -44,6 +44,8 @@ pub async fn dispatch(ctx: &RpcCtx, command: &str, args: &Value) -> Option<Handl
 
         // ---- Vault file search ----
         "vault_search" => search::vault_search(ctx, args).await,
+        // Library search domains: NOTES / highlights / captions (cached core walk).
+        "paper_search_content" => search::paper_search_content(ctx, args).await,
 
         // ---- Vault tag index (sidebar "by tag" tree + Library tag filter) ----
         "tags_index_read" => tags::read(ctx, args).await,

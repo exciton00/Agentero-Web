@@ -1,16 +1,16 @@
 /**
  * Sticky header row for the papers library table.
  *
- * Per-column sort button, title-header inline search, one publication sync
- * action, and the tags-filter popover; right-click customizes column order +
- * visibility. When `compact` (table is actively scrolling), search +
- * action icons hide so only column labels remain; row height stays
- * fixed (`h-9`). Transient drag state (dragKey/dragOverKey) lives here —
- * the parent only receives committed reorder events. Memoized so
+ * Per-column sort button, title-header inline search + search-domain settings,
+ * one publication sync action, and the tags-filter popover; right-click
+ * customizes column order + visibility. When `compact` (table is actively
+ * scrolling), search + action icons hide so only column labels remain; row
+ * height stays fixed (`h-9`). Transient drag state (dragKey/dragOverKey) lives
+ * here — the parent only receives committed reorder events. Memoized so
  * scrolling the virtualized body does not re-render the header unless
  * compact/props change.
  */
-import { ListFilter, RefreshCw, Search, X } from "lucide-react";
+import { ListFilter, RefreshCw, Search, Settings2, X } from "lucide-react";
 import { memo, useEffect, useState } from "react";
 import { LibraryColumnResizeHandle } from "@/components/library/library-column-resize-handle";
 import { COLUMN_META, SortIcon } from "@/components/library/library-columns";
@@ -35,12 +35,18 @@ import {
 	PopoverContent,
 	PopoverTrigger,
 } from "@/components/ui/popover";
+import { Spinner } from "@/components/ui/spinner";
 import {
 	Tooltip,
 	TooltipContent,
 	TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/core/utils";
+import {
+	PAPER_SEARCH_DOMAIN_LABEL_KEYS,
+	PAPER_SEARCH_DOMAINS,
+	type PaperSearchDomain,
+} from "@/lib/paper/search-domains";
 import type { PaperTag } from "@/lib/paper/tags";
 import type { LibraryColumnPref } from "@/lib/settings";
 
@@ -62,6 +68,16 @@ type LibraryTableHeaderProps = {
 	searchEnabled: boolean;
 	inputValue: string;
 	onInputChange: (value: string) => void;
+	/**
+	 * Enabled content search domains (Web host only; empty = metadata only).
+	 * When non-empty the query also matches NOTES / highlights / captions.
+	 */
+	searchDomains: PaperSearchDomain[];
+	onToggleSearchDomain: (domain: PaperSearchDomain) => void;
+	/** Host exposes `paper_search_content` (headless Web build). */
+	contentSearchAvailable: boolean;
+	/** A content-domain query is in flight (compact inline spinner). */
+	contentSearchLoading: boolean;
 	/** Publication sync (metadata + Host tag/metrics projection). */
 	canSyncPublication: boolean;
 	onSyncPublication: () => void;
@@ -90,6 +106,10 @@ export const LibraryTableHeader = memo(function LibraryTableHeader({
 	searchEnabled,
 	inputValue,
 	onInputChange,
+	searchDomains,
+	onToggleSearchDomain,
+	contentSearchAvailable,
+	contentSearchLoading,
 	canSyncPublication,
 	onSyncPublication,
 	availableTags,
@@ -107,9 +127,14 @@ export const LibraryTableHeader = memo(function LibraryTableHeader({
 	const [dragKey, setDragKey] = useState<SortKey | null>(null);
 	const [dragOverKey, setDragOverKey] = useState<SortKey | null>(null);
 	const [tagFilterOpen, setTagFilterOpen] = useState(false);
+	const [searchDomainsOpen, setSearchDomainsOpen] = useState(false);
+	const contentSearchActive = searchDomains.length > 0;
 
 	useEffect(() => {
-		if (compact) setTagFilterOpen(false);
+		if (compact) {
+			setTagFilterOpen(false);
+			setSearchDomainsOpen(false);
+		}
 	}, [compact]);
 
 	const showActions = !compact;
@@ -225,26 +250,138 @@ export const LibraryTableHeader = memo(function LibraryTableHeader({
 										{isTitle && searchEnabled ? (
 											<div
 												className={cn(
-													"relative ml-1 min-w-0 flex-1 transition-opacity ease-out",
+													"ml-1 flex min-w-0 flex-1 items-center gap-1 transition-opacity ease-out",
 													chromeFadeClass,
 												)}
 												aria-hidden={!showActions}
 											>
-												<Search
-													className="pointer-events-none absolute top-1/2 left-1.5 size-3 -translate-y-1/2 text-muted-foreground"
-													aria-hidden
-												/>
-												<Input
-													type="search"
-													value={inputValue}
-													onChange={(e) => onInputChange(e.target.value)}
-													aria-label={t("papersLibrary.search")}
-													tabIndex={showActions ? undefined : -1}
-													className="h-6 border-transparent bg-muted/70 pl-6 pr-1.5 text-xs shadow-none placeholder:text-muted-foreground/70 focus-visible:border-border/60 focus-visible:bg-card"
-													onMouseDown={(e) => e.stopPropagation()}
-													onClick={(e) => e.stopPropagation()}
-													onKeyDown={(e) => e.stopPropagation()}
-												/>
+												<div className="relative min-w-0 flex-1">
+													<Search
+														className="pointer-events-none absolute top-1/2 left-1.5 size-3 -translate-y-1/2 text-muted-foreground"
+														aria-hidden
+													/>
+													<Input
+														type="search"
+														value={inputValue}
+														onChange={(e) => onInputChange(e.target.value)}
+														aria-label={t("papersLibrary.search")}
+														tabIndex={showActions ? undefined : -1}
+														className="h-6 border-transparent bg-muted/70 pl-6 pr-6 text-xs shadow-none placeholder:text-muted-foreground/70 focus-visible:border-border/60 focus-visible:bg-card"
+														onMouseDown={(e) => e.stopPropagation()}
+														onClick={(e) => e.stopPropagation()}
+														onKeyDown={(e) => e.stopPropagation()}
+													/>
+													{contentSearchLoading ? (
+														<Spinner className="pointer-events-none absolute top-1/2 right-1.5 size-3 -translate-y-1/2 text-muted-foreground" />
+													) : null}
+												</div>
+												{contentSearchAvailable ? (
+													<Popover
+														open={searchDomainsOpen}
+														onOpenChange={setSearchDomainsOpen}
+													>
+														<Tooltip>
+															<TooltipTrigger asChild>
+																<PopoverTrigger asChild>
+																	<button
+																		type="button"
+																		data-library-header-action
+																		tabIndex={showActions ? undefined : -1}
+																		className={cn(
+																			"flex size-6 shrink-0 items-center justify-center rounded-sm",
+																			"hover:bg-muted/60 hover:text-foreground",
+																			"focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+																			contentSearchActive &&
+																				"bg-muted/60 text-foreground",
+																		)}
+																		aria-hidden={!showActions}
+																		aria-label={t(
+																			"papersLibrary.searchDomains.label",
+																		)}
+																		aria-pressed={contentSearchActive}
+																		onClick={(e) => e.stopPropagation()}
+																		onMouseDown={(e) => e.stopPropagation()}
+																	>
+																		<Settings2
+																			className="size-3.5"
+																			aria-hidden
+																		/>
+																	</button>
+																</PopoverTrigger>
+															</TooltipTrigger>
+															<TooltipContent side="bottom">
+																{t("papersLibrary.searchDomains.label")}
+															</TooltipContent>
+														</Tooltip>
+														<PopoverContent
+															align="end"
+															className="w-64 p-2"
+															onOpenAutoFocus={(e) => e.preventDefault()}
+														>
+															<p className="px-1 pb-1 text-muted-foreground text-xs">
+																{t("papersLibrary.searchDomains.title")}
+															</p>
+															<div className="flex flex-col gap-0.5">
+																{/* Metadata is the always-on default domain. */}
+																<div className="flex items-center gap-2 rounded-md px-1.5 py-1 text-xs opacity-70">
+																	<span
+																		className="flex size-3.5 shrink-0 items-center justify-center rounded-sm border border-primary bg-primary text-primary-foreground"
+																		aria-hidden
+																	>
+																		<span className="text-caption leading-none">
+																			✓
+																		</span>
+																	</span>
+																	<span>
+																		{t("papersLibrary.searchDomains.metadata")}
+																	</span>
+																</div>
+																{PAPER_SEARCH_DOMAINS.map((domain) => {
+																	const selected =
+																		searchDomains.includes(domain);
+																	return (
+																		<button
+																			key={domain}
+																			type="button"
+																			className={cn(
+																				"flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left text-xs",
+																				"hover:bg-muted/60",
+																				selected && "bg-muted/50",
+																			)}
+																			aria-pressed={selected}
+																			onClick={() =>
+																				onToggleSearchDomain(domain)
+																			}
+																		>
+																			<span
+																				className={cn(
+																					"flex size-3.5 shrink-0 items-center justify-center rounded-sm border",
+																					selected
+																						? "border-primary bg-primary text-primary-foreground"
+																						: "border-muted-foreground/40",
+																				)}
+																				aria-hidden
+																			>
+																				{selected ? (
+																					<span className="text-caption leading-none">
+																						✓
+																					</span>
+																				) : null}
+																			</span>
+																			<span>
+																				{t(
+																					PAPER_SEARCH_DOMAIN_LABEL_KEYS[
+																						domain
+																					],
+																				)}
+																			</span>
+																		</button>
+																	);
+																})}
+															</div>
+														</PopoverContent>
+													</Popover>
+												) : null}
 											</div>
 										) : null}
 										{isPublication && canSyncPublication ? (

@@ -153,6 +153,16 @@
 		"copyFailed": "Could not copy to clipboard",
 		"count": "{{formatted}} papers",
 		"search": "Search title, author, ID, DOI, or tag",
+		"searchDomains": {
+			"label": "Search scope",
+			"title": "Search in",
+			"metadata": "Metadata (title, authors, venue, tags…)",
+			"notes": "Notes (NOTES.md)",
+			"marks": "Highlights & comments",
+			"captions": "Figure & table captions",
+			"searching": "Searching content…",
+			"searchFailed": "Content search failed."
+		},
 		"filterTags": "Filter by tag",
 		"filterTagsEmpty": "No tags in this library yet.",
 		"clearTagFilter": "Clear tag filter",

@@ -153,6 +153,16 @@
 		"copyFailed": "无法复制到剪贴板",
 		"count": "共 {{formatted}} 篇",
 		"search": "按标题、作者、ID、DOI 或标签搜索",
+		"searchDomains": {
+			"label": "搜索范围",
+			"title": "搜索范围",
+			"metadata": "元数据（标题、作者、期刊、标签…）",
+			"notes": "笔记（NOTES.md）",
+			"marks": "高亮与批注",
+			"captions": "图注与表注",
+			"searching": "正在搜索内容…",
+			"searchFailed": "内容搜索失败。"
+		},
 		"filterTags": "按标签筛选",
 		"filterTagsEmpty": "当前库中还没有标签。",
 		"clearTagFilter": "清除标签筛选",

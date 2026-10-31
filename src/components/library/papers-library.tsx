@@ -22,6 +22,7 @@ import { useTranslation } from "react-i18next";
 import { AddPaperTagsDialog } from "@/components/library/add-paper-tags-dialog";
 import { ConfirmBatchDeleteDialog } from "@/components/library/confirm-batch-delete-dialog";
 import { useCellCopy } from "@/components/library/hooks/use-cell-copy";
+import { useLibraryContentSearch } from "@/components/library/hooks/use-library-content-search";
 import { useLibraryHeatmap } from "@/components/library/hooks/use-library-heatmap";
 import { resolveColumnWidths } from "@/components/library/library-column-widths";
 import { COLUMN_META } from "@/components/library/library-columns";
@@ -50,6 +51,7 @@ import { Button } from "@/components/ui/button";
 import { useUiStore } from "@/hooks/use-app-stores";
 import { useDebouncedCallback } from "@/hooks/use-debounce";
 import { errorMessage, notifyError, notifySuccess } from "@/lib/core/notify";
+import { isWebHost } from "@/lib/core/tauri";
 import { cn } from "@/lib/core/utils";
 import type { PaperLibraryRow, PaperMetadata } from "@/lib/paper";
 import { filterPapersByScope, rescanPapers } from "@/lib/paper/api";
@@ -60,6 +62,12 @@ import {
 import { refreshLibrary } from "@/lib/paper/library-store";
 import { canonicalPaperPdfPath } from "@/lib/paper/media";
 import { heatmapCacheKey } from "@/lib/paper/reading-heatmap";
+import { matchesLibrarySearch } from "@/lib/paper/search-content";
+import {
+	type PaperSearchDomain,
+	readSearchDomains,
+	writeSearchDomains,
+} from "@/lib/paper/search-domains";
 import { editablePaperTags, type PaperTag } from "@/lib/paper/tags";
 import {
 	deriveTagsIndexFromPapers,
@@ -198,6 +206,39 @@ export function PapersLibrary({
 		},
 		[commitSearch],
 	);
+
+	/**
+	 * Optional content search domains (headless Web host RPC). Their selection
+	 * is a UI preference persisted in localStorage; the desktop shell and older
+	 * hosts keep the metadata-only search.
+	 */
+	const contentSearchAvailable = isWebHost();
+	const [searchDomains, setSearchDomains] = useState<PaperSearchDomain[]>(() =>
+		contentSearchAvailable ? readSearchDomains() : [],
+	);
+	/** Persist toggles, but never overwrite storage with the mount-time read. */
+	const searchDomainsLoadedRef = useRef(false);
+	useEffect(() => {
+		if (!contentSearchAvailable) return;
+		if (!searchDomainsLoadedRef.current) {
+			searchDomainsLoadedRef.current = true;
+			return;
+		}
+		writeSearchDomains(searchDomains);
+	}, [contentSearchAvailable, searchDomains]);
+	const toggleSearchDomain = useCallback((domain: PaperSearchDomain) => {
+		setSearchDomains((prev) =>
+			prev.includes(domain)
+				? prev.filter((item) => item !== domain)
+				: [...prev, domain],
+		);
+	}, []);
+	const contentSearch = useLibraryContentSearch({
+		vaultPath,
+		query: inputValue,
+		domains: searchDomains,
+		enabled: contentSearchAvailable && active,
+	});
 
 	const handleSort = useCallback(
 		(key: SortKey) => {
@@ -450,8 +491,15 @@ export function PapersLibrary({
 	const rows = useMemo(() => {
 		let filtered = indexedRows;
 		if (normalizedQuery) {
+			// Metadata always matches locally; content domains (when enabled)
+			// union in the Host's matching paper folders.
 			filtered = filtered.filter((row) =>
-				row.searchText.includes(normalizedQuery),
+				matchesLibrarySearch(
+					row.searchText,
+					row.paper.path,
+					normalizedQuery,
+					contentSearch.matchingPaths,
+				),
 			);
 		}
 		if (tagFilterSet.size > 0) {
@@ -467,7 +515,14 @@ export function PapersLibrary({
 		const copy = [...filtered];
 		copy.sort((a, b) => comparePaperRows(a, b, sortKey, sortDir));
 		return copy;
-	}, [indexedRows, normalizedQuery, tagFilterSet, sortKey, sortDir]);
+	}, [
+		indexedRows,
+		normalizedQuery,
+		tagFilterSet,
+		sortKey,
+		sortDir,
+		contentSearch.matchingPaths,
+	]);
 
 	// Reorder cue: replay a quick fade when the user re-sorts or changes tag
 	// filters. Deliberately excludes the search query — per-keystroke remounts
@@ -919,6 +974,10 @@ export function PapersLibrary({
 							searchEnabled={Boolean(onQueryChange)}
 							inputValue={inputValue}
 							onInputChange={onSearchInputChange}
+							searchDomains={searchDomains}
+							onToggleSearchDomain={toggleSearchDomain}
+							contentSearchAvailable={contentSearchAvailable}
+							contentSearchLoading={contentSearch.loading}
 							canSyncPublication={canSyncPublication}
 							onSyncPublication={handleSyncPublication}
 							availableTags={availableTags}
@@ -1008,7 +1067,9 @@ export function PapersLibrary({
 					<div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 p-8 text-center">
 						<p className="font-medium text-sm">
 							{filtering
-								? t("papersLibrary.noMatch")
+								? contentSearch.loading
+									? t("papersLibrary.searchDomains.searching")
+									: t("papersLibrary.noMatch")
 								: t("papersLibrary.emptyTitle")}
 						</p>
 						{filtering ? null : (

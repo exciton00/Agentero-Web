@@ -7,5 +7,6 @@ pub mod catalog;
 pub mod discovery;
 pub mod import;
 pub mod scholar_api;
+pub mod search_content;
 pub(crate) mod util;
 pub mod venue;
