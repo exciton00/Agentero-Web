@@ -68,3 +68,34 @@
   部分。
 - 机器标题识别基于已知 system envelope 前缀；Agentero 新增 workflow
   envelope 时需要同步 `MACHINE_TITLE_PROMPTS`。
+
+## 二次修复（用户部署仍缺正文）
+
+用户新部署已带上一版修复（durable log 优先、标题为 None/用户首句），但
+`agent_load_session` 返回的 agent parts 只有 reasoning/tool、没有 text；最新
+会话甚至只有一条 user line。分析：
+
+- 用户会话的 durable `assistant/message` 事件确实不含 text block（两条
+  独立实现：我们的 parser 与 ACP 桥的 `session/load` 回放都读不到正文）。
+- 新版 DSH 会把**失败/中止的模型 attempt** 结算成 `assistant/attempt`
+  事件，正文只存在于该事件的 `stream` 数组里（`text-chunks` +
+  `block-end`），不会写入 `assistant/message`；对这类 attempt，此前 parser
+  完全忽略，因此正文“消失”。
+- 另外若 turn 在模型输出任何正文前就被中断（`turn/end reason=interrupted`），
+  durable log 里本来就没有最终回答，任何客户端都无法恢复。
+
+修复：
+
+- `dsh_history`：解析 `assistant/attempt`，按 DSH 的 compact stream 规范
+  （`chunk` 原始记录 / `text-chunks` / `reasoning-chunks` /
+  `tool-call-chunks`，`block-end` 优先、未闭合块用累计 delta 作为可见前缀）
+  重建 assistant 内容；按 `(turn, step)` 去重，completed
+  `assistant/message` 优先，重试多次时取 streamed 文本最多的那次。
+- `history.rs`：durable 正文完整时仍直接返回；当 durable 没有可见
+  assistant 文本时，用有界超时（15s）再尝试一次 ACP 回放并**合并**：保留
+  durable 的 user/tool/reasoning，只把 ACP 有而 durable 缺的 agent 文本行
+  合入（durable 顺序/结构不变）。ACP 不支持、失败或超时都回退 durable。
+- 前端：新增 `historyLacksSavedAnswer`；打开的会话若没有任何 agent 正文
+  （只有 user/ reasoning/tool），在末尾追加 i18n 提示
+  `messages.sessionAnswerNotSaved`（中英文），明确“没有保存最终回答，可能
+  已中断，可展开 Chain of Thought 查看已保存推理”，不再看起来像空会话。

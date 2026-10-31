@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	historyLacksSavedAnswer,
 	hydrateSessionTitles,
 	isSessionIdPrefixTitle,
 	mergeImportedSessions,
@@ -558,5 +559,65 @@ describe("hydrateSessionTitles — machine titles", () => {
 		});
 
 		expect(titleCache.setCachedHistoryTitle).not.toHaveBeenCalled();
+	});
+});
+
+describe("historyLacksSavedAnswer", () => {
+	const user = { id: "u", kind: "user" as const, text: "question" };
+
+	it("flags interrupted Dsh turns that saved reasoning but no answer", () => {
+		expect(
+			historyLacksSavedAnswer([
+				user,
+				{
+					id: "a",
+					kind: "agent" as const,
+					parts: [
+						{ type: "reasoning" as const, id: "r", text: "thinking" },
+						{
+							type: "tool" as const,
+							id: "t",
+							tool: {
+								id: "t1",
+								title: "read",
+								kind: "read",
+								status: "completed" as const,
+							},
+						},
+					],
+				},
+			]),
+		).toBe(true);
+		// A session saved only its user turn is also an interrupted attempt.
+		expect(historyLacksSavedAnswer([user])).toBe(true);
+	});
+
+	it("keeps normal transcripts and non-conversations unflagged", () => {
+		expect(
+			historyLacksSavedAnswer([
+				user,
+				{
+					id: "a",
+					kind: "agent" as const,
+					parts: [{ type: "text" as const, id: "t", text: "final answer" }],
+				},
+			]),
+		).toBe(false);
+		expect(
+			historyLacksSavedAnswer([
+				{ id: "s", kind: "system" as const, text: "no messages" },
+			]),
+		).toBe(false);
+		// Whitespace-only text does not count as a saved answer.
+		expect(
+			historyLacksSavedAnswer([
+				user,
+				{
+					id: "a",
+					kind: "agent" as const,
+					parts: [{ type: "text" as const, id: "t", text: "   " }],
+				},
+			]),
+		).toBe(true);
 	});
 });

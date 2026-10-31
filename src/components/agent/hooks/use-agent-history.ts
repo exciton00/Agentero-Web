@@ -80,6 +80,35 @@ export function titleFromLoadedHistory(history: AcpLoadSessionResult): string {
 	return displayHistoryTitle(history.title ?? "");
 }
 
+/** True when an agent line carries non-whitespace assistant text. */
+function agentLineHasSavedText(line: ChatLine): boolean {
+	if (line.kind !== "agent") return false;
+	return line.parts.some(
+		(part) => part.type === "text" && part.text.trim().length > 0,
+	);
+}
+
+/**
+ * True when a loaded transcript saved no visible assistant answer: the turn was
+ * interrupted (or the Dsh settlement event is unknown), so only the user turn,
+ * reasoning and tool calls survived. The UI shows an interruption hint instead
+ * of leaving the transcript looking empty under a collapsed Chain of Thought.
+ */
+export function historyLacksSavedAnswer(lines: ChatLine[]): boolean {
+	if (!lines.some((line) => line.kind === "user")) return false;
+	return !lines.some(agentLineHasSavedText);
+}
+
+/** Append the interruption hint so saved reasoning never looks like a failed load. */
+function withMissingAnswerHint(lines: ChatLine[], hint: string): ChatLine[] {
+	if (!historyLacksSavedAnswer(lines)) return lines;
+	// Reopening a hydrated session must not stack duplicate hints.
+	if (lines.some((line) => line.kind === "notice" && line.text === hint)) {
+		return lines;
+	}
+	return [...lines, { id: nextLineId("note"), kind: "notice", text: hint }];
+}
+
 /** First user-turn label from already-hydrated local lines (empty if none). */
 export function titleFromSessionLines(
 	lines: AgentSessionRecord["lines"],
@@ -533,7 +562,10 @@ export function useAgentHistory({
 		setHistoryOpen(false);
 		clearMessageQueue();
 		if (!supportsResume || item.lines.length > 0) {
-			const localLines = sanitizeChatLines(item.lines);
+			const localLines = withMissingAnswerHint(
+				sanitizeChatLines(item.lines),
+				t("messages.sessionAnswerNotSaved"),
+			);
 			setHydratingSessionId(null);
 			activateComposerSession(item.id);
 			activeTabRef.current = item.id;
@@ -656,6 +688,12 @@ export function useAgentHistory({
 						kind: "system",
 						text: t("messages.sessionEmpty"),
 					});
+				} else {
+					const hinted = withMissingAnswerHint(
+						nextLines,
+						t("messages.sessionAnswerNotSaved"),
+					);
+					nextLines.splice(0, nextLines.length, ...hinted);
 				}
 				const firstUser = nextLines.find((l) => l.kind === "user");
 				const titleFromBody =

@@ -3,7 +3,7 @@
 use super::ReplayBuilder;
 use crate::features::agent::models::AcpLoadSessionResult;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -143,14 +143,64 @@ fn read_log(
             "Dsh history: session header does not match the requested session and workspace".into(),
         );
     }
-    let mut replay = ReplayBuilder::default();
+    let mut events = Vec::new();
     for (seq, row) in rows.enumerate() {
         let event: Value = serde_json::from_str(row)
             .map_err(|e| format!("Dsh history: invalid session event {seq}: {e}"))?;
         if event["seq"].as_u64() != Some(seq as u64) || !event["type"].is_string() {
             return Err("Dsh history: unsupported or non-contiguous session events".into());
         }
-        apply_event(&mut replay, &event);
+        events.push(event);
+    }
+    // A failed or aborted model attempt is settled as `assistant/attempt` and
+    // keeps the streamed content only inside its `stream` array; retries may
+    // settle the same (turn, step) more than once. Keep one representative per
+    // step, preferring the one that streamed most visible text. Steps settled
+    // by a completed `assistant/message` always win.
+    let mut completed_steps = HashSet::new();
+    for event in &events {
+        if event["type"] == "assistant/message" {
+            if let Some(step) = step_key(event) {
+                completed_steps.insert(step);
+            }
+        }
+    }
+    let mut attempts: HashMap<(u64, u64), (usize, usize)> = HashMap::new();
+    for (index, event) in events.iter().enumerate() {
+        if event["type"] != "assistant/attempt" {
+            continue;
+        }
+        let Some(step) = step_key(event) else {
+            continue;
+        };
+        if completed_steps.contains(&step) {
+            continue;
+        }
+        let text_len = stream_blocks(&event["data"]["stream"])
+            .iter()
+            .filter_map(|block| match block["type"].as_str() {
+                Some("text" | "reasoning") => block["text"].as_str().map(str::len),
+                _ => None,
+            })
+            .sum::<usize>();
+        match attempts.get(&step) {
+            Some((_, best)) if *best >= text_len => {}
+            _ => {
+                attempts.insert(step, (index, text_len));
+            }
+        }
+    }
+    let mut replay = ReplayBuilder::default();
+    for (index, event) in events.iter().enumerate() {
+        if event["type"] == "assistant/attempt" {
+            let Some(step) = step_key(event) else {
+                continue;
+            };
+            if attempts.get(&step).map(|(best, _)| *best) != Some(index) {
+                continue;
+            }
+        }
+        apply_event(&mut replay, event);
     }
     let (lines, title) = replay.finish();
     Ok(AcpLoadSessionResult {
@@ -158,6 +208,12 @@ fn read_log(
         title,
         lines,
     })
+}
+
+/// The `(turn, step)` a model settlement belongs to.
+fn step_key(event: &Value) -> Option<(u64, u64)> {
+    let data = &event["data"];
+    Some((data["turn"].as_u64()?, data["step"].as_u64()?))
 }
 
 fn apply_event(replay: &mut ReplayBuilder, event: &Value) {
@@ -180,19 +236,34 @@ fn apply_event(replay: &mut ReplayBuilder, event: &Value) {
             }
         }
         Some("assistant/message") => {
-            if let Some(blocks) = message["content"].as_array() {
-                for block in blocks {
-                    if matches!(block["type"].as_str(), Some("text" | "reasoning")) {
-                        if let Some(text) = block["text"].as_str() {
-                            replay.push_agent_chunk(
-                                block["type"] == "reasoning",
-                                text.to_string(),
-                                id.clone(),
-                            );
-                        }
+            let blocks = message["content"]
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            if blocks.is_empty() {
+                // Older settlements put the visible stream in `data.stream`
+                // only; recover it instead of dropping the answer.
+                apply_stream(replay, &data["stream"], id);
+                return;
+            }
+            for block in blocks {
+                if matches!(block["type"].as_str(), Some("text" | "reasoning")) {
+                    if let Some(text) = block["text"].as_str() {
+                        replay.push_agent_chunk(
+                            block["type"] == "reasoning",
+                            text.to_string(),
+                            id.clone(),
+                        );
                     }
                 }
             }
+        }
+        Some("assistant/attempt") => {
+            apply_stream(
+                replay,
+                &data["stream"],
+                Some(format!("dsh-attempt-{}", event["seq"])),
+            );
         }
         Some("tool/call") => {
             if let (Some(id), Some(name)) = (data["callId"].as_str(), data["name"].as_str()) {
@@ -238,6 +309,237 @@ fn apply_event(replay: &mut ReplayBuilder, event: &Value) {
         }
         _ => {}
     }
+}
+
+/// Apply the content blocks reconstructed from one settlement stream.
+fn apply_stream(replay: &mut ReplayBuilder, stream: &Value, id: Option<String>) {
+    for block in stream_blocks(stream) {
+        match block["type"].as_str() {
+            Some("text") => {
+                if let Some(text) = block["text"].as_str() {
+                    replay.push_agent_chunk(false, text.to_string(), id.clone());
+                }
+            }
+            Some("reasoning") => {
+                if let Some(text) = block["text"].as_str() {
+                    replay.push_agent_chunk(true, text.to_string(), id.clone());
+                }
+            }
+            Some("tool-call") => {
+                let Some(call_id) = block["id"].as_str() else {
+                    continue;
+                };
+                let name = block["name"].as_str().map(str::to_owned);
+                let input = block["arguments"]
+                    .as_str()
+                    .map(|raw| serde_json::from_str(raw).unwrap_or(Value::String(raw.to_string())))
+                    .or_else(|| block.get("arguments").cloned());
+                replay.apply_tool(
+                    call_id.to_string(),
+                    name,
+                    Some("other".into()),
+                    Some("in_progress".into()),
+                    input,
+                    None,
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
+#[derive(Default)]
+struct StreamPartial {
+    block_type: String,
+    text: String,
+    tool_id: Option<String>,
+    tool_name: Option<String>,
+    arguments: String,
+    block: Option<Value>,
+}
+
+/// Rebuild assistant content blocks from a settlement's compact stream.
+///
+/// Durable settlements store either raw `chunk` records (block start/end and
+/// un-packed deltas) or packed delta runs (`text-chunks`, `reasoning-chunks`,
+/// `tool-call-chunks`). `block-end` carries the authoritative block; otherwise
+/// the accumulated deltas form the visible prefix of an interrupted block.
+#[derive(Default)]
+struct StreamAssembler {
+    order: Vec<u64>,
+    partials: HashMap<u64, StreamPartial>,
+}
+
+impl StreamAssembler {
+    fn ensure(&mut self, index: u64, block_type: &str) -> &mut StreamPartial {
+        if !self.partials.contains_key(&index) {
+            self.order.push(index);
+            self.partials.insert(
+                index,
+                StreamPartial {
+                    block_type: block_type.to_string(),
+                    ..StreamPartial::default()
+                },
+            );
+        }
+        self.partials.get_mut(&index).expect("just inserted")
+    }
+
+    fn push(&mut self, record: &Value) {
+        match record["type"].as_str() {
+            Some("chunk") => {
+                let chunk = &record["chunk"];
+                match chunk["type"].as_str() {
+                    Some("block-start") => {
+                        if let Some(index) = chunk["index"].as_u64() {
+                            self.ensure(index, chunk["blockType"].as_str().unwrap_or("text"));
+                        }
+                    }
+                    Some("text-delta") | Some("reasoning-delta") => {
+                        let (Some(index), Some(text)) =
+                            (chunk["index"].as_u64(), chunk["text"].as_str())
+                        else {
+                            return;
+                        };
+                        let kind = if chunk["type"] == "reasoning-delta" {
+                            "reasoning"
+                        } else {
+                            "text"
+                        };
+                        let partial = self.ensure(index, kind);
+                        if partial.block.is_none() {
+                            partial.text.push_str(text);
+                        }
+                    }
+                    Some("tool-call-delta") => {
+                        let Some(index) = chunk["index"].as_u64() else {
+                            return;
+                        };
+                        let partial = self.ensure(index, "tool-call");
+                        if partial.block.is_some() {
+                            return;
+                        }
+                        if let Some(call_id) = chunk["id"].as_str() {
+                            partial.tool_id = Some(call_id.to_string());
+                        }
+                        if let Some(name) = chunk["name"].as_str() {
+                            partial.tool_name = Some(name.to_string());
+                        }
+                        if let Some(delta) = chunk["argumentsDelta"].as_str() {
+                            partial.arguments.push_str(delta);
+                        }
+                    }
+                    Some("block-end") => {
+                        let Some(index) = chunk["index"].as_u64() else {
+                            return;
+                        };
+                        let block = chunk["block"].clone();
+                        let block_type = block["type"].as_str().unwrap_or("text").to_string();
+                        let partial = self.ensure(index, &block_type);
+                        if partial.block.is_none() {
+                            partial.block = Some(block);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Some("text-chunks") | Some("reasoning-chunks") => {
+                let Some(index) = record["index"].as_u64() else {
+                    return;
+                };
+                let kind = if record["type"] == "text-chunks" {
+                    "text"
+                } else {
+                    "reasoning"
+                };
+                let text: String = record["texts"]
+                    .as_array()
+                    .map(|texts| texts.iter().filter_map(Value::as_str).collect())
+                    .unwrap_or_default();
+                let partial = self.ensure(index, kind);
+                if partial.block.is_none() {
+                    partial.text.push_str(&text);
+                }
+            }
+            Some("tool-call-chunks") => {
+                let Some(index) = record["index"].as_u64() else {
+                    return;
+                };
+                let partial = self.ensure(index, "tool-call");
+                if partial.block.is_some() {
+                    return;
+                }
+                if let Some(call_id) = record["id"].as_str() {
+                    partial.tool_id = Some(call_id.to_string());
+                }
+                if let Some(name) = record["name"].as_str() {
+                    partial.tool_name = Some(name.to_string());
+                }
+                let args: String = record["args"]
+                    .as_array()
+                    .map(|args| args.iter().filter_map(Value::as_str).collect())
+                    .unwrap_or_default();
+                partial.arguments.push_str(&args);
+            }
+            _ => {}
+        }
+    }
+
+    fn blocks(mut self) -> Vec<Value> {
+        let mut out = Vec::new();
+        for index in std::mem::take(&mut self.order) {
+            let Some(partial) = self.partials.remove(&index) else {
+                continue;
+            };
+            if let Some(block) = partial.block {
+                match block["type"].as_str() {
+                    Some("text" | "reasoning") => {
+                        let visible = block["text"]
+                            .as_str()
+                            .is_some_and(|text| !text.trim().is_empty());
+                        if visible {
+                            out.push(block);
+                        }
+                    }
+                    Some("tool-call") => out.push(block),
+                    _ => {}
+                }
+                continue;
+            }
+            match partial.block_type.as_str() {
+                "text" | "reasoning" => {
+                    if !partial.text.trim().is_empty() {
+                        let kind = partial.block_type;
+                        out.push(serde_json::json!({"type": kind, "text": partial.text}));
+                    }
+                }
+                "tool-call" => {
+                    let name = partial.tool_name.unwrap_or_default();
+                    if name.is_empty() && partial.arguments.is_empty() {
+                        continue;
+                    }
+                    out.push(serde_json::json!({
+                        "type": "tool-call",
+                        "id": partial.tool_id.unwrap_or_else(|| format!("dsh-call-{index}")),
+                        "name": name,
+                        "arguments": partial.arguments,
+                    }));
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+}
+
+fn stream_blocks(stream: &Value) -> Vec<Value> {
+    let mut assembler = StreamAssembler::default();
+    if let Some(records) = stream.as_array() {
+        for record in records {
+            assembler.push(record);
+        }
+    }
+    assembler.blocks()
 }
 
 #[cfg(test)]
@@ -320,6 +622,97 @@ mod tests {
         assert_eq!(history.lines[1].reasoning.as_deref(), Some("thinking"));
         assert!(history.lines[1].parts.iter().any(|part| matches!(part,
             crate::features::agent::models::AcpHistoryPart::Tool { tool } if tool.status == "completed")));
+    }
+
+    fn write_events(dir: &Path, id: &str, version: u64, events: Vec<Value>) -> PathBuf {
+        let folder = dir.join("sessions/project").join(id);
+        fs::create_dir_all(&folder).unwrap();
+        let header =
+            json!({"type":"session","version":version,"id":id,"cwd":dir.to_string_lossy()});
+        let mut raw = String::new();
+        raw.push_str(&header.to_string());
+        raw.push('\n');
+        for (seq, event) in events.iter().enumerate() {
+            let mut event = event.clone();
+            if let Some(object) = event.as_object_mut() {
+                object.insert("seq".to_string(), json!(seq));
+            }
+            raw.push_str(&event.to_string());
+            raw.push('\n');
+        }
+        let path = folder.join(format!("session.v{version}.jsonl"));
+        fs::write(&path, raw.into_bytes()).unwrap();
+        path
+    }
+
+    #[test]
+    fn restores_answers_from_failed_attempt_streams() {
+        let dir = tempfile::tempdir().unwrap();
+        write_events(
+            dir.path(),
+            SID,
+            4,
+            vec![
+                json!({"type":"user/message","data":{"id":"u1","source":{"kind":"user"},"content":[{"type":"text","text":"question"}]}}),
+                json!({"type":"assistant/attempt","data":{"turn":1,"step":1,"stream":[
+                    {"type":"chunk","chunk":{"type":"block-start","index":0,"blockType":"reasoning"}},
+                    {"type":"reasoning-chunks","index":0,"texts":["think"],"dt":[]},
+                    {"type":"chunk","chunk":{"type":"block-start","index":1,"blockType":"text"}},
+                    {"type":"text-chunks","index":1,"texts":["最终","回答"],"dt":[]},
+                    {"type":"chunk","chunk":{"type":"block-end","index":1,"block":{"type":"text","text":"最终回答"}}},
+                    {"type":"chunk","chunk":{"type":"finish","reason":{"kind":"error","failure":{"message":"boom"}}}}
+                ]}}),
+            ],
+        );
+        let history = load(dir.path(), SID, dir.path()).unwrap();
+        assert_eq!(history.lines.len(), 2);
+        assert_eq!(history.lines[1].kind, "agent");
+        assert_eq!(history.lines[1].text, "最终回答");
+        assert_eq!(history.lines[1].reasoning.as_deref(), Some("think"));
+    }
+
+    #[test]
+    fn keeps_partial_open_blocks_and_prefers_settled_visible_text() {
+        let dir = tempfile::tempdir().unwrap();
+        write_events(
+            dir.path(),
+            SID,
+            4,
+            vec![
+                json!({"type":"user/message","data":{"id":"u1","source":{"kind":"user"},"content":[{"type":"text","text":"question"}]}}),
+                // Step 1 aborts before its block closes: keep the streamed prefix.
+                json!({"type":"assistant/attempt","data":{"turn":1,"step":1,"stream":[
+                    {"type":"chunk","chunk":{"type":"block-start","index":0,"blockType":"text"}},
+                    {"type":"text-chunks","index":0,"texts":["部分"],"dt":[]}
+                ]}}),
+                // Step 2 settles twice; the retry with the longer visible text wins.
+                json!({"type":"assistant/attempt","data":{"turn":1,"step":2,"stream":[
+                    {"type":"chunk","chunk":{"type":"block-start","index":0,"blockType":"text"}},
+                    {"type":"text-chunks","index":0,"texts":["短的"],"dt":[]}
+                ]}}),
+                json!({"type":"assistant/attempt","data":{"turn":1,"step":2,"stream":[
+                    {"type":"chunk","chunk":{"type":"block-start","index":0,"blockType":"text"}},
+                    {"type":"text-chunks","index":0,"texts":["更长的重试回答"],"dt":[]}
+                ]}}),
+                // A completed step wins over any attempt settled for it.
+                json!({"type":"assistant/attempt","data":{"turn":2,"step":1,"stream":[
+                    {"type":"chunk","chunk":{"type":"block-start","index":0,"blockType":"text"}},
+                    {"type":"text-chunks","index":0,"texts":["失败尝试"],"dt":[]}
+                ]}}),
+                json!({"type":"assistant/message","data":{"turn":2,"step":1,"message":{"id":"m1","content":[{"type":"text","text":"真正回答"}]}}}),
+            ],
+        );
+        let history = load(dir.path(), SID, dir.path()).unwrap();
+        let text: String = history
+            .lines
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect();
+        assert!(text.contains("部分"), "{text}");
+        assert!(text.contains("更长的重试回答"), "{text}");
+        assert!(!text.contains("短的"), "{text}");
+        assert!(!text.contains("失败尝试"), "{text}");
+        assert!(text.contains("真正回答"), "{text}");
     }
 
     #[test]

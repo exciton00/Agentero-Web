@@ -27,6 +27,7 @@ const ESTIMATE_BY_KIND: Record<ChatLine["kind"], number> = {
 	agent: 160,
 	error: 48,
 	system: 32,
+	notice: 48,
 };
 
 export function useTranscriptVirtualizer({

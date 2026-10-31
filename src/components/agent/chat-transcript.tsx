@@ -727,6 +727,16 @@ const ChatTranscriptRow = memo(function ChatTranscriptRow({
 			</div>
 		);
 	}
+	if (line.kind === "notice") {
+		// Muted inline hint (e.g. a history turn saved without a final answer).
+		return (
+			<Message from="assistant">
+				<MessageContent className="text-muted-foreground">
+					<MessageResponse>{line.text}</MessageResponse>
+				</MessageContent>
+			</Message>
+		);
+	}
 	if (line.kind === "error") {
 		const canLogin =
 			Boolean(handlers.onAgentLogin) && isAgentAuthFailure(line.text);

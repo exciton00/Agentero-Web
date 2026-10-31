@@ -395,45 +395,21 @@ async fn durable_dsh_history(
         .map_err(|error| format!("Dsh history: {error}"))?
 }
 
-/// Load a session using the cwd resolved by `agent_spawn_cwd` at the service boundary.
-///
-/// A local Dsh profile may advertise `session/load` while replaying only part of
-/// the transcript (e.g. reasoning without the final answer). Its durable JSONL
-/// log is the authoritative record, so try it first and fall back to the ACP
-/// replay when the log is absent, unreadable, or in an unsupported format.
-/// Remote Dsh has no local home and keeps the ACP-only path.
-pub async fn load_acp_session(
+/// How an ACP agent answered a history replay request.
+enum AcpReplayOutcome {
+    /// The agent only advertises resume; it cannot replay a transcript.
+    Unsupported,
+    Loaded(AcpLoadSessionResult),
+}
+
+/// Replay one transcript through ACP `session/load`.
+async fn replay_acp_history(
     desc: &AgentDescriptor,
-    session_id: String,
+    session_id: &str,
     cwd: PathBuf,
     remote: Option<&dyn crate::features::agent::remote_host::RemoteAgentLaunch>,
-) -> Result<AcpLoadSessionResult, AppError> {
-    let dsh_home = if remote.is_none()
-        && desc.template == crate::features::agent::models::AgentTemplate::Dsh
-    {
-        Some(dsh_history::home(
-            &crate::features::agent::acp::client::effective_local_agent_env(desc),
-            &cwd,
-        ))
-    } else {
-        None
-    };
-    let mut durable_error: Option<String> = None;
-    if let Some(Ok(home)) = &dsh_home {
-        match durable_dsh_history(home, &session_id, &cwd).await {
-            Ok(history) => {
-                log::debug!("dsh durable history restored session={session_id}");
-                return Ok(history);
-            }
-            Err(error) => {
-                log::debug!("dsh durable history unavailable session={session_id}: {error}");
-                durable_error = Some(error);
-            }
-        }
-    }
-
+) -> Result<AcpReplayOutcome, AppError> {
     let acp = to_acp_agent(desc, Some(&cwd), remote)?;
-
     let builder: Arc<Mutex<ReplayBuilder>> = Arc::new(Mutex::new(ReplayBuilder::default()));
     let builder_for_notif = builder.clone();
     let terminals = acp_terminals(Some(cwd.clone()));
@@ -513,7 +489,7 @@ pub async fn load_acp_session(
             agent_client_protocol::on_receive_request!(),
         )
         .connect_with(acp, {
-            let sid = session_id.clone();
+            let sid = session_id.to_string();
             let agent_id = desc.id.clone();
             move |connection: ConnectionTo<Agent>| async move {
                 let init = timed_acp_initialize(
@@ -524,25 +500,7 @@ pub async fn load_acp_session(
                 .await?;
 
                 if !init.agent_capabilities.load_session {
-                    // resume restores model context, but does not replay a transcript.
-                    // Dsh without load support is recovered from its local durable log;
-                    // that attempt already ran above, so surface its error here.
-                    if let Some(error) = durable_error {
-                        return Err(agent_client_protocol::util::internal_error(error));
-                    }
-                    if let Some(home) = dsh_home {
-                        let home = home.map_err(agent_client_protocol::util::internal_error)?;
-                        return tokio::task::spawn_blocking(move || {
-                            dsh_history::load(&home, &sid, &cwd)
-                        })
-                        .await
-                        .map_err(agent_client_protocol::util::internal_error)?
-                        .map(Some)
-                        .map_err(agent_client_protocol::util::internal_error);
-                    }
-                    return Err(agent_client_protocol::util::internal_error(
-                        "This agent does not support history replay (session/load)".to_string(),
-                    ));
+                    return Ok(false);
                 }
 
                 timed_acp_load_session(
@@ -560,26 +518,187 @@ pub async fn load_acp_session(
                 // ACP replies only after replaying the history. The SDK dispatches
                 // notifications in order and completes each handler before the next
                 // message, so the load response is the replay completion boundary.
-                Ok(None)
+                Ok(true)
             }
         })
         .await;
 
     match result {
-        Ok(Some(history)) => Ok(history),
-        Ok(None) => {
+        Ok(true) => {
             let taken = builder
                 .lock()
                 .map(|mut g| std::mem::take(&mut *g))
                 .unwrap_or_default();
             let (lines, title) = taken.finish();
-            Ok(AcpLoadSessionResult {
-                session_id,
+            Ok(AcpReplayOutcome::Loaded(AcpLoadSessionResult {
+                session_id: session_id.to_string(),
                 title,
                 lines,
-            })
+            }))
         }
-        Err(e) => Err(AppError::domain("acp", format!("acp: load session: {e}"))),
+        Ok(false) => Ok(AcpReplayOutcome::Unsupported),
+        Err(error) => Err(AppError::domain(
+            "acp",
+            format!("acp: load session: {error}"),
+        )),
+    }
+}
+
+/// True when a transcript line carries non-whitespace visible answer text.
+fn line_has_visible_text(line: &AcpHistoryLine) -> bool {
+    !line.text.trim().is_empty()
+        || line
+            .parts
+            .iter()
+            .any(|part| matches!(part, AcpHistoryPart::Text { text } if !text.trim().is_empty()))
+}
+
+/// True when the transcript never saved a visible assistant answer.
+fn history_lacks_agent_text(history: &AcpLoadSessionResult) -> bool {
+    !history
+        .lines
+        .iter()
+        .any(|line| line.kind == "agent" && line_has_visible_text(line))
+}
+
+/// Fill transcript gaps from an independent replay source.
+///
+/// The durable log and the ACP replay both derive from Dsh's persisted events,
+/// but different builds understand different event generations. Keep the
+/// durable transcript (authoritative and ordered) and adopt an ACP agent line
+/// only where the durable one carries no visible text.
+fn merge_histories(
+    mut durable: AcpLoadSessionResult,
+    acp: AcpLoadSessionResult,
+) -> AcpLoadSessionResult {
+    if acp.lines.is_empty() {
+        return durable;
+    }
+    if durable.lines.is_empty() {
+        return acp;
+    }
+    let acp_agents: Vec<&AcpHistoryLine> = acp
+        .lines
+        .iter()
+        .filter(|line| line.kind == "agent")
+        .collect();
+    let mut agent_index = 0usize;
+    for line in durable.lines.iter_mut() {
+        if line.kind != "agent" {
+            continue;
+        }
+        let Some(candidate) = acp_agents.get(agent_index) else {
+            break;
+        };
+        agent_index += 1;
+        if line_has_visible_text(line) || !line_has_visible_text(candidate) {
+            continue;
+        }
+        let id = line.id.clone();
+        let mut adopted = (*candidate).clone();
+        adopted.id = id;
+        *line = adopted;
+    }
+    durable.title = durable.title.take().or(acp.title);
+    durable
+}
+
+/// A complementary ACP replay may start a Node bridge; never hang history on it.
+const COMPLEMENT_REPLAY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Load a session using the cwd resolved by `agent_spawn_cwd` at the service boundary.
+///
+/// A local Dsh profile may advertise `session/load` while replaying only part of
+/// the transcript (e.g. reasoning without the final answer). Its durable JSONL
+/// log is the authoritative record, so it is read first. When that log saved no
+/// visible answer (interrupted turn, or a settlement event this parser does not
+/// know), a newer ACP bridge may still replay text, so the two sources are
+/// merged. Remote Dsh has no local home and keeps the ACP-only path.
+pub async fn load_acp_session(
+    desc: &AgentDescriptor,
+    session_id: String,
+    cwd: PathBuf,
+    remote: Option<&dyn crate::features::agent::remote_host::RemoteAgentLaunch>,
+) -> Result<AcpLoadSessionResult, AppError> {
+    let dsh_home = if remote.is_none()
+        && desc.template == crate::features::agent::models::AgentTemplate::Dsh
+    {
+        Some(dsh_history::home(
+            &crate::features::agent::acp::client::effective_local_agent_env(desc),
+            &cwd,
+        ))
+    } else {
+        None
+    };
+    let mut durable_error: Option<String> = None;
+    let mut durable_history: Option<AcpLoadSessionResult> = None;
+    if let Some(Ok(home)) = &dsh_home {
+        match durable_dsh_history(home, &session_id, &cwd).await {
+            Ok(history) => durable_history = Some(history),
+            Err(error) => {
+                log::debug!("dsh durable history unavailable session={session_id}: {error}");
+                durable_error = Some(error);
+            }
+        }
+    }
+
+    if let Some(durable) = durable_history {
+        if !history_lacks_agent_text(&durable) {
+            log::debug!("dsh durable history restored session={session_id}");
+            return Ok(durable);
+        }
+        // Durable content is kept on every failure path below, so the user still
+        // sees the saved user turn, reasoning and tools with the UI interruption
+        // hint instead of an empty history.
+        log::debug!(
+            "dsh durable history has no agent text session={session_id}; complementing via ACP replay"
+        );
+        match tokio::time::timeout(
+            COMPLEMENT_REPLAY_TIMEOUT,
+            replay_acp_history(desc, &session_id, cwd.clone(), remote),
+        )
+        .await
+        {
+            Ok(Ok(AcpReplayOutcome::Loaded(acp))) => {
+                let merged = merge_histories(durable, acp);
+                log::debug!(
+                    "dsh durable history complemented session={session_id} agent_text={}",
+                    !history_lacks_agent_text(&merged)
+                );
+                return Ok(merged);
+            }
+            Ok(Ok(AcpReplayOutcome::Unsupported)) => {
+                log::debug!("dsh durable history kept (agent cannot replay) session={session_id}");
+                return Ok(durable);
+            }
+            Ok(Err(error)) => {
+                log::warn!(
+                    "dsh complementary ACP replay failed session={session_id}: {error}; keeping durable history"
+                );
+                return Ok(durable);
+            }
+            Err(_) => {
+                log::warn!(
+                    "dsh complementary ACP replay timed out session={session_id}; keeping durable history"
+                );
+                return Ok(durable);
+            }
+        }
+    }
+
+    match replay_acp_history(desc, &session_id, cwd, remote).await? {
+        AcpReplayOutcome::Loaded(history) => Ok(history),
+        AcpReplayOutcome::Unsupported => {
+            let detail = match (durable_error, dsh_home) {
+                (Some(error), _) => error,
+                (None, Some(Err(error))) => error,
+                _ => "This agent does not support history replay (session/load)".to_string(),
+            };
+            Err(AppError::domain(
+                "acp",
+                format!("acp: load session: Internal error: \"{detail}\""),
+            ))
+        }
     }
 }
 
@@ -846,5 +965,94 @@ mod replay_builder_tests {
         ));
         assert!(matches!(lines[0].parts[1], AcpHistoryPart::Tool { .. }));
         assert!(lines[0].text.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod history_merge_tests {
+    use super::{
+        history_lacks_agent_text, merge_histories, AcpHistoryLine, AcpHistoryPart,
+        AcpLoadSessionResult,
+    };
+
+    fn line(id: &str, kind: &str, text: &str, parts: Vec<AcpHistoryPart>) -> AcpHistoryLine {
+        AcpHistoryLine {
+            id: id.to_string(),
+            kind: kind.to_string(),
+            text: text.to_string(),
+            reasoning: None,
+            parts,
+            sources: Vec::new(),
+        }
+    }
+
+    fn history(title: Option<&str>, lines: Vec<AcpHistoryLine>) -> AcpLoadSessionResult {
+        AcpLoadSessionResult {
+            session_id: "s".into(),
+            title: title.map(str::to_string),
+            lines,
+        }
+    }
+
+    #[test]
+    fn fills_missing_answer_text_from_the_acp_replay() {
+        let durable = history(
+            None,
+            vec![
+                line("line-1", "user", "question", vec![]),
+                line(
+                    "line-2",
+                    "agent",
+                    "",
+                    vec![AcpHistoryPart::Reasoning {
+                        text: "thinking".into(),
+                    }],
+                ),
+            ],
+        );
+        assert!(history_lacks_agent_text(&durable));
+        let acp = history(
+            Some("machine title"),
+            vec![
+                line("line-1", "user", "question", vec![]),
+                line(
+                    "line-2",
+                    "agent",
+                    "final answer",
+                    vec![AcpHistoryPart::Text {
+                        text: "final answer".into(),
+                    }],
+                ),
+                line("line-3", "user", "second question", vec![]),
+            ],
+        );
+
+        let merged = merge_histories(durable, acp);
+        // The durable structure wins; only the empty agent text is filled.
+        assert_eq!(merged.lines.len(), 2);
+        assert_eq!(merged.lines[1].id, "line-2");
+        assert_eq!(merged.lines[1].text, "final answer");
+        assert!(merged.lines[1]
+            .parts
+            .iter()
+            .any(|part| matches!(part, AcpHistoryPart::Text { text } if text == "final answer")));
+        assert_eq!(merged.title.as_deref(), Some("machine title"));
+        assert!(!history_lacks_agent_text(&merged));
+    }
+
+    #[test]
+    fn keeps_durable_text_and_never_resurrects_empty_replays() {
+        let durable = history(None, vec![line("line-1", "agent", "saved", vec![])]);
+        let empty_acp = history(None, vec![line("line-1", "agent", "", vec![])]);
+        assert_eq!(
+            merge_histories(durable, empty_acp.clone()).lines[0].text,
+            "saved"
+        );
+
+        let empty = history(None, vec![]);
+        assert!(merge_histories(empty.clone(), history(None, vec![]))
+            .lines
+            .is_empty());
+        assert_eq!(merge_histories(empty, empty_acp).lines[0].text, "");
     }
 }

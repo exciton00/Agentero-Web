@@ -187,6 +187,7 @@
 		"desktopOnly": "Open the desktop app to run agents.",
 		"noAgent": "No available agent. Open Settings → Agent to configure one.",
 		"sessionUnavailable": "Could not restore this Agent session. Showing the saved answer snapshot when available.",
-		"sessionEmpty": "This session has no replayable messages."
+		"sessionEmpty": "This session has no replayable messages.",
+		"sessionAnswerNotSaved": "No final answer was saved for this session (it may have been interrupted). Expand Chain of Thought to read the saved reasoning."
 	}
 }

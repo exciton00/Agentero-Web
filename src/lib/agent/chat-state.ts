@@ -145,7 +145,9 @@ export type ChatLine =
 			streaming?: boolean;
 	  }
 	| { id: string; kind: "error"; text: string }
-	| { id: string; kind: "system"; text: string };
+	| { id: string; kind: "system"; text: string }
+	/** Muted inline notice, e.g. a history turn saved without a final answer. */
+	| { id: string; kind: "notice"; text: string };
 
 export type ChatSessionHistoryItem = {
 	id: string;
