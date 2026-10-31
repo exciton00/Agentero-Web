@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	applyCachedHistoryTitles,
+	getCachedHistoryTitle,
 	getOverriddenHistoryTitle,
 	setCachedHistoryTitle,
 	setUserHistoryTitle,
@@ -44,5 +45,28 @@ describe("history title cache overrides", () => {
 		]);
 		expect(again[0].title).toBe("From cache");
 		expect(again[0].titleLocked).toBeUndefined();
+	});
+});
+
+describe("history title cache — machine fallback titles", () => {
+	beforeEach(() => {
+		vi.stubGlobal("localStorage", memoryStorage());
+	});
+
+	it("ignores stale machine titles written by earlier builds", () => {
+		setCachedHistoryTitle("agent-1", "s1", "You are an assistant working");
+		expect(getCachedHistoryTitle("agent-1", "s1")).toBeNull();
+
+		const applied = applyCachedHistoryTitles("agent-1", [
+			{ id: "s1", title: "", providerSessionId: "s1" },
+		]);
+		expect(applied[0].title).toBe("");
+	});
+
+	it("never stores a machine title as a hydrated label", () => {
+		setCachedHistoryTitle("agent-1", "s2", "You are running the Agentero");
+		expect(getCachedHistoryTitle("agent-1", "s2")).toBeNull();
+		setCachedHistoryTitle("agent-1", "s2", "real question");
+		expect(getCachedHistoryTitle("agent-1", "s2")).toBe("real question");
 	});
 });

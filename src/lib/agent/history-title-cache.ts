@@ -1,3 +1,4 @@
+import { isMachineHistoryTitle } from "@/lib/agent/prompt-display";
 import { readJsonStorage, writeJsonStorage } from "@/lib/core/storage";
 
 /**
@@ -92,7 +93,10 @@ export function getCachedHistoryTitle(
 	const agent = agentId.trim();
 	if (!id || !agent) return null;
 	const value = readAll()[cacheKey(agent, id)];
-	return value?.trim() || null;
+	// Earlier builds could cache a machine fallback title; treat it as missing
+	// so the row hydrates from the real first prompt.
+	if (!value || isMachineHistoryTitle(value)) return null;
+	return value;
 }
 
 /** User-renamed title that must not be overwritten by ACP pushes. */
@@ -113,6 +117,7 @@ export function setCachedHistoryTitle(
 	const agent = agentId.trim();
 	const cleaned = title.trim();
 	if (!id || !agent || !cleaned) return;
+	if (isMachineHistoryTitle(cleaned)) return;
 	const map = readAll();
 	map[cacheKey(agent, id)] = cleaned;
 	writeAll(map);
@@ -170,7 +175,7 @@ export function applyCachedHistoryTitles(
 		}
 		if (session.title.trim() || session.titleLocked) return session;
 		const cached = lookup(map, agentId, session.id, session.providerSessionId);
-		if (!cached) return session;
+		if (!cached || isMachineHistoryTitle(cached)) return session;
 		return { ...session, title: cached };
 	});
 }

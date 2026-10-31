@@ -457,3 +457,106 @@ describe("hydrateSessionTitles", () => {
 		expect(setSessionHistory).not.toHaveBeenCalled();
 	});
 });
+
+const MACHINE_TITLE = "You are an assistant working";
+
+describe("mergeImportedSessions — machine titles", () => {
+	it("ignores a machine ACP title and flags the session for hydration", () => {
+		const { sessions, hydrationCandidates } = mergeImportedSessions(
+			[],
+			[makeAcpSession({ sessionId: "s1", title: MACHINE_TITLE })],
+			"agent-1",
+			"Agent",
+			"zh-CN",
+		);
+		expect(sessions[0].title).toBe("");
+		expect(hydrationCandidates.map((s) => s.id)).toEqual(["s1"]);
+	});
+
+	it("replaces a stored machine title instead of keeping it", () => {
+		const prev = [
+			makeRecord({
+				id: "s1",
+				source: "external",
+				title: MACHINE_TITLE,
+				providerSessionId: "s1",
+			}),
+		];
+		const { sessions } = mergeImportedSessions(
+			prev,
+			[makeAcpSession({ sessionId: "s1", title: "Human ACP title" })],
+			"agent-1",
+			"Agent",
+			"zh-CN",
+		);
+		expect(sessions[0].title).toBe("Human ACP title");
+	});
+});
+
+describe("sessionsNeedingTitleHydration — machine titles", () => {
+	it("includes machine fallback titles and skips real ones", () => {
+		const sessions = [
+			makeRecord({ id: "a", title: MACHINE_TITLE }),
+			makeRecord({ id: "b", title: "GaN trap analysis" }),
+			makeRecord({ id: "c", title: "You are reviewing this paper" }),
+		];
+		expect(
+			sessionsNeedingTitleHydration(sessions, "agent-1").map((s) => s.id),
+		).toEqual(["a"]);
+	});
+});
+
+describe("hydrateSessionTitles — machine titles", () => {
+	beforeEach(() => {
+		vi.resetAllMocks();
+		vi.spyOn(titleCache, "getCachedHistoryTitle").mockReturnValue(null);
+		vi.spyOn(titleCache, "setCachedHistoryTitle").mockImplementation(() => {});
+	});
+
+	it("rehydrates a stale machine title from the first user turn", async () => {
+		vi.mocked(titleCache.getCachedHistoryTitle).mockReturnValue(MACHINE_TITLE);
+		vi.mocked(agentApi.loadSession).mockResolvedValue({
+			sessionId: "s1",
+			title: MACHINE_TITLE,
+			lines: [{ id: "l1", kind: "user" as const, text: "real question" }],
+		});
+		const setSessionHistory = vi.fn();
+		const items = [makeRecord({ id: "s1", title: MACHINE_TITLE })];
+
+		await hydrateSessionTitles(items, {
+			generation: 1,
+			historyGenRef: { current: 1 },
+			selectedAgentId: "agent-1",
+			vaultPath: "/vault",
+			setSessionHistory,
+		});
+
+		expect(agentApi.loadSession).toHaveBeenCalledTimes(1);
+		expect(titleCache.setCachedHistoryTitle).toHaveBeenCalledWith(
+			"agent-1",
+			"s1",
+			"real question",
+		);
+	});
+
+	it("does not cache a machine title when a transcript gives no user text", async () => {
+		vi.mocked(agentApi.loadSession).mockResolvedValue({
+			sessionId: "s1",
+			title: MACHINE_TITLE,
+			lines: [
+				{ id: "l1", kind: "agent" as const, text: "", reasoning: "think" },
+			],
+		});
+		const setSessionHistory = vi.fn();
+
+		await hydrateSessionTitles([makeRecord({ id: "s1" })], {
+			generation: 1,
+			historyGenRef: { current: 1 },
+			selectedAgentId: "agent-1",
+			vaultPath: "/vault",
+			setSessionHistory,
+		});
+
+		expect(titleCache.setCachedHistoryTitle).not.toHaveBeenCalled();
+	});
+});

@@ -44,6 +44,7 @@ import {
 } from "@/lib/agent/history-title-cache";
 import {
 	displayHistoryTitle,
+	isMachineHistoryTitle,
 	stripPromptEnvelopeForDisplay,
 } from "@/lib/agent/prompt-display";
 import { hasHostTransport } from "@/lib/core/tauri";
@@ -143,7 +144,8 @@ export async function hydrateSessionTitles(
 		try {
 			const providerSessionId = providerSessionIdForHistoryLoad(item);
 			const cached = getCachedHistoryTitle(selectedAgentId, providerSessionId);
-			if (cached) {
+			// Old builds cached machine fallback titles; never replay them.
+			if (cached && !isMachineHistoryTitle(cached)) {
 				setSessionHistory((prev) =>
 					prev.map((s) =>
 						s.id === item.id && s.agentId === item.agentId && !s.titleLocked
@@ -187,7 +189,7 @@ export async function hydrateSessionTitles(
 	});
 }
 
-/** Sessions that still need a human title (empty or id-prefix leftover). */
+/** Sessions that still need a human title (empty, id-prefix, or machine text). */
 export function sessionsNeedingTitleHydration(
 	sessions: AgentSessionRecord[],
 	agentId: string,
@@ -200,6 +202,7 @@ export function sessionsNeedingTitleHydration(
 		}
 		const title = session.title.trim();
 		if (!title) return true;
+		if (isMachineHistoryTitle(title)) return true;
 		const providerId = providerSessionIdForHistoryLoad(session);
 		return (
 			isSessionIdPrefixTitle(title, session.id) ||
@@ -270,6 +273,10 @@ export function mergeImportedSessions(
 			? formatLocaleTimestamp(session.updatedAt, i18nLanguage)
 			: "";
 		const acpTitle = session.title?.trim() ?? "";
+		// Agents may expose a machine fallback title (e.g. Dsh derives it from the
+		// first line of Agentero's own system envelope). Treat it as no title so
+		// the real first user prompt is used, or hydrated in the background.
+		const humanAcpTitle = isMachineHistoryTitle(acpTitle) ? "" : acpTitle;
 		// Prefer ACP title → first local user turn → keep a prior human title.
 		// Never seed with the session-id prefix: that blocks HistorySessionList's
 		// user-prompt fallback (#484) because displayHistoryTitle treats any
@@ -277,9 +284,10 @@ export function mergeImportedSessions(
 		// User renames (#710) always win via titleLocked / override cache.
 		const fromLines = current ? titleFromSessionLines(current.lines) : "";
 		const priorTitle = current?.title?.trim() ?? "";
-		const priorIsIdPlaceholder =
+		const priorIsPlaceholder =
 			Boolean(priorTitle) &&
-			(isSessionIdPrefixTitle(priorTitle, session.sessionId) ||
+			(isMachineHistoryTitle(priorTitle) ||
+				isSessionIdPrefixTitle(priorTitle, session.sessionId) ||
 				(current != null && isSessionIdPrefixTitle(priorTitle, current.id)));
 		const overridden =
 			getOverriddenHistoryTitle(
@@ -287,14 +295,14 @@ export function mergeImportedSessions(
 				current?.id ?? session.sessionId,
 				session.sessionId,
 			) ||
-			(current?.titleLocked && priorTitle && !priorIsIdPlaceholder
+			(current?.titleLocked && priorTitle && !priorIsPlaceholder
 				? priorTitle
 				: null);
 		const title = overridden
 			? overridden
-			: acpTitle
-				? displayHistoryTitle(acpTitle, "")
-				: fromLines || (priorTitle && !priorIsIdPlaceholder ? priorTitle : "");
+			: humanAcpTitle
+				? displayHistoryTitle(humanAcpTitle, "")
+				: fromLines || (priorTitle && !priorIsPlaceholder ? priorTitle : "");
 
 		if (current) {
 			const record: AgentSessionRecord = {
@@ -309,7 +317,7 @@ export function mergeImportedSessions(
 				startedAt: current.startedAt || startedAt,
 				providerSessionId: session.sessionId,
 			};
-			if (!acpTitle && !title && current.lines.length === 0) {
+			if (!humanAcpTitle && !title && current.lines.length === 0) {
 				hydrationCandidates.push(record);
 			}
 			return record;
@@ -327,7 +335,7 @@ export function mergeImportedSessions(
 			status: "completed" as const,
 			providerSessionId: session.sessionId,
 		};
-		if (!acpTitle && !overridden) {
+		if (!humanAcpTitle && !overridden) {
 			hydrationCandidates.push(record);
 		}
 		return record;

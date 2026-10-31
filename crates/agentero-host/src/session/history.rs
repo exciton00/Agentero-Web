@@ -381,14 +381,33 @@ impl ReplayBuilder {
     }
 }
 
+/// Restore a local Dsh transcript from its durable log without blocking the runtime.
+async fn durable_dsh_history(
+    home: &std::path::Path,
+    session_id: &str,
+    cwd: &std::path::Path,
+) -> Result<AcpLoadSessionResult, String> {
+    let home = home.to_path_buf();
+    let sid = session_id.to_string();
+    let cwd = cwd.to_path_buf();
+    tokio::task::spawn_blocking(move || dsh_history::load(&home, &sid, &cwd))
+        .await
+        .map_err(|error| format!("Dsh history: {error}"))?
+}
+
 /// Load a session using the cwd resolved by `agent_spawn_cwd` at the service boundary.
+///
+/// A local Dsh profile may advertise `session/load` while replaying only part of
+/// the transcript (e.g. reasoning without the final answer). Its durable JSONL
+/// log is the authoritative record, so try it first and fall back to the ACP
+/// replay when the log is absent, unreadable, or in an unsupported format.
+/// Remote Dsh has no local home and keeps the ACP-only path.
 pub async fn load_acp_session(
     desc: &AgentDescriptor,
     session_id: String,
     cwd: PathBuf,
     remote: Option<&dyn crate::features::agent::remote_host::RemoteAgentLaunch>,
 ) -> Result<AcpLoadSessionResult, AppError> {
-    let acp = to_acp_agent(desc, Some(&cwd), remote)?;
     let dsh_home = if remote.is_none()
         && desc.template == crate::features::agent::models::AgentTemplate::Dsh
     {
@@ -399,6 +418,21 @@ pub async fn load_acp_session(
     } else {
         None
     };
+    let mut durable_error: Option<String> = None;
+    if let Some(Ok(home)) = &dsh_home {
+        match durable_dsh_history(home, &session_id, &cwd).await {
+            Ok(history) => {
+                log::debug!("dsh durable history restored session={session_id}");
+                return Ok(history);
+            }
+            Err(error) => {
+                log::debug!("dsh durable history unavailable session={session_id}: {error}");
+                durable_error = Some(error);
+            }
+        }
+    }
+
+    let acp = to_acp_agent(desc, Some(&cwd), remote)?;
 
     let builder: Arc<Mutex<ReplayBuilder>> = Arc::new(Mutex::new(ReplayBuilder::default()));
     let builder_for_notif = builder.clone();
@@ -491,7 +525,11 @@ pub async fn load_acp_session(
 
                 if !init.agent_capabilities.load_session {
                     // resume restores model context, but does not replay a transcript.
-                    // Dsh currently only implements resume; recover its local durable log.
+                    // Dsh without load support is recovered from its local durable log;
+                    // that attempt already ran above, so surface its error here.
+                    if let Some(error) = durable_error {
+                        return Err(agent_client_protocol::util::internal_error(error));
+                    }
                     if let Some(home) = dsh_home {
                         let home = home.map_err(agent_client_protocol::util::internal_error)?;
                         return tokio::task::spawn_blocking(move || {

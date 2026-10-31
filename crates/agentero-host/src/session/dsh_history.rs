@@ -33,12 +33,20 @@ pub(super) fn home(env: &HashMap<String, String>, cwd: &Path) -> Result<PathBuf,
     })
 }
 
+/// ACP-created sessions use a bare UUID; sessions created by the Dsh CLI/Web
+/// use the same UUID with a `session-` prefix. The log directory is named after
+/// the session header id in both layouts.
+fn valid_session_id(sid: &str) -> bool {
+    let uuid = sid.strip_prefix("session-").unwrap_or(sid);
+    uuid.len() == 36 && uuid::Uuid::parse_str(uuid).is_ok()
+}
+
 /// The provider's released layout is sessions/<project>/<uuid>/session[.vN].jsonl[.zstd].
 /// Scan only the project level; cwd and UUID are checked against the log header.
 pub(super) fn load(home: &Path, sid: &str, cwd: &Path) -> Result<AcpLoadSessionResult, String> {
-    uuid::Uuid::parse_str(sid).map_err(|_| "Dsh history: invalid session id")?;
-    // A UUID is a single component even on Windows (no alternate data streams).
-    if sid.len() != 36 {
+    // A session id is a single path component even on Windows (no alternate
+    // data streams); only the two known UUID spellings are accepted.
+    if !valid_session_id(sid) {
         return Err("Dsh history: invalid session id".into());
     }
     let projects = fs::read_dir(home.join("sessions"))
@@ -221,7 +229,13 @@ fn apply_event(replay: &mut ReplayBuilder, event: &Value) {
                 );
             }
         }
-        Some("session/title") => replay.title = data["title"].as_str().map(str::to_owned),
+        // `source.kind == "fallback"` is Dsh's auto-truncation of the first
+        // prompt line — usually Agentero's own system envelope, never a human
+        // label. Keep provider/user titles and let the UI derive a title from
+        // the first user message when only a fallback exists.
+        Some("session/title") if data["source"]["kind"] != "fallback" => {
+            replay.title = data["title"].as_str().map(str::to_owned);
+        }
         _ => {}
     }
 }
@@ -232,12 +246,13 @@ mod tests {
     use serde_json::json;
 
     const SID: &str = "455181d7-12ab-4567-8901-0123456789ab";
+    const PREFIXED_SID: &str = "session-455181d7-12ab-4567-8901-0123456789ab";
 
-    fn fixture(dir: &Path, version: u64, compressed: bool) -> PathBuf {
-        let folder = dir.join("sessions/project").join(SID);
+    fn write_log(dir: &Path, id: &str, version: u64, compressed: bool, title: Value) -> PathBuf {
+        let folder = dir.join("sessions/project").join(id);
         fs::create_dir_all(&folder).unwrap();
         let events = [
-            json!({"type":"session","version":version,"id":SID,"cwd":dir.to_string_lossy()}),
+            json!({"type":"session","version":version,"id":id,"cwd":dir.to_string_lossy()}),
             json!({"seq":0,"type":"user/message","data":{"id":"u1","source":{"kind":"user"},"content":[{"type":"text","text":"first question"}]}}),
             json!({"seq":1,"type":"user/message","data":{"id":"ctx","source":{"kind":"plugin"},"content":[{"type":"text","text":"hidden context"}]}}),
             json!({"seq":2,"type":"assistant/message","data":{"message":{"id":"a1","content":[{"type":"reasoning","text":"thinking"},{"type":"text","text":"first answer"}]}}}),
@@ -245,7 +260,7 @@ mod tests {
             json!({"seq":4,"type":"tool/result","data":{"message":{"toolCallId":"t1","content":[{"type":"text","text":"note"}]}}}),
             json!({"seq":5,"type":"user/message","data":{"id":"u2","source":{"kind":"user"},"content":[{"type":"text","text":"second question"}]}}),
             json!({"seq":6,"type":"assistant/message","data":{"message":{"id":"a2","content":[{"type":"text","text":"second answer"}]}}}),
-            json!({"seq":7,"type":"session/title","data":{"title":"my conversation"}}),
+            json!({"seq":7,"type":"session/title","data": title}),
         ];
         let raw = events
             .iter()
@@ -272,6 +287,16 @@ mod tests {
         path
     }
 
+    fn fixture(dir: &Path, version: u64, compressed: bool) -> PathBuf {
+        write_log(
+            dir,
+            SID,
+            version,
+            compressed,
+            json!({"title":"my conversation"}),
+        )
+    }
+
     #[test]
     fn restores_compressed_multi_turn_history_and_uses_latest_generation() {
         let dir = tempfile::tempdir().unwrap();
@@ -295,6 +320,60 @@ mod tests {
         assert_eq!(history.lines[1].reasoning.as_deref(), Some("thinking"));
         assert!(history.lines[1].parts.iter().any(|part| matches!(part,
             crate::features::agent::models::AcpHistoryPart::Tool { tool } if tool.status == "completed")));
+    }
+
+    #[test]
+    fn accepts_dsh_prefixed_session_ids_but_rejects_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        write_log(
+            dir.path(),
+            PREFIXED_SID,
+            4,
+            true,
+            json!({"title":"prefixed title"}),
+        );
+        let history = load(dir.path(), PREFIXED_SID, dir.path()).unwrap();
+        assert_eq!(history.session_id, PREFIXED_SID);
+        assert_eq!(history.title.as_deref(), Some("prefixed title"));
+        assert_eq!(history.lines[0].text, "first question");
+        // The bare UUID spelling addresses a different log directory.
+        assert!(load(dir.path(), SID, dir.path()).is_err());
+        assert!(!valid_session_id("455181d7-12ab-4567-8901-0123456789ab/x"));
+        assert!(!valid_session_id("session-455181d7"));
+    }
+
+    #[test]
+    fn ignores_dsh_fallback_titles_but_keeps_human_titles() {
+        let dir = tempfile::tempdir().unwrap();
+        write_log(
+            dir.path(),
+            SID,
+            4,
+            false,
+            json!({
+                "title":"You are an assistant working",
+                "messageSeqs":[0],
+                "source":{"kind":"fallback"}
+            }),
+        );
+        // A fallback title is Dsh's truncated first prompt line, not a label;
+        // the UI derives one from the first user message instead.
+        assert_eq!(load(dir.path(), SID, dir.path()).unwrap().title, None);
+        fs::remove_dir_all(dir.path().join("sessions")).unwrap();
+        write_log(
+            dir.path(),
+            SID,
+            4,
+            false,
+            json!({
+                "title":"GaN trap analysis",
+                "source":{"kind":"provider","provider":"session-title-first-prompt-llm"}
+            }),
+        );
+        assert_eq!(
+            load(dir.path(), SID, dir.path()).unwrap().title.as_deref(),
+            Some("GaN trap analysis")
+        );
     }
 
     #[test]

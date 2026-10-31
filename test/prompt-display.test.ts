@@ -2,10 +2,19 @@ import { describe, expect, it } from "vitest";
 
 import {
 	displayHistoryTitle,
+	isMachineHistoryTitle,
 	isVisualAnnotationPromptText,
 	stripPromptEnvelopeForDisplay,
 	stripSystemReminder,
 } from "@/lib/agent/prompt-display";
+
+const agenteroEnvelope = `You are an assistant working inside a Agentero research Vault (cwd is the vault root). Follow vault AGENTS.md.
+
+Target path (Vault-relative): \`papers/10_1109_TED_2026_3671226\`
+Research context for this turn.
+
+User request:
+为什么要往氮化硅中注入氮离子？`;
 
 const visualPrompt = `You are reviewing 1 visual annotation from a research paper PDF.
 
@@ -94,5 +103,56 @@ describe("stripSystemReminder", () => {
 
 	it("is safe when no reminder is present", () => {
 		expect(stripSystemReminder("只是普通文本。")).toBe("只是普通文本。");
+	});
+});
+
+describe("isMachineHistoryTitle", () => {
+	it("matches Dsh fallback slices of the known system envelopes", () => {
+		expect(isMachineHistoryTitle("You are an assistant working")).toBe(true);
+		expect(isMachineHistoryTitle("You are running the Agentero")).toBe(true);
+		expect(isMachineHistoryTitle("You are helping with a research")).toBe(true);
+		expect(isMachineHistoryTitle("You are reviewing 1 visual annota")).toBe(
+			true,
+		);
+		expect(isMachineHistoryTitle(agenteroEnvelope.split("\n")[0])).toBe(true);
+	});
+
+	it("does not overmatch normal titles", () => {
+		expect(isMachineHistoryTitle("GaN trap analysis")).toBe(false);
+		expect(isMachineHistoryTitle("为什么最终回答消失了？")).toBe(false);
+		expect(isMachineHistoryTitle("You are reviewing this paper")).toBe(false);
+		expect(
+			isMachineHistoryTitle("You are an assistant for my literature review"),
+		).toBe(false);
+	});
+
+	it("leaves multi-line transcript bodies to envelope stripping", () => {
+		expect(isMachineHistoryTitle(agenteroEnvelope)).toBe(false);
+		expect(displayHistoryTitle(agenteroEnvelope)).toBe(
+			"为什么要往氮化硅中注入氮离子？",
+		);
+	});
+});
+
+describe("displayHistoryTitle — machine titles", () => {
+	it("never renders a machine fallback title as the session label", () => {
+		expect(displayHistoryTitle("You are an assistant working", "")).toBe("");
+		expect(
+			displayHistoryTitle("You are an assistant working", "my conversation"),
+		).toBe("my conversation");
+		// A machine fallback is not a usable fallback either.
+		expect(
+			displayHistoryTitle(
+				"You are an assistant working",
+				"You are running the Agentero",
+			),
+		).toBe("");
+	});
+
+	it("keeps human titles that only start like a prompt", () => {
+		expect(displayHistoryTitle("You are an assistant for my lit review")).toBe(
+			"You are an assistant for my lit review",
+		);
+		expect(displayHistoryTitle("GaN trap analysis")).toBe("GaN trap analysis");
 	});
 });

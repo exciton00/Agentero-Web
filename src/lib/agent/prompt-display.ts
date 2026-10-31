@@ -196,14 +196,61 @@ export function stripPromptEnvelopeForDisplay(text: string): string {
 	return withoutContext;
 }
 
+/**
+ * Leading sentences of system/harness envelopes that can leak into a history
+ * title. Dsh's fallback session title is the first ~30 characters of the first
+ * prompt, which for Agentero runs is its own system envelope. Such a title is
+ * machine text, not a human label.
+ */
+const MACHINE_TITLE_PROMPTS = [
+	...ENVELOPE_PREFIXES,
+	"You are reviewing 1 visual annotation from a research paper PDF",
+	"You are an AI agent powered by DeepSeek Harness",
+] as const;
+
+/** Shortest system-prompt prefix worth treating as a machine title. */
+const MACHINE_TITLE_MIN_PREFIX = 20;
+/** Shortest leaked title slice (Dsh truncates the envelope head to ~30 chars). */
+const MACHINE_TITLE_MIN_SLICE = 16;
+/** Longest single-line title still considered machine text. */
+const MACHINE_TITLE_MAX_LEN = 240;
+
+/**
+ * True when a stored session title is machine text instead of a human label:
+ * a truncated leading slice of one of the known system prompts (e.g. Dsh's
+ * fallback "You are an assistant working"), or a title that begins with a
+ * whole system-prompt sentence. A normal title that merely mentions similar
+ * wording does not match, and transcript bodies (multi-line / long envelopes)
+ * are left to the envelope stripper.
+ */
+export function isMachineHistoryTitle(raw: string): boolean {
+	const title = raw.trim().toLowerCase();
+	if (!title || title.includes("\n") || title.length > MACHINE_TITLE_MAX_LEN) {
+		return false;
+	}
+	return MACHINE_TITLE_PROMPTS.some((prompt) => {
+		const p = prompt.toLowerCase();
+		if (p.length < MACHINE_TITLE_MIN_PREFIX) return false;
+		// Dsh fallback titles are a leading slice of the first prompt line.
+		if (title.length >= MACHINE_TITLE_MIN_SLICE && p.startsWith(title)) {
+			return true;
+		}
+		// Longer leak: the full system-prompt sentence followed by envelope text.
+		if (p.length >= 36 && title.startsWith(p)) return true;
+		return false;
+	});
+}
+
 /** One-line history label from a (possibly enveloped) title or first user turn. */
 export function displayHistoryTitle(raw: string, fallback = ""): string {
+	const usableFallback = isMachineHistoryTitle(fallback) ? "" : fallback;
+	if (isMachineHistoryTitle(raw)) return usableFallback;
 	const cleaned = stripPromptEnvelopeForDisplay(raw);
 	const first =
 		cleaned
 			.split(/\r?\n/)
 			.map((l) => l.trim())
 			.find(Boolean) ?? "";
-	if (!first) return fallback || "";
+	if (!first || isMachineHistoryTitle(first)) return usableFallback;
 	return first.length > 120 ? `${first.slice(0, 117)}…` : first;
 }
