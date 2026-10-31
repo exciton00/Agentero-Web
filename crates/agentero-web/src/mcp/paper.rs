@@ -253,6 +253,20 @@ pub fn set_read(vault: &Path, ref_: &str, is_read: bool) -> Result<PaperGetOut, 
     Ok(PaperGetOut::from_record(&row))
 }
 
+/// Apply a manual metadata patch through the same catalog path as the UI
+/// (`paper_update_meta`). `ref` must resolve to a catalog paper inside `vault`,
+/// so this can only ever touch that paper's row and `metadata.json` sidecar.
+pub fn set_meta(
+    vault: &Path,
+    ref_: &str,
+    patch: &papers::PaperMetaPatch,
+) -> Result<PaperGetOut, AppError> {
+    let paper = resolve_paper(vault, ref_)?;
+    let mut row = papers::update_meta(vault, &paper.path, patch)?;
+    strip_internal_tags(&mut row);
+    Ok(PaperGetOut::from_record(&row))
+}
+
 /// One page's text for `paper_text_get`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -311,7 +325,8 @@ pub fn text(
     }
     let bytes =
         std::fs::read(&pdf_path).map_err(|e| AppError::message(format!("read pdf: {e}")))?;
-    let out = agentero_core::features::pdf::text::extract_text(&bytes, pages.as_deref(), max_chars)?;
+    let out =
+        agentero_core::features::pdf::text::extract_text(&bytes, pages.as_deref(), max_chars)?;
     Ok(PaperTextOut {
         path: record.path,
         page_count: out.page_count,

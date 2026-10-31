@@ -44,7 +44,7 @@ Web 版把同一套 Streamable HTTP MCP 移植到 `crates/agentero-web/src/mcp/`
 - **状态**：`mcp_get_status` / `mcp:status` 的 payload 与桌面 `McpStatus` 一致：`{enabled, listening, port, url, lastError, vaultPath}`。`url` 仅在 listening 时给值；bind 为 `0.0.0.0`/`::` 时展示 `127.0.0.1`（wildcard 不可连接）。`mcp_set_enabled` / `mcp_set_port` 还会把 `mcpEnabled` / `mcpPort` 写回共享 `settings.json` 并广播 `settings:changed`，重启后保持。
 - **端口切换**：换端口会先彻底关闭旧 listener（等待 serve 任务退出 + `SO_REUSEADDR`）再绑定新端口；目标端口被占用时返回 `lastError`（listener 保持停止），立即改回原端口或重试可一次成功，不会残留 `Address already in use`。端口由 `AGENTERO_MCP_BIND` 固定时 `mcp_set_port` 只回报错误、不改监听。
 - **Vault 作用域**：服务端单 Vault（`AGENTERO_WEB_VAULT`，或前端通过 `mcp_set_vault` 选择的本地 Vault）。`vault_list` 返回该 Vault（`open=true`）+ `mcp_set_known_vaults` 同步的已知 Vault；其它工具的 `vault` 参数只能命中这些路径。
-- **工具差异**：`import_id` 用进程内 `CapsCache` + Web host 的 `AppHandle` 发进度事件；`file_move` 用本地 WikiIndex 做链接重写（无渲染进程共享索引）；`file_delete` 无桌面 JobCenter 可取消（删除语义不变，仍默认回收站）；`paper_text_get` 每次调用读取实时 `settings.mcpExposePaperText`（opt-in 关闭时报错）。`layout_list` / `layout_get` / `page_read` 依赖 `source/layout.json|layout-index.json`，没有 sidecar 时返回 `layout_index_missing` 业务错误。
+- **工具差异**：`import_id` 用进程内 `CapsCache` + Web host 的 `AppHandle` 发进度事件；`file_move` 用本地 WikiIndex 做链接重写（无渲染进程共享索引）；`file_delete` 无桌面 JobCenter 可取消（删除语义不变，仍默认回收站）；`paper_text_get` 每次调用读取实时 `settings.mcpExposePaperText`（opt-in 关闭时报错）。`layout_list` 的索引类 kind 依赖 `layout-index.json`，`section` / `paragraph` 与 `page_read` 依赖 `source/layout.json`；缺文件分别返回 `layout_index_missing` / `layout_raw_missing` 业务错误。
 - **隧道**：Web v1 不含 ChatGPT Secure MCP Tunnel。`mcp_tunnel_status` 返回 `phase: "binaryMissing"` / `running: false` / `lastError` 说明；`mcp_tunnel_start` / `mcp_tunnel_stop` 返回业务错误。需要外网时由部署方用反向代理暴露 MCP 端点。
 
 ```bash
@@ -90,6 +90,7 @@ Codex / Inspector 也可直接打 loopback URL。stdio 子进程不是这条通�
 | `paper_get` | 单篇 metadata（含 abstract） |
 | `paper_paths` | 相关路径：论文目录、`NOTES.md`、`PAPER.md`、`marks/`、本地 PDF、TeX 存在时的 `source/`；不读正文 |
 | `paper_set_read` | 设置 catalog `isRead`（默认 true） |
+| `paper_set_meta` | 更新论文 metadata（`publication` / `title` / `date` / `doi` / `arxivId` / `authors`）。省略的字段保持原值，空字符串清除可选字段，`title` 不可清空；至少给出一个字段，否则按 usage 错误拒绝。只改该篇 catalog 行与 `metadata.json` sidecar |
 | `import_id` | 魔棒入库（arxiv / DOI / URL）。`parent?` 默认当前 Library 作用域或 `papers` |
 | `discover_arxiv` | 查询式发现：`keywords[]?` / `categories[]?` / `since?` / `until?` / `top?` / `maxCandidates?`，确定性词法排序，返回短名单（含 arXiv id，供后续 `import_id`）。`dedup?`（默认 true）剔除已在库的论文；无 Vault 时也可用（跳过去重）。不写 Vault |
 | `paper_notes_get` | 读 `{paper}/NOTES.md`（文件不存在则空字符串） |
@@ -100,8 +101,8 @@ Codex / Inspector 也可直接打 loopback URL。stdio 子进程不是这条通�
 | `paper_tag_list` | 全库标签清单（`name` / `color` / `count`）；`all?` 包含内部标签 |
 | `paper_move` | 论文/组织目录移动到另一个 `papers/` 父目录，保留 basename；同 Vault 更新双链与 catalog，`toVault?` 时跨 Vault 迁移。重命名或非论文路径用 `file_move` |
 | `paper_text_get` | **opt-in**（#676，默认关闭）：读取论文 PDF 的分页文本。`ref` + `pages?`（1-based，缺省全篇）+ `max_chars?`（每页字符预算，默认 20000、上限 50000）。需在设置中开启 `mcpExposePaperText`，未开启时调用直接报错；开启即意味着正文文本将发送给隧道另一端的外部客户端 |
-| `layout_list` | 侧栏版面索引（需 `{paper}/source/layout-index.json`）。`kind[]?`、`minScore?` |
-| `layout_get` | 按 region id 取一条（如 `figure-3`） |
+| `layout_list` | 版面索引与文档锚点。`kind[]?` 取 `figure/image/chart/table/algorithm/formula` 时读 `layout-index.json`；取 `section` / `paragraph` 时读 `{paper}/source/layout.json`，返回编号章节的精确锚点（`#2.1`）及其正文块（`#2.1#p3`、原文、坐标）；两类可同时请求。`minScore?` 默认 0.3 |
+| `layout_get` | 按 region id 取一条（如 `figure-3`），或按 `layout_list` 返回的精确文档锚点解析（如 `#2.1#p3`）。锚点缺失/歧义返回 `citation_anchor_not_found` / `citation_anchor_ambiguous`，不按位置或置信度猜 |
 | `page_read` | 按**物理页**读一篇论文正文（需 `{paper}/source/layout.json`，schemaVersion 3；桌面端跑过版面分析）。`ref` 必填，`page` 为 1-based 物理页。返回该页**阅读顺序**下的全部 region，外加 `textRegions`（段落级）；`pageCount` 为布局页数，越界页返回空数组而非报错 |
 | `vault_search` | 只读全库 Markdown 关键词 AND 搜索（大小写不敏感，非语义检索）。`query` 必填；`limit?` 默认 60，限制到 1–200。根目录由当前作用域 Vault（`vault?`，缺省为打开的 Vault）决定，不接受任意客户端路径。返回 `hits`（相对 `path`、`snippet`、1-based `line`、`title`、`score`、可选 `paperPath`、可选 `page`）及 `truncated`；`PAPER.md` 正文命中会带上由 `source/layout.json` 映射出的 1-based 物理页码 `page`（无法唯一确定时省略）；命中用 `file_read {"path": hit.path}` 回读。可选元数据过滤 `year`（精确）、`publication` / `doi`（大小写不敏感子串）、`isRead`（bool）：一旦给出，只保留能映射到 catalog 论文且全部匹配的命中，其它一律丢弃 |
 | `file_list` | 列一层目录。`path?` 为 Vault 相对路径，空则根目录。跳过 `.agentero`、隐藏目录和 LaTeX 编译产物。`limit?` 默认 200，最多 500 |
@@ -154,7 +155,7 @@ cargo test -p agentero-core pdf::layout_index
 
 ### RAG 工具（v2.1，动态）
 
-当设置 → RAG 满足 `enabled && configured && provider 已实现 && tools.exposeToMcp` 时，tools/list **动态**多出 3 个只读工具（与 provider 无关，输出带 `provider`）；任一条件关闭后立即消失（同一 MCP 会话内也生效），`call_tool` 对未暴露工具返回可读的 tool-level error（`rag_disabled`）。其余 24 个工具完全不受影响。
+当设置 → RAG 满足 `enabled && configured && provider 已实现 && tools.exposeToMcp` 时，tools/list **动态**多出 3 个只读工具（与 provider 无关，输出带 `provider`）；任一条件关闭后立即消失（同一 MCP 会话内也生效），`call_tool` 对未暴露工具返回可读的 tool-level error（`rag_disabled`）。其余 25 个工具完全不受影响。
 
 | Tool | 作用 |
 |---|---|

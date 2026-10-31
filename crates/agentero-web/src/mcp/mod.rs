@@ -14,6 +14,7 @@
 //!
 //! See `docs/backend/mcp.md`.
 
+mod anchors;
 mod files;
 mod icons;
 mod layout;

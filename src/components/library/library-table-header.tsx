@@ -42,6 +42,7 @@ import {
 	TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/core/utils";
+import type { CustomProperty } from "@/lib/paper/custom-properties";
 import {
 	PAPER_SEARCH_DOMAIN_LABEL_KEYS,
 	PAPER_SEARCH_DOMAINS,
@@ -93,6 +94,10 @@ type LibraryTableHeaderProps = {
 	onResetColumns: () => void;
 	onColumnReorder: (fromKey: SortKey, toKey: SortKey) => void;
 	onColumnResize: (key: SortKey, width: number | null, commit: boolean) => void;
+	/** Extra custom-property columns rendered after the built-in columns. */
+	customProperties?: CustomProperty[];
+	/** Open the custom-property management dialog (menu entry). */
+	onManageCustomProperties?: () => void;
 };
 
 export const LibraryTableHeader = memo(function LibraryTableHeader({
@@ -122,6 +127,8 @@ export const LibraryTableHeader = memo(function LibraryTableHeader({
 	onResetColumns,
 	onColumnReorder,
 	onColumnResize,
+	customProperties = [],
+	onManageCustomProperties,
 }: LibraryTableHeaderProps) {
 	// --- Column customization (order + visibility) ---
 	const [dragKey, setDragKey] = useState<SortKey | null>(null);
@@ -526,6 +533,19 @@ export const LibraryTableHeader = memo(function LibraryTableHeader({
 								</th>
 							);
 						})}
+						{customProperties.map((property) => (
+							<th
+								key={property.id}
+								scope="col"
+								className="relative min-w-[6.5rem] p-0 font-medium"
+							>
+								<div className="flex h-9 min-w-0 items-center px-3">
+									<span className="truncate" title={property.name}>
+										{property.name}
+									</span>
+								</div>
+							</th>
+						))}
 						{/* Trailing fixed cell: PDF / layout-analysis asset badges. */}
 						<th
 							scope="col"
@@ -559,6 +579,14 @@ export const LibraryTableHeader = memo(function LibraryTableHeader({
 				>
 					{t("papersLibrary.resetColumns")}
 				</ContextMenuItem>
+				{onManageCustomProperties ? (
+					<>
+						<ContextMenuSeparator />
+						<ContextMenuItem onSelect={onManageCustomProperties}>
+							{t("papersLibrary.customProperties.manage")}
+						</ContextMenuItem>
+					</>
+				) : null}
 			</ContextMenuContent>
 		</ContextMenu>
 	);

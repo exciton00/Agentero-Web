@@ -171,7 +171,7 @@ tags → index wait → delete`：
 | `agentero_rag_paper_context` | 只查一篇已同步论文的正文/笔记/批注/图表索引（`paper` + `query` 必填，`topK?` 默认 6）；返回 `{provider,providerLabel,paper,hits,count}`。 |
 | `agentero_rag_sync_status` | 只读本地状态：`provider/providerLabel/enabled/configured/total/synced/indexing/failed/pending/lastSyncAt`；`paper?` 时带该篇 `status/syncedAt/lastError/knowledgeId/bibtexKey`。 |
 
-- 关闭 `tools.exposeToMcp` 后同一 MCP 会话立即隐藏为 24 个工具；`call_tool` 返回
+- 关闭 `tools.exposeToMcp` 后同一 MCP 会话立即隐藏为 25 个工具；`call_tool` 返回
   可读 `{"code":"rag_disabled",...}`。
 - Web agent（ACP）注入会话级 stdio MCP `agentero-rag`：host 写 0600 临时 config
   （`provider`/baseUrl/key/kb/vault/statePath/检索默认值），`prepare_run_turn`

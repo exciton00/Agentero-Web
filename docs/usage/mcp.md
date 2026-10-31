@@ -138,16 +138,17 @@ tunnel-client run --profile agentero
 
 ### RAG 只读工具（可选）
 
-设置 → RAG 打开并配置（provider=WeKnora）后，MCP tools/list 会动态多出 `agentero_rag_search`（跨文献语义检索，返回 `paper.path` / `cite{}` / provider）、`agentero_rag_paper_context`（单篇笔记/图注/批注检索）、`agentero_rag_sync_status`（同步进度）。三者只读、不写入知识库；`tools.exposeToMcp` 关闭或 RAG 未配置时工具列表恢复为原来的 24 个。详见 [backend/mcp.md](../backend/mcp.md) 与 [backend/rag.md](../backend/rag.md)。
+设置 → RAG 打开并配置（provider=WeKnora）后，MCP tools/list 会动态多出 `agentero_rag_search`（跨文献语义检索，返回 `paper.path` / `cite{}` / provider）、`agentero_rag_paper_context`（单篇笔记/图注/批注检索）、`agentero_rag_sync_status`（同步进度）。三者只读、不写入知识库；`tools.exposeToMcp` 关闭或 RAG 未配置时工具列表恢复为原来的 25 个。详见 [backend/mcp.md](../backend/mcp.md) 与 [backend/rag.md](../backend/rag.md)。
 
 ## 能做什么
 
 - `paper_list` / `paper_get` — 论文 metadata（list 默认瘦字段；`fields` / `full` 按需）
 - `paper_set_read` — 标记已读/未读
+- `paper_set_meta` — 修正论文 metadata（publication / title / date / doi / arxivId / authors）；只改该篇 catalog 与 `metadata.json`
 - `import_id` — arXiv / DOI / URL 入库
 - `paper_notes_get` / `paper_notes_write` — 读写该篇 `NOTES.md`
 - `paper_tag_add` / `paper_tag_rm` — 标签
-- `layout_list` / `layout_get` — 侧栏图/表/公式索引（需先在 App 跑版面分析）
+- `layout_list` / `layout_get` — 版面索引（图/表/公式）与文档锚点（`kind=section|paragraph` 返回 `#2.1#p3` 等精确锚点，`layout_get` 可按锚点解析）；需先在 App 跑版面分析
 - `vault_search {"query":"transformer attention","limit":10}` — 只读全库 Markdown 关键词 AND 搜索，非语义检索。返回相对 path、snippet、1-based line 和 truncated；用 `file_read {"path": hit.path}` 回读定位。不读 PDF，不服务 Remote Vault。
 - `file_list` / `file_read` / `file_write` — 读改 Vault 里 `papers/` 以外的文本，例如自己的 `drafts/main.tex`。一次只列一层目录；不碰 `.agentero`、PDF 和 `NOTES.md`（笔记仍用 `paper_notes_write`）
 - Resources：`agentero://vault`、`agentero://agent-invariants`、`agentero://skills/agentero-cli`

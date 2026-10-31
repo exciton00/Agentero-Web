@@ -38,6 +38,16 @@
 
 页数懒探测复用 headless PDF engine，但每次使用独立 registry 和唯一文档 ID；成功、失败或读到空页数都会在 `finally` 中尝试关闭本次文档并销毁 registry，等待清理后返回。显式关闭失败后仍尝试 registry teardown；不销毁共享 engine，也不关闭其他探测或后台版面分析的文档，避免热力图逐篇补页数时累积 PDF 文档和字节缓冲。
 
+## 自定义属性列（Web）
+
+仅 headless Web Host 提供（catalog schema v11；桌面版同一份 catalog 数据）：
+
+- 入口：表头右键菜单末尾「管理自定义属性…」打开设置对话框；可新建 `select`（单选，带选项池）/ `text`（自由文本）属性、改名、编辑选项、删除属性。类型创建后不可更改（切换会作废已有取值）。
+- 列：在库内建列之后，每个属性在表格尾部（资源徽标列之前）占一个固定宽度列（7rem），列头显示属性名；不属于内置列设置（显示/排序/列宽）的一部分，删除属性后列自动消失。
+- 单元格：`select` 点击弹选项面板（选择、清除、底部输入「新建选项」直接创建并赋值）；`text` 点击原地编辑，Enter/失焦提交、Esc 取消、空值清除。单元格交互不会选中或打开当前行。
+- 数据：定义存 `.agentero/properties.json` + catalog `custom_properties`；论文取值存 `papers.custom_props_json`（`{propertyId: optionId | text}`），随 catalog 与桌面版/CLI 共享。Web Host RPC 为 `custom_properties_*`（见 [../backend/catalog.md](../backend/catalog.md)）。
+- 已知边界：Web 的 `metadata.json` sidecar 投影暂不包含 `custom_props`（catalog 为准；桌面版打开后会按自己的投影规则补齐），以及自定义属性列不参与 Library 排序/搜索。
+
 ## Tags（前端）
 
 - Paper Info 增删 + Apple 8 色色盘 → `paper_set_tags`。Library 与 Paper Info 点击已有标签可修改颜色或恢复无色；色盘支持键盘焦点、Enter/Space 选择与 Escape 关闭。颜色按当前论文保存，不改变其他论文的同名标签。

@@ -136,9 +136,40 @@ fn default_true() -> bool {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
+struct PaperSetMetaArgs {
+    /// Paper id or vault-relative folder path (`papers/…`).
+    r#ref: String,
+    /// Authoritative publication / venue name (e.g. "NeurIPS 2024"). An empty
+    /// string clears it.
+    #[serde(default)]
+    publication: Option<String>,
+    /// Paper title; it cannot be cleared.
+    #[serde(default)]
+    title: Option<String>,
+    /// Publication date: `YYYY`, `YYYY-MM` or `YYYY-MM-DD`. An empty string
+    /// clears the date and its derived year.
+    #[serde(default)]
+    date: Option<String>,
+    /// DOI string. An empty string clears it.
+    #[serde(default)]
+    doi: Option<String>,
+    /// arXiv ID. An empty string clears it.
+    #[serde(default)]
+    arxiv_id: Option<String>,
+    /// Author names in display order. An empty array clears them.
+    #[serde(default)]
+    authors: Option<Vec<String>>,
+
+    /// Optional absolute local vault path from `vault_list`; defaults to the open vault.
+    #[serde(default)]
+    vault: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
 struct LayoutListArgs {
     r#ref: String,
-    /// Filter kinds: figure|image|chart|table|algorithm|formula (OR).
+    /// Filter kinds: figure|image|chart|table|algorithm|formula|section|paragraph (OR).
     #[serde(default)]
     kind: Vec<String>,
     #[serde(default)]
@@ -153,7 +184,8 @@ struct LayoutListArgs {
 #[serde(rename_all = "camelCase")]
 struct LayoutGetArgs {
     r#ref: String,
-    /// Region id from layout_list (e.g. figure-3).
+    /// Region id from layout_list (e.g. figure-3) or an exact document anchor
+    /// from layout_list kind=section|paragraph (e.g. #2.1#p3).
     id: String,
 
     /// Optional absolute local vault path from `vault_list`; defaults to the open vault.
@@ -562,7 +594,8 @@ impl AgenteroMcp {
     async fn vault_search(
         &self,
         Parameters(args): Parameters<VaultSearchArgs>,
-    ) -> Result<Json<agentero_core::features::markdown::search::VaultSearchResult>, CallToolResult> {
+    ) -> Result<Json<agentero_core::features::markdown::search::VaultSearchResult>, CallToolResult>
+    {
         let ctrl = self.ctrl.clone();
         // Root resolution and the walk both do sync I/O; keep them off the MCP runtime.
         tokio::task::spawn_blocking(move || {
@@ -920,6 +953,46 @@ impl AgenteroMcp {
     }
 
     #[tool(
+        description = "Update catalog metadata for one paper (publication/venue, title, date, doi, arxivId, authors). Omitted fields keep their current value; an empty string clears an optional text field; title cannot be cleared. Writes only that paper's catalog row and metadata.json sidecar."
+    )]
+    async fn paper_set_meta(
+        &self,
+        Parameters(args): Parameters<PaperSetMetaArgs>,
+    ) -> Result<Json<paper::PaperGetOut>, CallToolResult> {
+        let vault = match self.ctrl.resolve_vault(args.vault.as_deref()) {
+            Ok(v) => v,
+            Err(e) => return Err(tool_err(e)),
+        };
+        // Fields are optional so callers can patch one column; a call with none
+        // set is a usage error instead of a pointless catalog/sidecar write.
+        let patch = papers::PaperMetaPatch {
+            title: args.title,
+            authors: args.authors,
+            date: args.date,
+            doi: args.doi,
+            arxiv_id: args.arxiv_id,
+            publication: args.publication,
+            ..Default::default()
+        };
+        if patch.title.is_none()
+            && patch.authors.is_none()
+            && patch.date.is_none()
+            && patch.doi.is_none()
+            && patch.arxiv_id.is_none()
+            && patch.publication.is_none()
+        {
+            return Err(tool_err(AppError::domain(
+                "usage",
+                "paper_set_meta needs at least one of: publication, title, date, doi, arxivId, authors",
+            )));
+        }
+        match paper::set_meta(&vault, &args.r#ref, &patch) {
+            Ok(row) => Ok(Json(row)),
+            Err(e) => Err(tool_err(e)),
+        }
+    }
+
+    #[tool(
         description = "Move a paper or papers organization folder under a new parent under papers/. Preserves the basename, updates wiki links and catalog paths, and optionally migrates to another vault via to_vault (paper id must be unique there). Use file_move for renaming a file or moving non-paper paths."
     )]
     async fn paper_move(
@@ -962,7 +1035,7 @@ impl AgenteroMcp {
     }
 
     #[tool(
-        description = "List sidebar layout regions (figures/tables/algorithms/formulas) from layout-index.json. Requires desktop layout analysis first."
+        description = "List layout regions from layout-index.json (figures/tables/algorithms/formulas) and/or document anchors from source/layout.json. kind=section returns numbered headings with exact `#2.1` anchors; kind=paragraph returns their body blocks with `#2.1#p3` anchors, original text and coordinates. Requires layout analysis first."
     )]
     async fn layout_list(
         &self,
@@ -978,7 +1051,9 @@ impl AgenteroMcp {
         }
     }
 
-    #[tool(description = "Get one layout region by id (e.g. figure-3) from layout-index.json.")]
+    #[tool(
+        description = "Get one layout region by id (e.g. figure-3) from layout-index.json, or resolve an exact document anchor from layout_list kind=section|paragraph (e.g. #2.1#p3). Missing or ambiguous anchors error instead of guessing."
+    )]
     async fn layout_get(
         &self,
         Parameters(args): Parameters<LayoutGetArgs>,
@@ -1219,7 +1294,6 @@ impl AgenteroMcp {
         runtime.sync_status(args).map(Json).map_err(tool_err)
     }
 }
-
 
 #[tool_handler]
 impl ServerHandler for AgenteroMcp {
@@ -2001,11 +2075,9 @@ mod schema_tests {
         ))
     }
 
-    fn settings_store_with_rag() -> std::sync::Arc<
-        agentero_core::features::system::settings::AppSettingsStore,
-    > {
-        let mut settings =
-            agentero_core::features::system::settings::AppSettings::default();
+    fn settings_store_with_rag(
+    ) -> std::sync::Arc<agentero_core::features::system::settings::AppSettingsStore> {
+        let mut settings = agentero_core::features::system::settings::AppSettings::default();
         settings.rag = agentero_core::features::rag::settings::RagSettings {
             enabled: true,
             base_url: "https://kb.example.com".into(),
@@ -2043,7 +2115,7 @@ mod schema_tests {
             .map(|tool| tool.name.to_string())
             .collect();
         assert!(!visible.iter().any(|name| name.starts_with("agentero_rag_")));
-        assert_eq!(visible.len(), 24, "existing tool surface unchanged");
+        assert_eq!(visible.len(), 25, "existing tool surface unchanged");
 
         let store = settings_store_with_rag();
         let enabled = enabled_controller(vault.path(), &store);
@@ -2102,7 +2174,7 @@ mod schema_tests {
         ] {
             assert!(names.contains(&name), "missing {name}: {names:?}");
         }
-        assert_eq!(tools.len(), 27);
+        assert_eq!(tools.len(), 28);
 
         // Local-only sync status works without talking to the provider.
         let status = client
@@ -2122,7 +2194,7 @@ mod schema_tests {
         settings.rag.tools.expose_to_mcp = false;
         store.set(settings).unwrap();
         let tools = client.list_all_tools().await.unwrap();
-        assert_eq!(tools.len(), 24, "RAG tools hidden after the toggle");
+        assert_eq!(tools.len(), 25, "RAG tools hidden after the toggle");
         let denied = client
             .call_tool(
                 CallToolRequestParams::new("agentero_rag_search").with_arguments(
@@ -2150,5 +2222,352 @@ mod schema_tests {
         assert!(!icons.is_empty());
         assert!(icons[0].src.starts_with("data:image/png;base64,"));
         assert_eq!(info.server_info.title.as_deref(), Some("Agentero"));
+    }
+
+    fn index_paper(root: &std::path::Path) {
+        use agentero_core::features::paper::catalog::papers::{self, PaperRecord};
+        std::fs::create_dir_all(root.join("papers/demo")).unwrap();
+        papers::upsert_paper(
+            root,
+            &PaperRecord::local_pdf("demo".into(), "Demo Paper".into()).at_path("papers/demo"),
+        )
+        .unwrap();
+    }
+
+    /// Extract a tool-level error; `rmcp::Json<T>` has no `Debug`, so
+    /// `unwrap_err`/`expect_err` cannot be used on tool results directly.
+    fn expect_tool_err<T>(result: Result<T, rmcp::model::CallToolResult>) -> String {
+        match result {
+            Ok(_) => panic!("expected a tool error"),
+            Err(err) => format!("{err:?}"),
+        }
+    }
+
+    fn set_meta_args() -> super::PaperSetMetaArgs {
+        super::PaperSetMetaArgs {
+            r#ref: "papers/demo".into(),
+            publication: Some("NeurIPS 2024".into()),
+            title: Some("Patched title".into()),
+            date: Some("2024-06".into()),
+            doi: Some("10.1000/xyz".into()),
+            arxiv_id: Some("2401.00001".into()),
+            authors: Some(vec![
+                "Ada Lovelace".into(),
+                "  ".into(),
+                "Alan Turing".into(),
+            ]),
+            vault: None,
+        }
+    }
+
+    #[test]
+    fn paper_set_meta_advertises_a_write_tool() {
+        let tools = AgenteroMcp::tool_router().list_all();
+        let tool = tools
+            .iter()
+            .find(|t| t.name == "paper_set_meta")
+            .expect("paper_set_meta must be registered");
+        let inputs = tool.input_schema.get("properties").unwrap();
+        for key in [
+            "ref",
+            "publication",
+            "title",
+            "date",
+            "doi",
+            "arxivId",
+            "authors",
+            "vault",
+        ] {
+            assert!(inputs.get(key).is_some(), "missing input field {key}");
+        }
+        // Metadata edits are a write, not a read-only query.
+        assert_ne!(
+            tool.annotations.as_ref().and_then(|a| a.read_only_hint),
+            Some(true)
+        );
+    }
+
+    #[tokio::test]
+    async fn paper_set_meta_updates_catalog_and_sidecar() {
+        use agentero_core::features::paper::catalog::papers;
+        use rmcp::handler::server::wrapper::Parameters;
+        let vault = tempfile::tempdir().unwrap();
+        let root = vault.path();
+        index_paper(root);
+        let ctrl = std::sync::Arc::new(McpController::for_tests());
+        ctrl.set_vault(Some(root.to_string_lossy().into_owned()));
+        let mcp = AgenteroMcp::new(ctrl);
+
+        let out = mcp
+            .paper_set_meta(Parameters(set_meta_args()))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(out.title, "Patched title");
+        assert_eq!(out.publication.as_deref(), Some("NeurIPS 2024"));
+        assert_eq!(out.date.as_deref(), Some("2024-06"));
+        assert_eq!(out.year, Some(2024));
+        assert_eq!(
+            out.authors,
+            vec!["Ada Lovelace".to_string(), "Alan Turing".to_string()]
+        );
+        // Persisted through the same catalog path as the UI: row + sidecar.
+        let row = papers::get_by_path(root, "papers/demo").unwrap().unwrap();
+        assert_eq!(row.title, "Patched title");
+        assert_eq!(row.meta_source.as_deref(), Some("manual"));
+        let sidecar = std::fs::read_to_string(root.join("papers/demo/metadata.json")).unwrap();
+        assert!(sidecar.contains("NeurIPS 2024"), "{sidecar}");
+
+        // An empty string clears an optional column; omitted fields stay.
+        let cleared = mcp
+            .paper_set_meta(Parameters(super::PaperSetMetaArgs {
+                r#ref: "papers/demo".into(),
+                publication: Some(String::new()),
+                title: None,
+                date: None,
+                doi: None,
+                arxiv_id: None,
+                authors: None,
+                vault: None,
+            }))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(cleared.publication, None);
+        assert_eq!(cleared.title, "Patched title");
+        assert_eq!(cleared.doi.as_deref(), Some("10.1000/xyz"));
+    }
+
+    #[tokio::test]
+    async fn paper_set_meta_rejects_empty_patch_empty_title_and_unknown_paper() {
+        use rmcp::handler::server::wrapper::Parameters;
+        let vault = tempfile::tempdir().unwrap();
+        let root = vault.path();
+        index_paper(root);
+        let ctrl = std::sync::Arc::new(McpController::for_tests());
+        ctrl.set_vault(Some(root.to_string_lossy().into_owned()));
+        let mcp = AgenteroMcp::new(ctrl);
+
+        let empty = super::PaperSetMetaArgs {
+            r#ref: "papers/demo".into(),
+            publication: None,
+            title: None,
+            date: None,
+            doi: None,
+            arxiv_id: None,
+            authors: None,
+            vault: None,
+        };
+        let err = expect_tool_err(mcp.paper_set_meta(Parameters(empty)).await);
+        assert!(err.contains("usage"), "{err}");
+
+        let err = expect_tool_err(
+            mcp.paper_set_meta(Parameters(super::PaperSetMetaArgs {
+                r#ref: "papers/demo".into(),
+                publication: None,
+                title: Some("  ".into()),
+                date: None,
+                doi: None,
+                arxiv_id: None,
+                authors: None,
+                vault: None,
+            }))
+            .await,
+        );
+        assert!(err.contains("title cannot be empty"), "{err}");
+
+        let err = expect_tool_err(
+            mcp.paper_set_meta(Parameters(super::PaperSetMetaArgs {
+                r#ref: "papers/missing".into(),
+                ..set_meta_args()
+            }))
+            .await,
+        );
+        assert!(err.contains("paper not found"), "{err}");
+    }
+
+    const ANCHOR_LAYOUT: &str = r#"{
+      "schemaVersion": 3,
+      "source": { "mode": "fixture", "generatedAt": "fixture" },
+      "regions": [
+        {"id": "h1", "pageIndex": 0, "kind": "header", "score": 0.9,
+         "bbox": {"x": 0.1, "y": 0.05, "w": 0.8, "h": 0.03}, "title": "1 Introduction"},
+        {"id": "p1", "pageIndex": 0, "kind": "text", "score": 0.8,
+         "bbox": {"x": 0.1, "y": 0.1, "w": 0.8, "h": 0.05}, "text": "First block."},
+        {"id": "p2", "pageIndex": 0, "kind": "paragraph", "score": 0.8,
+         "bbox": {"x": 0.1, "y": 0.2, "w": 0.8, "h": 0.05}, "text": "Second block."}
+      ]
+    }"#;
+
+    fn index_anchor_paper(root: &std::path::Path) {
+        index_paper(root);
+        let source = root.join("papers/demo/source");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("layout.json"), ANCHOR_LAYOUT).unwrap();
+    }
+
+    #[tokio::test]
+    async fn layout_anchors_round_trip_via_mcp_tools() {
+        use rmcp::handler::server::wrapper::Parameters;
+        let vault = tempfile::tempdir().unwrap();
+        let root = vault.path();
+        index_anchor_paper(root);
+        let ctrl = std::sync::Arc::new(McpController::for_tests());
+        ctrl.set_vault(Some(root.to_string_lossy().into_owned()));
+        let mcp = AgenteroMcp::new(ctrl);
+
+        let out = mcp
+            .layout_list(Parameters(super::LayoutListArgs {
+                r#ref: "papers/demo".into(),
+                kind: vec!["section".into(), "paragraph".into()],
+                min_score: None,
+                vault: None,
+            }))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(out.counts.section, 1, "{:?}", out.counts);
+        assert_eq!(out.counts.paragraph, 2, "{:?}", out.counts);
+        assert_eq!(out.items[0].anchor.as_deref(), Some("#1"));
+        assert_eq!(out.items[1].anchor.as_deref(), Some("#1#p1"));
+        assert_eq!(out.items[2].anchor.as_deref(), Some("#1#p2"));
+
+        let got = mcp
+            .layout_get(Parameters(super::LayoutGetArgs {
+                r#ref: "papers/demo".into(),
+                id: "#1#p2".into(),
+                vault: None,
+            }))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(got.item.anchor.as_deref(), Some("#1#p2"));
+        assert_eq!(got.item.text.as_deref(), Some("Second block."));
+
+        // Kind filter keeps only the requested anchor kind.
+        let sections = mcp
+            .layout_list(Parameters(super::LayoutListArgs {
+                r#ref: "papers/demo".into(),
+                kind: vec!["section".into()],
+                min_score: None,
+                vault: None,
+            }))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(sections.items.len(), 1);
+        assert!(sections.items.iter().all(|i| i.kind == "section"));
+
+        // Unknown anchor and unknown kind are tool-level errors, never guesses.
+        let err = expect_tool_err(
+            mcp.layout_get(Parameters(super::LayoutGetArgs {
+                r#ref: "papers/demo".into(),
+                id: "#7#p1".into(),
+                vault: None,
+            }))
+            .await,
+        );
+        assert!(err.contains("citation_anchor_not_found"), "{err}");
+        let err = expect_tool_err(
+            mcp.layout_list(Parameters(super::LayoutListArgs {
+                r#ref: "papers/demo".into(),
+                kind: vec!["bogus".into()],
+                min_score: None,
+                vault: None,
+            }))
+            .await,
+        );
+        assert!(err.contains("unknown kind"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn paper_set_meta_and_layout_anchors_round_trip_over_mcp() {
+        use rmcp::{model::CallToolRequestParams, ServiceExt};
+        use serde_json::json;
+        let vault = tempfile::tempdir().unwrap();
+        let root = vault.path();
+        index_anchor_paper(root);
+        let ctrl = std::sync::Arc::new(McpController::for_tests());
+        ctrl.set_vault(Some(root.to_string_lossy().into_owned()));
+        let (server_io, client_io) = tokio::io::duplex(65536);
+        let server =
+            tokio::spawn(async move { AgenteroMcp::new(ctrl).serve(server_io).await.unwrap() });
+        let mut client = ().serve(client_io).await.unwrap();
+        let mut server = server.await.unwrap();
+
+        // camelCase JSON arguments must deserialize into the metadata patch.
+        let result = client
+            .call_tool(
+                CallToolRequestParams::new("paper_set_meta").with_arguments(
+                    json!({
+                        "ref": "papers/demo",
+                        "publication": "ICML 2025",
+                        "date": "2025-07",
+                        "arxivId": "2501.00001",
+                        "authors": ["Ada Lovelace"]
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                ),
+            )
+            .await
+            .unwrap();
+        assert_ne!(result.is_error, Some(true), "{result:?}");
+        let out = result.structured_content.unwrap();
+        assert_eq!(out["title"], "Demo Paper");
+        assert_eq!(out["publication"], "ICML 2025");
+        assert_eq!(out["date"], "2025-07");
+        assert_eq!(out["arxivId"], "2501.00001");
+        assert_eq!(out["authors"][0], "Ada Lovelace");
+
+        // Paragraph anchors are listed with exact fragments and resolved back.
+        let list = client
+            .call_tool(
+                CallToolRequestParams::new("layout_list").with_arguments(
+                    json!({"ref": "papers/demo", "kind": ["section", "paragraph"]})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                ),
+            )
+            .await
+            .unwrap();
+        assert_ne!(list.is_error, Some(true), "{list:?}");
+        let list = list.structured_content.unwrap();
+        assert_eq!(list["counts"]["section"], 1, "{list}");
+        assert_eq!(list["counts"]["paragraph"], 2, "{list}");
+        assert_eq!(list["items"][1]["anchor"], "#1#p1");
+        let get = client
+            .call_tool(
+                CallToolRequestParams::new("layout_get").with_arguments(
+                    json!({"ref": "papers/demo", "id": "#1#p2"})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                ),
+            )
+            .await
+            .unwrap();
+        assert_ne!(get.is_error, Some(true), "{get:?}");
+        let get = get.structured_content.unwrap();
+        assert_eq!(get["item"]["anchor"], "#1#p2");
+        assert_eq!(get["item"]["text"], "Second block.");
+        // Missing anchors are tool-level errors over the wire, never guesses.
+        let missing = client
+            .call_tool(
+                CallToolRequestParams::new("layout_get").with_arguments(
+                    json!({"ref": "papers/demo", "id": "#9"})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                ),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing.is_error, Some(true));
+
+        client.close().await.unwrap();
+        server.close().await.unwrap();
     }
 }

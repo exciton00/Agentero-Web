@@ -8,7 +8,9 @@
 use serde_json::Value;
 
 use crate::error::HandlerResult;
-use crate::handlers::{agent, layout, markdown, mcp, paper, rag, search, tags, translate, vault};
+use crate::handlers::{
+    agent, layout, markdown, mcp, paper, properties, rag, search, tags, translate, vault,
+};
 use crate::rpc::RpcCtx;
 
 pub async fn dispatch(ctx: &RpcCtx, command: &str, args: &Value) -> Option<HandlerResult> {
@@ -64,12 +66,24 @@ pub async fn dispatch(ctx: &RpcCtx, command: &str, args: &Value) -> Option<Handl
         "paper_move" => paper::move_paper(ctx, args).await,
         "paper_repath" => paper::repath(ctx, args).await,
         "paper_rescan" => paper::rescan(ctx, args).await,
+        // Targeted watcher-path repair; full rescan only for unmapped paths.
+        "paper_ensure_rows" => paper::ensure_rows(ctx, args).await,
         "paper_set_page_counts" => paper::set_page_counts(ctx, args).await,
         "paper_refs_list" => paper::refs_list(ctx, args).await,
         "paper_refs_parse" => paper::refs_parse(ctx, args).await,
         "paper_sync_publication" => paper::sync_publication(ctx, args).await,
         "notes_template_seed" => paper::notes_template_seed(ctx, args).await,
         "activity_record_events" => paper::activity_record_events(ctx, args).await,
+
+        // ---- Library custom properties (catalog schema v11) ----
+        "custom_properties_list" => properties::list(ctx, args).await,
+        "custom_properties_create" => properties::create(ctx, args).await,
+        "custom_properties_update" => properties::update(ctx, args).await,
+        "custom_properties_delete" => properties::delete(ctx, args).await,
+        "custom_properties_set_paper_value" => properties::set_paper_value(ctx, args).await,
+        "custom_properties_create_option" => properties::create_option(ctx, args).await,
+        "custom_properties_delete_option" => properties::delete_option(ctx, args).await,
+        "custom_properties_paper_values" => properties::paper_values(ctx, args).await,
 
         // ---- Recycle bin + desktop-only path actions ----
         "path_trash" => vault::path_trash(ctx, args).await,

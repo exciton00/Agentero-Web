@@ -31,6 +31,7 @@ import {
 } from "lucide-react";
 import type { MouseEvent } from "react";
 import { Fragment, memo } from "react";
+import { CustomPropertyCell } from "@/components/library/custom-property-cell";
 import { COLUMN_META } from "@/components/library/library-columns";
 import {
 	type CellCtx,
@@ -52,6 +53,10 @@ import { broadcastAgentAttachContext } from "@/lib/agent/context-attach";
 import { notifyError } from "@/lib/core/notify";
 import { isWebHost } from "@/lib/core/tauri";
 import type { PaperMetadata } from "@/lib/paper";
+import type {
+	CustomProperty,
+	CustomPropertyValues,
+} from "@/lib/paper/custom-properties";
 import { downloadLibraryPaper } from "@/lib/paper/library-actions";
 import { setEditMetaDraft } from "@/lib/paper/library-store";
 import type { ReadingHeatmap } from "@/lib/paper/reading-heatmap";
@@ -105,6 +110,21 @@ type LibraryPaperRowProps = {
 	onRefreshMetadata?: (paper: PaperMetadata) => void;
 	/** Preview the row in the left Paper Info panel while hovered. */
 	onHoverPaper?: (relPath: string | null) => void;
+	/** Extra custom-property cells rendered before the asset-badge cell. */
+	customProperties?: CustomProperty[];
+	/** `{propertyId -> value}` for this paper. */
+	customValues?: CustomPropertyValues;
+	onSetCustomValue?: (
+		paper: PaperMetadata,
+		propertyId: string,
+		value: string | null,
+	) => void;
+	onCreateOption?: (
+		paper: PaperMetadata,
+		propertyId: string,
+		name: string,
+		color?: string | null,
+	) => void;
 	/** rowVirtualizer.measureElement — attached to the `<tr>`. */
 	measureRef: (element: Element | null) => void;
 };
@@ -131,6 +151,10 @@ export const LibraryPaperRow = memo(function LibraryPaperRow({
 	onRowClick,
 	onRefreshMetadata,
 	onHoverPaper,
+	customProperties = [],
+	customValues,
+	onSetCustomValue,
+	onCreateOption,
 	measureRef,
 }: LibraryPaperRowProps) {
 	const p = row.paper;
@@ -161,6 +185,16 @@ export const LibraryPaperRow = memo(function LibraryPaperRow({
 						<Fragment key={col.key}>
 							{COLUMN_META[col.key].render(p, cellCtx)}
 						</Fragment>
+					))}
+					{customProperties.map((property) => (
+						<CustomPropertyCell
+							key={property.id}
+							property={property}
+							value={customValues?.[property.id] ?? null}
+							paper={p}
+							onSetValue={onSetCustomValue}
+							onCreateOption={onCreateOption}
+						/>
 					))}
 					{/* Fixed trailing asset badges: PDF (red/grey) + layout (blue/grey). */}
 					<td

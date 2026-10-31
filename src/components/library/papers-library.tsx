@@ -21,6 +21,7 @@ import {
 import { useTranslation } from "react-i18next";
 import { AddPaperTagsDialog } from "@/components/library/add-paper-tags-dialog";
 import { ConfirmBatchDeleteDialog } from "@/components/library/confirm-batch-delete-dialog";
+import { CustomPropertiesDialog } from "@/components/library/custom-properties-dialog";
 import { useCellCopy } from "@/components/library/hooks/use-cell-copy";
 import { useLibraryContentSearch } from "@/components/library/hooks/use-library-content-search";
 import { useLibraryHeatmap } from "@/components/library/hooks/use-library-heatmap";
@@ -55,6 +56,15 @@ import { isWebHost } from "@/lib/core/tauri";
 import { cn } from "@/lib/core/utils";
 import type { PaperLibraryRow, PaperMetadata } from "@/lib/paper";
 import { filterPapersByScope, rescanPapers } from "@/lib/paper/api";
+import {
+	type CustomProperty,
+	type CustomPropertyValues,
+	type CustomPropertyValuesByPath,
+	createCustomPropertyOption,
+	customPropertyValuesByPath,
+	listCustomProperties,
+	setPaperCustomPropertyValue,
+} from "@/lib/paper/custom-properties";
 import {
 	refreshPaperMetadata,
 	syncLibraryPublication,
@@ -131,6 +141,10 @@ export type PapersLibraryProps = {
 const SEARCH_DEBOUNCE_MS = 250;
 /** Hide header search/actions while scrolling; restore after this idle gap. */
 const HEADER_SCROLL_IDLE_MS = 450;
+/** Fixed width (rem) of one custom-property column. */
+const CUSTOM_PROPERTY_COLUMN_REM = 7;
+/** Stable empty map shared by rows without custom values (memo friendly). */
+const EMPTY_CUSTOM_VALUES: CustomPropertyValues = {};
 
 export function PapersLibrary({
 	papers,
@@ -239,6 +253,84 @@ export function PapersLibrary({
 		domains: searchDomains,
 		enabled: contentSearchAvailable && active,
 	});
+
+	/**
+	 * Custom property columns (catalog schema v11, headless Web host RPC):
+	 * definitions live in the Vault catalog, per-paper values are edited in the
+	 * table cells. Hidden on the desktop shell and older hosts without the RPC.
+	 */
+	const customPropertiesAvailable =
+		isWebHost() && Boolean(vaultPath) && !isRemoteVaultHandle(vaultPath ?? "");
+	const [customProperties, setCustomProperties] = useState<CustomProperty[]>(
+		[],
+	);
+	const [customValues, setCustomValues] = useState<CustomPropertyValuesByPath>(
+		{},
+	);
+	const [customPropertiesOpen, setCustomPropertiesOpen] = useState(false);
+	const loadCustomProperties = useCallback(async () => {
+		if (!vaultPath || !customPropertiesAvailable) return;
+		try {
+			const [definitions, values] = await Promise.all([
+				listCustomProperties(vaultPath),
+				customPropertyValuesByPath(vaultPath),
+			]);
+			setCustomProperties(definitions);
+			setCustomValues(values);
+		} catch {
+			// Older host without the custom-properties RPC: hide the feature.
+			setCustomProperties([]);
+			setCustomValues({});
+		}
+	}, [customPropertiesAvailable, vaultPath]);
+	useEffect(() => {
+		void loadCustomProperties();
+	}, [loadCustomProperties]);
+	const handleSetCustomValue = useCallback(
+		async (paper: PaperMetadata, propertyId: string, value: string | null) => {
+			if (!vaultPath) return;
+			try {
+				const updated = await setPaperCustomPropertyValue(
+					vaultPath,
+					paper.path ?? paper.id,
+					propertyId,
+					value,
+				);
+				setCustomValues((prev) => ({
+					...prev,
+					[updated.path]: updated.values,
+				}));
+			} catch (error) {
+				notifyError(errorMessage(error));
+			}
+		},
+		[vaultPath],
+	);
+	const handleCreateCustomOption = useCallback(
+		async (paper: PaperMetadata, propertyId: string, name: string) => {
+			if (!vaultPath) return;
+			try {
+				const updated = await createCustomPropertyOption(
+					vaultPath,
+					paper.path ?? paper.id,
+					propertyId,
+					name,
+				);
+				setCustomProperties((prev) =>
+					prev.map((property) =>
+						property.id === updated.property.id ? updated.property : property,
+					),
+				);
+				setCustomValues((prev) => ({
+					...prev,
+					[updated.path]: updated.values,
+				}));
+			} catch (error) {
+				notifyError(errorMessage(error));
+			}
+		},
+		[vaultPath],
+	);
 
 	const handleSort = useCallback(
 		(key: SortKey) => {
@@ -947,7 +1039,9 @@ export function PapersLibrary({
 						className="table-fixed border-collapse text-left text-sm"
 						style={{
 							width: `${
-								columnWidths.reduce((sum, width) => sum + width, 0) + 3.5
+								columnWidths.reduce((sum, width) => sum + width, 0) +
+								3.5 +
+								customProperties.length * CUSTOM_PROPERTY_COLUMN_REM
 							}rem`,
 						}}
 					>
@@ -958,6 +1052,12 @@ export function PapersLibrary({
 									style={{
 										width: `${columnWidths[index]}rem`,
 									}}
+								/>
+							))}
+							{customProperties.map((property) => (
+								<col
+									key={property.id}
+									style={{ width: `${CUSTOM_PROPERTY_COLUMN_REM}rem` }}
 								/>
 							))}
 							{/* Fixed-width trailing cell for the PDF / layout badges. */}
@@ -990,6 +1090,12 @@ export function PapersLibrary({
 							onResetColumns={resetColumns}
 							onColumnReorder={handleColumnReorder}
 							onColumnResize={resizeColumn}
+							customProperties={customProperties}
+							onManageCustomProperties={
+								customPropertiesAvailable
+									? () => setCustomPropertiesOpen(true)
+									: undefined
+							}
 						/>
 						{/* key={reorderKey} remounts the tbody to replay the fade animation. */}
 						<tbody
@@ -999,7 +1105,9 @@ export function PapersLibrary({
 							{paddingTop > 0 ? (
 								<tr aria-hidden>
 									<td
-										colSpan={visibleColumns.length + 1}
+										colSpan={
+											visibleColumns.length + 1 + customProperties.length
+										}
 										style={{ height: paddingTop }}
 									/>
 								</tr>
@@ -1038,6 +1146,21 @@ export function PapersLibrary({
 										onRowClick={handleRowClick}
 										onRefreshMetadata={handleRefreshPaperMetadata}
 										onHoverPaper={setHoveredPaperPath}
+										customProperties={customProperties}
+										customValues={
+											customValues[(p.path ?? "").replace(/\\/g, "/")] ??
+											EMPTY_CUSTOM_VALUES
+										}
+										onSetCustomValue={
+											customPropertiesAvailable
+												? handleSetCustomValue
+												: undefined
+										}
+										onCreateOption={
+											customPropertiesAvailable
+												? handleCreateCustomOption
+												: undefined
+										}
 										measureRef={rowVirtualizer.measureElement}
 									/>
 								);
@@ -1045,7 +1168,9 @@ export function PapersLibrary({
 							{paddingBottom > 0 ? (
 								<tr aria-hidden>
 									<td
-										colSpan={visibleColumns.length + 1}
+										colSpan={
+											visibleColumns.length + 1 + customProperties.length
+										}
 										style={{ height: paddingBottom }}
 									/>
 								</tr>
@@ -1111,6 +1236,12 @@ export function PapersLibrary({
 					event.currentTarget.value = "";
 					void handlePdfPicked(file);
 				}}
+			/>
+			<CustomPropertiesDialog
+				open={customPropertiesOpen}
+				onOpenChange={setCustomPropertiesOpen}
+				properties={customProperties}
+				onChanged={() => void loadCustomProperties()}
 			/>
 			<AddPaperTagsDialog
 				open={tagEditorPapers !== null}

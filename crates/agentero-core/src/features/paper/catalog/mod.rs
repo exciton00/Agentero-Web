@@ -6,9 +6,10 @@
 pub mod bibtex_export;
 pub mod move_paper;
 pub mod papers;
-pub mod tag_index;
+pub mod properties;
 mod schema;
 pub mod sidecar;
+pub mod tag_index;
 
 pub use crate::features::paper::capabilities::{
     find_local_pdf, has_local_pdf, has_local_tex, has_paper_md, probe_paper_caps, CapsCache,

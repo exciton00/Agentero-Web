@@ -1,12 +1,18 @@
 //! MCP layout_list / layout_get helpers + schemars DTOs.
 
+use super::{anchors, paper};
 use agentero_core::error::AppError;
 use agentero_core::features::pdf::layout_index::{
     self, LayoutGetResult, LayoutIndexItem, LayoutListResult,
 };
-use super::paper;
 use serde::Serialize;
 use std::path::Path;
+
+/// Kinds served by the sidebar `layout-index.json`; everything else that
+/// `layout_list` accepts is read from the raw `layout.json` document anchors.
+const INDEX_KINDS: [&str; 6] = ["figure", "image", "chart", "table", "algorithm", "formula"];
+const ANCHOR_KINDS: [&str; 2] = ["section", "paragraph"];
+const ANCHOR_DEFAULT_MIN_SCORE: f64 = 0.3;
 
 #[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct BboxOut {
@@ -30,6 +36,18 @@ pub struct LayoutItemOut {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     pub layout_region_id: String,
+    /// `#2.1` or `#2.1#p3`; only on section/paragraph anchors.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<String>,
+    /// `#2.1`; the numbered heading this paragraph belongs to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub section_anchor: Option<String>,
+    /// 1-based body-block ordinal inside the owning section.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub paragraph_index: Option<u32>,
+    /// Original block text for section/paragraph anchors.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 impl From<&LayoutIndexItem> for LayoutItemOut {
@@ -50,6 +68,36 @@ impl From<&LayoutIndexItem> for LayoutItemOut {
             score: i.score,
             title: i.title.clone(),
             layout_region_id: i.layout_region_id.clone(),
+            anchor: None,
+            section_anchor: None,
+            paragraph_index: None,
+            text: None,
+        }
+    }
+}
+
+impl LayoutItemOut {
+    fn from_anchor(a: &anchors::DocumentAnchor) -> Self {
+        Self {
+            id: a.id.clone(),
+            stable_key: a.id.clone(),
+            kind: a.kind.clone(),
+            section: a.kind.clone(),
+            page: a.page,
+            page_index: a.page_index,
+            bbox: BboxOut {
+                x: a.bbox.x,
+                y: a.bbox.y,
+                w: a.bbox.w,
+                h: a.bbox.h,
+            },
+            score: a.score,
+            title: a.title.clone(),
+            layout_region_id: a.id.clone(),
+            anchor: a.anchor.clone(),
+            section_anchor: a.section_anchor.clone(),
+            paragraph_index: a.paragraph_index,
+            text: a.text.clone(),
         }
     }
 }
@@ -62,6 +110,34 @@ pub struct LayoutCountsOut {
     pub table: usize,
     pub algorithm: usize,
     pub formula: usize,
+    pub section: usize,
+    pub paragraph: usize,
+}
+
+impl LayoutCountsOut {
+    fn from_items(items: &[LayoutItemOut]) -> Self {
+        let mut counts = Self {
+            total: items.len(),
+            figure: 0,
+            table: 0,
+            algorithm: 0,
+            formula: 0,
+            section: 0,
+            paragraph: 0,
+        };
+        for item in items {
+            match item.section.as_str() {
+                "figure" => counts.figure += 1,
+                "table" => counts.table += 1,
+                "algorithm" => counts.algorithm += 1,
+                "formula" => counts.formula += 1,
+                "section" => counts.section += 1,
+                "paragraph" => counts.paragraph += 1,
+                _ => {}
+            }
+        }
+        counts
+    }
 }
 
 #[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
@@ -77,19 +153,14 @@ pub struct LayoutListOut {
 
 impl From<LayoutListResult> for LayoutListOut {
     fn from(r: LayoutListResult) -> Self {
+        let items: Vec<LayoutItemOut> = r.items.iter().map(LayoutItemOut::from).collect();
         Self {
             paper_path: r.paper_path,
             index_path: r.index_path,
             generated_at: r.generated_at,
             min_score: r.min_score,
-            counts: LayoutCountsOut {
-                total: r.counts.total,
-                figure: r.counts.figure,
-                table: r.counts.table,
-                algorithm: r.counts.algorithm,
-                formula: r.counts.formula,
-            },
-            items: r.items.iter().map(LayoutItemOut::from).collect(),
+            counts: LayoutCountsOut::from_items(&items),
+            items,
         }
     }
 }
@@ -114,6 +185,33 @@ impl From<LayoutGetResult> for LayoutGetOut {
     }
 }
 
+/// Normalize `layout_list` kind filters. Unlike the sidebar index this MCP
+/// surface also accepts `section` / `paragraph`, which read raw `layout.json`.
+fn normalize_kinds(kinds: &[String]) -> Result<Vec<String>, AppError> {
+    let mut out = Vec::new();
+    for kind in kinds {
+        let kind = kind.trim().to_ascii_lowercase();
+        if kind.is_empty() {
+            continue;
+        }
+        if INDEX_KINDS.contains(&kind.as_str()) || ANCHOR_KINDS.contains(&kind.as_str()) {
+            out.push(kind);
+        } else {
+            return Err(AppError::domain(
+                "usage",
+                format!(
+                    "unknown kind '{kind}' (use figure|image|chart|table|algorithm|formula|section|paragraph)"
+                ),
+            ));
+        }
+    }
+    Ok(out)
+}
+
+/// List sidebar regions (`layout-index.json`) and/or document anchors
+/// (`source/layout.json`). Empty `kind` keeps the previous index-only listing;
+/// `section`/`paragraph` do not require `layout-index.json` when requested
+/// alone, so external agents can read anchors right after layout analysis.
 pub fn list(
     vault: &Path,
     ref_: &str,
@@ -121,20 +219,87 @@ pub fn list(
     min_score: Option<f64>,
 ) -> Result<LayoutListOut, AppError> {
     let paper = paper::resolve_paper(vault, ref_)?;
-    Ok(LayoutListOut::from(layout_index::list_regions(
-        vault,
-        &paper.path,
-        kinds,
-        min_score,
-    )?))
+    let filters = normalize_kinds(kinds)?;
+    let anchor_filters: Vec<&str> = filters
+        .iter()
+        .map(String::as_str)
+        .filter(|f| ANCHOR_KINDS.contains(f))
+        .collect();
+    if anchor_filters.is_empty() {
+        return Ok(LayoutListOut::from(layout_index::list_regions(
+            vault,
+            &paper.path,
+            kinds,
+            min_score,
+        )?));
+    }
+
+    let index_filters: Vec<String> = filters
+        .iter()
+        .filter(|f| !ANCHOR_KINDS.contains(&f.as_str()))
+        .cloned()
+        .collect();
+    let threshold = min_score.unwrap_or(ANCHOR_DEFAULT_MIN_SCORE);
+    let mut items: Vec<LayoutItemOut> = Vec::new();
+    let (mut index_path, mut generated_at, mut effective_min_score) = (
+        format!("{}/source/{}", paper.path, layout_index::LAYOUT_RAW_FILE),
+        String::new(),
+        threshold,
+    );
+    if !index_filters.is_empty() {
+        let index = layout_index::list_regions(vault, &paper.path, &index_filters, min_score)?;
+        index_path = index.index_path.clone();
+        generated_at = index.generated_at.clone();
+        effective_min_score = index.min_score;
+        items.extend(index.items.iter().map(LayoutItemOut::from));
+    }
+    // Enumeration happens before score/kind filtering so low-confidence blocks
+    // still reserve their paragraph ordinal, matching upstream. Anchors stay
+    // `None` for unnumbered/ambiguous sections; they are still listed so
+    // callers can see the heading text and coordinates.
+    let anchor_items = anchors::load(vault, &paper.path)?;
+    items.extend(
+        anchor_items
+            .iter()
+            .filter(|a| {
+                a.score + f64::EPSILON >= threshold && anchor_filters.contains(&a.kind.as_str())
+            })
+            .map(LayoutItemOut::from_anchor),
+    );
+    items.sort_by(|a, b| {
+        a.page_index
+            .cmp(&b.page_index)
+            .then_with(|| a.bbox.y.total_cmp(&b.bbox.y))
+    });
+    let counts = LayoutCountsOut::from_items(&items);
+    Ok(LayoutListOut {
+        paper_path: paper.path,
+        index_path,
+        generated_at,
+        min_score: effective_min_score,
+        counts,
+        items,
+    })
 }
 
+/// Get one sidebar region by id or one document anchor by exact fragment
+/// (`#2.1` / `#2.1#p3`).
 pub fn get(vault: &Path, ref_: &str, id: &str) -> Result<LayoutGetOut, AppError> {
     let paper = paper::resolve_paper(vault, ref_)?;
+    let id = id.trim();
+    if id.starts_with('#') {
+        let item = anchors::resolve(vault, &paper.path, id)?;
+        return Ok(LayoutGetOut {
+            index_path: format!("{}/source/{}", paper.path, layout_index::LAYOUT_RAW_FILE),
+            paper_path: paper.path,
+            generated_at: String::new(),
+            item: LayoutItemOut::from_anchor(&item),
+        });
+    }
     Ok(LayoutGetOut::from(layout_index::get_region(
         vault,
         &paper.path,
-        id.trim(),
+        id,
     )?))
 }
 
