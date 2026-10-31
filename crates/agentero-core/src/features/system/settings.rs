@@ -126,7 +126,7 @@ pub struct AppSettings {
     pub replace_current_tab_on_open_paper: bool,
     #[serde(default = "default_auto_update_internal_links")]
     pub auto_update_internal_links: String,
-    /// PDF continuous-scroll direction: `vertical` | `horizontal`.
+    /// PDF navigation: `vertical` | `horizontal` | `paginated`.
     #[serde(default = "default_pdf_scroll_strategy")]
     pub pdf_scroll_strategy: String,
     /// PDF page layout: `none` (single page) | `odd` | `even` (two-page spread).
@@ -1427,7 +1427,7 @@ fn normalize(s: &mut AppSettings) {
     if !AUTO_UPDATE_INTERNAL_LINKS.contains(&s.auto_update_internal_links.as_str()) {
         s.auto_update_internal_links = default_auto_update_internal_links();
     }
-    const PDF_SCROLL_STRATEGIES: &[&str] = &["vertical", "horizontal"];
+    const PDF_SCROLL_STRATEGIES: &[&str] = &["vertical", "horizontal", "paginated"];
     if !PDF_SCROLL_STRATEGIES.contains(&s.pdf_scroll_strategy.as_str()) {
         s.pdf_scroll_strategy = default_pdf_scroll_strategy();
     }
@@ -2164,6 +2164,18 @@ mod tests {
         normalize(&mut s);
         assert_eq!(s.pdf_scroll_strategy, "vertical");
         assert_eq!(s.pdf_spread_mode, "none");
+    }
+
+    #[test]
+    fn normalize_preserves_paginated_pdf_mode() {
+        let mut s = AppSettings {
+            pdf_scroll_strategy: "paginated".into(),
+            pdf_spread_mode: "odd".into(),
+            ..AppSettings::default()
+        };
+        normalize(&mut s);
+        assert_eq!(s.pdf_scroll_strategy, "paginated");
+        assert_eq!(s.pdf_spread_mode, "odd");
     }
 
     #[test]

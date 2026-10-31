@@ -1,6 +1,21 @@
 import type { PdfAskNormalizedRect } from "@/lib/pdf/ask/types";
 
 /**
+ * Raw layout region that can carry a document anchor (numbered section header
+ * or paragraph). Mirrors `RawLayoutRegion` in core `pdf/layout_index.rs`; the
+ * optional `readingOrder`/`bbox` drive column-aware reading order.
+ */
+export type DocumentAnchorRegion = {
+	id: string;
+	pageIndex: number;
+	kind: string;
+	title?: string;
+	text?: string;
+	readingOrder?: number;
+	bbox?: { x: number; y: number; w: number; h: number };
+};
+
+/**
  * Layout kinds we may store from PP-DocLayoutV3.
  * Sidebar surfaces image/chart/table/algorithm/formula (merged with a model
  * formula_number box only); figure_title/header/formula_number/abstract/text

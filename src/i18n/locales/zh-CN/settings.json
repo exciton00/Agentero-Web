@@ -106,9 +106,10 @@
 			"always": "始终（安全时）"
 		},
 		"pdfScrollStrategy": {
-			"label": "PDF 滚动方向",
+			"label": "PDF 翻页模式",
 			"vertical": "纵向",
-			"horizontal": "横向"
+			"horizontal": "横向",
+			"paginated": "逐页切换"
 		},
 		"pdfSpreadMode": {
 			"label": "PDF 页面版式",

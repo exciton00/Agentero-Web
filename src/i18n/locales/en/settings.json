@@ -106,9 +106,10 @@
 			"always": "Always when safe"
 		},
 		"pdfScrollStrategy": {
-			"label": "PDF scroll direction",
+			"label": "PDF navigation mode",
 			"vertical": "Vertical",
-			"horizontal": "Horizontal"
+			"horizontal": "Horizontal",
+			"paginated": "Page by page"
 		},
 		"pdfSpreadMode": {
 			"label": "PDF page layout",

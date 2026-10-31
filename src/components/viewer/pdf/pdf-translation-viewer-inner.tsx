@@ -10,11 +10,7 @@ import {
 	GlobalPointerProvider,
 	useInteractionManagerCapability,
 } from "@embedpdf/plugin-interaction-manager/react";
-import {
-	type PageLayout,
-	Scroller,
-	useScroll,
-} from "@embedpdf/plugin-scroll/react";
+import { type PageLayout, useScroll } from "@embedpdf/plugin-scroll/react";
 import { useZoom, ZoomGestureWrapper } from "@embedpdf/plugin-zoom/react";
 import {
 	useCallback,
@@ -52,6 +48,7 @@ import type {
 } from "@/components/viewer/pdf/types";
 import { DockviewViewport } from "@/components/viewer/pdf/viewport/dockview-viewport";
 import { PanDragHandler } from "@/components/viewer/pdf/viewport/pan-handler";
+import { PdfScroller } from "@/components/viewer/pdf/viewport/pdf-scroller";
 import { WheelZoomHandler } from "@/components/viewer/pdf/viewport/wheel-zoom-handler";
 import { openExternalUrl } from "@/lib/core/open-external";
 import { destinationInPageBox } from "@/lib/pdf/citation-dest-keys";
@@ -466,7 +463,7 @@ export function PdfTranslationViewerInner({
 				/>
 				<ZoomGestureWrapper documentId={docId} enableWheel={false}>
 					<GlobalPointerProvider documentId={docId}>
-						<Scroller documentId={docId} renderPage={renderPage} />
+						<PdfScroller documentId={docId} renderPage={renderPage} />
 					</GlobalPointerProvider>
 				</ZoomGestureWrapper>
 			</DockviewViewport>

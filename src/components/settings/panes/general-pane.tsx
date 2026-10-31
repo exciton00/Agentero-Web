@@ -418,7 +418,12 @@ export function GeneralPane({
 				</SettingsRow>
 				<SettingsRow label={t("general.pdfSpreadMode.label")}>
 					<Select
-						value={settings.pdfSpreadMode}
+						disabled={settings.pdfScrollStrategy === "paginated"}
+						value={
+							settings.pdfScrollStrategy === "paginated"
+								? "none"
+								: settings.pdfSpreadMode
+						}
 						onValueChange={(value) =>
 							patch({ pdfSpreadMode: value as PdfSpreadMode })
 						}

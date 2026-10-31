@@ -1,4 +1,4 @@
-import { Palette } from "lucide-react";
+import { ChevronLeft, ChevronRight, Palette } from "lucide-react";
 import type { RefObject } from "react";
 import { memo, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -16,6 +16,7 @@ import {
 	TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { PDF_CHROME_CHIP } from "@/components/viewer/pdf/chrome/pdf-chrome-surface";
+import { useSettings } from "@/hooks/use-app-stores";
 import { cn } from "@/lib/core/utils";
 import {
 	PDF_PAPER_SWATCH_CLASS,
@@ -31,6 +32,8 @@ import {
 type PdfBottomBarProps = {
 	/** Hidden until the document reports its page count. */
 	totalPages: number;
+	currentPage: number;
+	onGoToPage: (page: number) => void;
 	/** Editable page number (raw digits while typing). */
 	pageField: string;
 	onPageFieldChange: (value: string) => void;
@@ -50,6 +53,8 @@ type PdfBottomBarProps = {
 /** Bottom bar: page nav + zoom slider + PDF paper tone. */
 export const PdfBottomBar = memo(function PdfBottomBar({
 	totalPages,
+	currentPage,
+	onGoToPage,
 	pageField,
 	onPageFieldChange,
 	pageFocusedRef,
@@ -61,6 +66,7 @@ export const PdfBottomBar = memo(function PdfBottomBar({
 	isRemotePaper = false,
 }: PdfBottomBarProps) {
 	const { t } = useTranslation("viewer");
+	const paginated = useSettings((s) => s.pdfScrollStrategy === "paginated");
 	const [tonePickerOpen, setTonePickerOpen] = useState(false);
 
 	if (totalPages <= 0) return null;
@@ -102,6 +108,18 @@ export const PdfBottomBar = memo(function PdfBottomBar({
 						</Tooltip>
 					) : null}
 					<div className="flex min-w-0 shrink items-center">
+						{paginated && (
+							<Button
+								variant="ghost"
+								size="icon-xs"
+								aria-label={t("pdf.previousPage")}
+								title={t("pdf.previousPage")}
+								disabled={currentPage <= 1}
+								onClick={() => onGoToPage(currentPage - 1)}
+							>
+								<ChevronLeft />
+							</Button>
+						)}
 						<input
 							type="text"
 							inputMode="numeric"
@@ -131,6 +149,18 @@ export const PdfBottomBar = memo(function PdfBottomBar({
 						<span className="shrink-0 px-0.5 text-muted-foreground text-sm tabular-nums">
 							/ {totalPages}
 						</span>
+						{paginated && (
+							<Button
+								variant="ghost"
+								size="icon-xs"
+								aria-label={t("pdf.nextPage")}
+								title={t("pdf.nextPage")}
+								disabled={currentPage >= totalPages}
+								onClick={() => onGoToPage(currentPage + 1)}
+							>
+								<ChevronRight />
+							</Button>
+						)}
 					</div>
 					<span aria-hidden className="mx-0.5 h-3.5 w-px shrink-0 bg-border" />
 					<div className="flex shrink-0 items-center gap-1.5 px-1">

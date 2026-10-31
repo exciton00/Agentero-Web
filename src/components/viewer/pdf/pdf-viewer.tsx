@@ -27,7 +27,6 @@ import {
 import { RenderPluginPackage } from "@embedpdf/plugin-render/react";
 import {
 	type PageLayout,
-	Scroller,
 	ScrollPluginPackage,
 	ScrollStrategy,
 	useScroll,
@@ -67,6 +66,10 @@ import { usePdfCards } from "@/components/viewer/pdf/hooks/use-pdf-cards";
 import { usePdfChromeVisibility } from "@/components/viewer/pdf/hooks/use-pdf-chrome-visibility";
 import { usePdfCitations } from "@/components/viewer/pdf/hooks/use-pdf-citations";
 import { usePdfCrossrefPreview } from "@/components/viewer/pdf/hooks/use-pdf-crossref-preview";
+import {
+	type PdfAnchorNavItem,
+	usePdfDocumentAnchors,
+} from "@/components/viewer/pdf/hooks/use-pdf-document-anchors";
 import { usePdfFind } from "@/components/viewer/pdf/hooks/use-pdf-find";
 import { usePdfHighlights } from "@/components/viewer/pdf/hooks/use-pdf-highlights";
 import { usePdfJumpBack } from "@/components/viewer/pdf/hooks/use-pdf-jump-back";
@@ -125,6 +128,7 @@ import type {
 import { ActiveCardScrollSync } from "@/components/viewer/pdf/viewport/active-card-scroll-sync";
 import { DockviewViewport } from "@/components/viewer/pdf/viewport/dockview-viewport";
 import { PanDragHandler } from "@/components/viewer/pdf/viewport/pan-handler";
+import { PdfScroller } from "@/components/viewer/pdf/viewport/pdf-scroller";
 import { WheelZoomHandler } from "@/components/viewer/pdf/viewport/wheel-zoom-handler";
 import { useLibraryStore, useSettings } from "@/hooks/use-app-stores";
 import { presentAgentComposer } from "@/lib/agent/composer-focus";
@@ -254,11 +258,13 @@ export const PdfViewer = memo(function PdfViewer(props: PdfViewerProps) {
 			// optional spread plugin to group pages into one/two-page rows.
 			createPluginRegistration(SpreadPluginPackage, {
 				defaultSpreadMode:
-					reading.pdfSpreadMode === "odd"
-						? SpreadMode.Odd
-						: reading.pdfSpreadMode === "even"
-							? SpreadMode.Even
-							: SpreadMode.None,
+					reading.pdfScrollStrategy === "paginated"
+						? SpreadMode.None
+						: reading.pdfSpreadMode === "odd"
+							? SpreadMode.Odd
+							: reading.pdfSpreadMode === "even"
+								? SpreadMode.Even
+								: SpreadMode.None,
 			}),
 			createPluginRegistration(ScrollPluginPackage, {
 				// Manifest default (4) keeps ~8 off-screen pages mounted, and every
@@ -273,8 +279,10 @@ export const PdfViewer = memo(function PdfViewer(props: PdfViewerProps) {
 				// Skip PNG encoding for opaque page rasters; crops explicitly use PNG.
 				defaultImageType: "image/bmp",
 			}),
-			// Keep the upstream 768px tiles and viewport-only rendering defaults.
-			createPluginRegistration(TilingPluginPackage),
+			// Bound each non-preemptible PDFium render without lowering pixel
+			// density: a 512px tile rasterizes sooner, so complex high-DPR pages
+			// show their first tiles sooner.
+			createPluginRegistration(TilingPluginPackage, { tileSize: 512 }),
 			createPluginRegistration(ZoomPluginPackage, {
 				defaultZoomLevel: ZoomMode.FitWidth,
 				minZoom: PDF_ZOOM_MIN,
@@ -904,6 +912,21 @@ function PdfViewerInner({
 		paperAbsPath,
 		paperRelPath,
 	});
+
+	// Section / paragraph anchors from the layout sidecar; also feed the
+	// outline panel's "Sections" list when the PDF has no embedded bookmarks.
+	const anchors = usePdfDocumentAnchors(paperAbsPath);
+
+	const goToRegionRef = useRef(goToRegion);
+	goToRegionRef.current = goToRegion;
+	const handleGoToAnchor = useCallback((anchor: PdfAnchorNavItem) => {
+		goToRegionRef.current({
+			id: anchor.regionId,
+			pageIndex: anchor.pageIndex,
+			bbox: anchor.bbox,
+			kind: anchor.regionKind,
+		});
+	}, []);
 
 	const {
 		showReferences,
@@ -2206,6 +2229,7 @@ function PdfViewerInner({
 			{!translationOnly && (
 				<PdfLeftToolbar
 					outline={outline}
+					hasAnchors={anchors.length > 0}
 					showOutline={showOutline}
 					onToggleOutline={handleToggleOutline}
 					paperPath={paperRelPath}
@@ -2224,8 +2248,10 @@ function PdfViewerInner({
 			{!translationOnly && (
 				<PdfOutlinePanel
 					outline={outline}
+					anchors={anchors}
 					showOutline={showOutline}
 					onGoToPage={handleGoToPage}
+					onGoToAnchor={handleGoToAnchor}
 				/>
 			)}
 			{!translationOnly && (
@@ -2304,7 +2330,7 @@ function PdfViewerInner({
 				    touch devices. */}
 				<ZoomGestureWrapper documentId={docId} enableWheel={false}>
 					<GlobalPointerProvider documentId={docId}>
-						<Scroller documentId={docId} renderPage={renderPage} />
+						<PdfScroller documentId={docId} renderPage={renderPage} />
 					</GlobalPointerProvider>
 				</ZoomGestureWrapper>
 			</DockviewViewport>
@@ -2326,6 +2352,8 @@ function PdfViewerInner({
 
 			{!translationOnly && (
 				<PdfBottomBar
+					currentPage={currentPage}
+					onGoToPage={handleGoToPage}
 					totalPages={totalPages}
 					pageField={pageField}
 					onPageFieldChange={setPageField}

@@ -321,6 +321,10 @@ type PdfLayoutRegion = {
 
 页上 `LayoutAnalysisLayer` 仍显示**模型原始**多框；侧栏 / 跳转 / 聚焦用 **合并后** `PdfLayoutRegion`。
 
+### 章节 / 段落锚点（阅读器侧栏）
+
+`documentAnchors`（`lib/pdf/layout/document-anchors.ts`）从 raw `layout.json` 区域枚举带编号的章节（`header` 区域，阿拉伯数字或 IEEE 罗马数字；`sectionNumber` 拒绝 arXiv id 等数字子串）及其直接拥有的段落（`text` / `paragraph` 区域），编号为 `#2`、`#2.1`、`#2.1#p1`；同一章节号重复出现时锚点置空（歧义不猜）。编号前先经 `documentReadingOrder` 修正阅读顺序：部分 MinerU / Paddle 结果的 `readingOrder` 只有纵坐标，会把右栏标题后紧接的左栏正文误归属；正文水平区间之间至少 0.01 页宽间隙且两侧正文垂直重叠才认定为双栏，宽度超过 0.6 页宽的正文不参与栏间隙检测；通栏块分隔上下带，每带左栏读完再读右栏，无证据或坐标不完整时保留原顺序。读取时修正，不改写用户 sidecar，也不需要重跑模型（与上游 core `document_anchors` 的规则一致；真实双栏回归样例见 `test/fixtures/pdf-paragraph-anchors/`）。阅读器侧栏「章节」列表用同一模型与区域几何跳转（`test/pdf-document-anchors.test.ts`）。
+
 ---
 
 ## 代码地图
@@ -328,6 +332,7 @@ type PdfLayoutRegion = {
 | 路径 | 职责 |
 |---|---|
 | `run-analysis.ts` | 分析 → 文字 → merge → store。远程后端上传 `{id}.pdf` |
+| `document-anchors.ts` / `document-reading-order.ts` | 章节 / 段落锚点枚举与双栏阅读顺序修正（侧栏「章节」、后续引用 / 补全共用） |
 | `enqueue-paper-layout.ts` | `layoutAnalyze` executor；`forcePaperLayoutAnalysis` 单篇强制重跑 |
 | `chrome/pdf-force-layout-button.tsx` | 插图侧栏确认后强制重解析 |
 | `providers.ts` / `provider-config.ts` | Provider 注册表（kind / requiresApiKey / supportsBaseUrl / sidecarMode）与设置 UI 共用的保存 / 探测逻辑 |

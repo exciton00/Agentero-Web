@@ -18,6 +18,7 @@ import type { PdfScrollStrategy, PdfSpreadMode } from "@/lib/settings/types";
 const SCROLL_STRATEGY: Record<PdfScrollStrategy, ScrollStrategy> = {
 	vertical: ScrollStrategy.Vertical,
 	horizontal: ScrollStrategy.Horizontal,
+	paginated: ScrollStrategy.Vertical,
 };
 
 const SPREAD_MODE: Record<PdfSpreadMode, SpreadMode> = {
@@ -40,14 +41,24 @@ export function usePdfReadingMode(docId: string): void {
 	spreadRef.current = spread;
 
 	const totalPages = scrollState.totalPages || 0;
+	const appliedModeRef = useRef<string | null>(null);
 
-	// biome-ignore lint/correctness/useExhaustiveDependencies: totalPages retries the no-op applied before the document layout was ready
+	// `totalPages` retries the no-op applied before the document layout was ready.
 	useEffect(() => {
-		scrollRef.current?.setScrollStrategy(SCROLL_STRATEGY[strategy]);
-	}, [strategy, totalPages]);
-
-	// biome-ignore lint/correctness/useExhaustiveDependencies: totalPages retries the no-op applied before the document layout was ready
-	useEffect(() => {
-		spreadRef.current?.setSpreadMode(SPREAD_MODE[spreadMode]);
-	}, [spreadMode, totalPages]);
+		const scope = scrollRef.current;
+		if (!scope || !totalPages) return;
+		const mode = `${docId}:${strategy}:${spreadMode}`;
+		const changed =
+			appliedModeRef.current !== null && appliedModeRef.current !== mode;
+		appliedModeRef.current = mode;
+		const pageNumber = scope.getCurrentPage();
+		scope.setScrollStrategy(SCROLL_STRATEGY[strategy]);
+		spreadRef.current?.setSpreadMode(
+			strategy === "paginated" ? SpreadMode.None : SPREAD_MODE[spreadMode],
+		);
+		// Changing layout recomputes the current page from the old scroll offset.
+		// Re-anchor to the page the reader was on before switching modes.
+		// Initial position belongs to usePdfNavigation's reading-position restore.
+		if (changed) scope.scrollToPage({ pageNumber, behavior: "instant" });
+	}, [docId, strategy, spreadMode, totalPages]);
 }

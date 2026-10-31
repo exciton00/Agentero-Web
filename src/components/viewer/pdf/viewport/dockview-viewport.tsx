@@ -1,9 +1,11 @@
+import { useScrollCapability } from "@embedpdf/plugin-scroll/react";
 import {
 	useIsViewportGated,
 	useViewportCapability,
 	useViewportPlugin,
 	ViewportElementContext,
 } from "@embedpdf/plugin-viewport/react";
+import { useZoomCapability } from "@embedpdf/plugin-zoom/react";
 import {
 	type HTMLAttributes,
 	type ReactNode,
@@ -13,7 +15,10 @@ import {
 	useRef,
 	useState,
 } from "react";
+import { PageTurnHandler } from "@/components/viewer/pdf/viewport/page-turn-handler";
+import { useSettings } from "@/hooks/use-app-stores";
 import { createPdfViewportResizeGate } from "@/lib/pdf/dockview-resize";
+import { clampPageScroll } from "@/lib/pdf/page-turn";
 import {
 	getScrollSyncPartner,
 	handleScrollSyncIntent,
@@ -50,6 +55,13 @@ export function DockviewViewport({
 	rightGutter = 0,
 	...props
 }: DockviewViewportProps) {
+	const paginated = useSettings((s) => s.pdfScrollStrategy === "paginated");
+	const paginatedRef = useRef(paginated);
+	paginatedRef.current = paginated;
+	const { provides: scrollCapability } = useScrollCapability();
+	const { provides: zoomCapability } = useZoomCapability();
+	const readingRef = useRef({ scrollCapability, zoomCapability });
+	readingRef.current = { scrollCapability, zoomCapability };
 	const [viewportGap, setViewportGap] = useState(0);
 	const viewportRef = useRef<HTMLDivElement>(null);
 	const { plugin: viewportPlugin } = useViewportPlugin();
@@ -86,10 +98,33 @@ export function DockviewViewport({
 			requestFrame,
 			cancelFrame,
 			apply: (request) => {
+				let top = request.y;
+				if (paginatedRef.current) {
+					const { scrollCapability, zoomCapability } = readingRef.current;
+					const scope = scrollCapability?.forDocument(documentId);
+					const scale = zoomCapability
+						?.forDocument(documentId)
+						.getState().currentZoomLevel;
+					const item = scope
+						?.getLayout()
+						.virtualItems.find((item) =>
+							item.pageNumbers.includes(scope.getCurrentPage()),
+						);
+					if (item && scale) {
+						const gap = parseFloat(getComputedStyle(viewport).paddingTop) || 0;
+						// Keep short pages fully visible so a hidden neighbour cannot win
+						// EmbedPDF's most-visible-page calculation after a navigation jump.
+						top = clampPageScroll(
+							{ top: item.y * scale, bottom: (item.y + item.height) * scale },
+							viewport.clientHeight - gap * 2,
+							top - gap,
+						);
+					}
+				}
 				viewport.scrollTo({
 					left: request.x,
-					top: request.y,
-					behavior: request.behavior,
+					top,
+					behavior: paginatedRef.current ? "instant" : request.behavior,
 				});
 			},
 		});
@@ -104,6 +139,10 @@ export function DockviewViewport({
 			},
 		);
 		const commitResize = () => {
+			viewport.style.setProperty(
+				"--pdf-viewport-height",
+				`${viewport.clientHeight}px`,
+			);
 			// Report a reduced width so EmbedPDF's fitWidth zoom leaves room for the
 			// comment rail that overflows into the reserved right gutter.
 			const width = Math.max(1, viewport.offsetWidth - rightGutter);
@@ -217,11 +256,13 @@ export function DockviewViewport({
 			<div
 				{...restProps}
 				ref={viewportRef}
+				tabIndex={paginated ? 0 : undefined}
 				style={{
 					width: "100%",
 					height: "100%",
 					overflow: "auto",
 					...style,
+					...(paginated ? { overflowY: "hidden" as const } : {}),
 					// Scroller swaps virtualized page nodes while scrolling. Letting
 					// Chromium's scroll anchoring adjust this custom virtual viewport can
 					// move it to an endpoint when the rendered range changes.
@@ -233,6 +274,13 @@ export function DockviewViewport({
 				}}
 			>
 				{!isGated && children}
+				{!isGated && <PageTurnHandler documentId={documentId} />}
+				{paginated && (
+					<div
+						aria-hidden
+						style={{ height: "var(--pdf-viewport-height, 0px)" }}
+					/>
+				)}
 			</div>
 		</ViewportElementContext.Provider>
 	);
