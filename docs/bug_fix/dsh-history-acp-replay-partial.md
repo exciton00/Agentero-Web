@@ -175,3 +175,13 @@ Dsh 官方说明该 preset 适用于 disposable container；Agentero-Web 是单�
 容器，vault 与 data 都在容器可写范围内。需要重新启用 workspace-write 的
 部署可在 compose 中覆盖 `DSH_PERMISSION_MODE=workspace-write` 并加上上述
 capability/seccomp 配置。
+
+## 五次修复（Agentero 侧 transcript 缓存兜底）
+
+四次修复确认 589d/6f 的最终回答从未落盘后，历史侧只能显示提示；但用户刷新前
+**看到过**流式回答，该回答只存在于前端 transcript。本次为 Agentero 前端增加
+浏览器侧 transcript 缓存：流式期间按 agent+session debounce 写入版本化
+localStorage，刷新后打开历史时与 durable/ACP 结果合并；磁盘有正文时以磁盘为
+准，缓存只补缺失的 assistant 正文或补回整轮丢失的回答。旧会话没有缓存时行为
+不变（仍显示「未保存最终回答」）。设计与风险见
+[中断会话的最终回答在刷新后丢失](agent-transcript-cache.md)。

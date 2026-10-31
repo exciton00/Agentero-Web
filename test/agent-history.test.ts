@@ -1,9 +1,11 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	historyLacksSavedAnswer,
 	hydrateSessionTitles,
 	isSessionIdPrefixTitle,
+	mergeCachedHistoryLines,
 	mergeImportedSessions,
+	pruneCachedDeletedSessions,
 	renameHistorySessionTitle,
 	sanitizeChatLines,
 	sessionsNeedingTitleHydration,
@@ -16,6 +18,10 @@ import {
 } from "@/lib/agent/agent-session-store";
 import type { AcpSessionInfo } from "@/lib/agent/api";
 import * as titleCache from "@/lib/agent/history-title-cache";
+import {
+	loadCachedTranscript,
+	saveCachedTranscript,
+} from "@/lib/agent/transcript-cache";
 
 vi.mock("@/lib/agent", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("@/lib/agent")>();
@@ -619,5 +625,275 @@ describe("historyLacksSavedAnswer", () => {
 				},
 			]),
 		).toBe(true);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Browser transcript fallback (Agentero-side cache)
+// ---------------------------------------------------------------------------
+
+function transcriptStorage() {
+	const map = new Map<string, string>();
+	return {
+		getItem: (key: string) => map.get(key) ?? null,
+		setItem: (key: string, value: string) => {
+			map.set(key, value);
+		},
+		removeItem: (key: string) => {
+			map.delete(key);
+		},
+	};
+}
+
+function userChatLine(id: string, text: string) {
+	return { id, kind: "user" as const, text };
+}
+
+/** Dsh interrupted turn: reasoning + failed tool, but no visible answer text. */
+function interruptedDurableLines() {
+	return sanitizeChatLines([
+		userChatLine("u1", "how does the method work?"),
+		{
+			id: "a1",
+			kind: "agent" as const,
+			parts: [
+				{ type: "reasoning" as const, id: "r1", text: "thinking" },
+				{
+					type: "tool" as const,
+					id: "t1",
+					tool: {
+						id: "tool-1",
+						title: "bash",
+						kind: "bash",
+						status: "pending" as const,
+					},
+				},
+			],
+		},
+	]);
+}
+
+function cachedAnswerLines(answer: string) {
+	return [
+		userChatLine("cu1", "how does the method work?"),
+		{
+			id: "ca1",
+			kind: "agent" as const,
+			parts: [{ type: "text" as const, id: "ct1", text: answer }],
+		},
+	];
+}
+
+describe("mergeCachedHistoryLines — interrupted Dsh answer recovery", () => {
+	beforeEach(() => {
+		vi.stubGlobal("localStorage", transcriptStorage());
+	});
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	it("fills the assistant text the provider log never persisted", () => {
+		// Written while streaming under the runtime id (provider id was never
+		// learned because the turn died before agent:completed).
+		saveCachedTranscript(
+			"agent-1",
+			"runtime-rt",
+			cachedAnswerLines("the streamed final answer"),
+		);
+		const item = makeRecord({
+			id: "runtime-rt",
+			providerSessionId: "provider-ps",
+		});
+
+		const merged = mergeCachedHistoryLines(
+			"agent-1",
+			item,
+			interruptedDurableLines(),
+		);
+
+		expect(historyLacksSavedAnswer(merged)).toBe(false);
+		const agent = merged.find((line) => line.kind === "agent");
+		expect(agent?.kind).toBe("agent");
+		const recovered = agent?.kind === "agent" ? agent.parts : [];
+		expect(
+			recovered.some(
+				(part) => part.type === "text" && part.text.includes("streamed"),
+			),
+		).toBe(true);
+	});
+
+	it("keeps provider assistant text and never appends the cached copy", () => {
+		saveCachedTranscript(
+			"agent-1",
+			"provider-ps",
+			cachedAnswerLines("cached answer"),
+		);
+		const item = makeRecord({
+			id: "provider-ps",
+			providerSessionId: "provider-ps",
+		});
+		const durable = sanitizeChatLines([
+			userChatLine("u1", "how does the method work?"),
+			{
+				id: "a1",
+				kind: "agent" as const,
+				parts: [{ type: "text" as const, id: "t1", text: "durable answer" }],
+			},
+		]);
+
+		const merged = mergeCachedHistoryLines("agent-1", item, durable);
+
+		const agent = merged.find((line) => line.kind === "agent");
+		const text =
+			agent?.kind === "agent"
+				? agent.parts
+						.filter((part) => part.type === "text")
+						.map((part) => (part.type === "text" ? part.text : ""))
+						.join("")
+				: "";
+		expect(text).toBe("durable answer");
+	});
+
+	it("keeps old sessions without cache flagged as missing an answer", () => {
+		const item = makeRecord({
+			id: "provider-old",
+			providerSessionId: "provider-old",
+		});
+		const durable = interruptedDurableLines();
+
+		const merged = mergeCachedHistoryLines("agent-1", item, durable);
+
+		expect(merged).toEqual(durable);
+		expect(historyLacksSavedAnswer(merged)).toBe(true);
+	});
+});
+
+describe("hydrateSessionTitles — cached transcript rescue and cleanup", () => {
+	beforeEach(() => {
+		vi.resetAllMocks();
+		vi.stubGlobal("localStorage", transcriptStorage());
+		vi.spyOn(titleCache, "getCachedHistoryTitle").mockReturnValue(null);
+		vi.spyOn(titleCache, "setCachedHistoryTitle").mockImplementation(() => {});
+	});
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	it("keeps a row whose provider replay is empty when the cache has the transcript", async () => {
+		saveCachedTranscript("agent-1", "s1", cachedAnswerLines("restored answer"));
+		vi.mocked(agentApi.loadSession).mockResolvedValue({
+			sessionId: "s1",
+			lines: [],
+		});
+		const setSessionHistory = vi.fn();
+		const items = [makeRecord({ id: "s1", providerSessionId: "s1" })];
+
+		await hydrateSessionTitles(items, {
+			generation: 1,
+			historyGenRef: { current: 1 },
+			selectedAgentId: "agent-1",
+			vaultPath: "/vault",
+			setSessionHistory,
+		});
+
+		expect(setSessionHistory).toHaveBeenCalledTimes(1);
+		const updater = setSessionHistory.mock.calls[0][0] as (
+			prev: AgentSessionRecord[],
+		) => AgentSessionRecord[];
+		const next = updater(items);
+		expect(next).toHaveLength(1);
+		expect(next[0]?.title).toBe("how does the method work?");
+		expect(loadCachedTranscript("agent-1", ["s1"])).not.toBeNull();
+	});
+
+	it("drops a deleted/empty provider session and forgets its cache", async () => {
+		// No user turn in the cache → it cannot provide a title.
+		saveCachedTranscript("agent-1", "s1", [
+			{
+				id: "a1",
+				kind: "agent" as const,
+				parts: [{ type: "text" as const, id: "t1", text: "orphan answer" }],
+			},
+		]);
+		vi.mocked(agentApi.loadSession).mockResolvedValue({
+			sessionId: "s1",
+			lines: [],
+		});
+		const setSessionHistory = vi.fn();
+		const items = [makeRecord({ id: "s1", providerSessionId: "s1" })];
+
+		await hydrateSessionTitles(items, {
+			generation: 1,
+			historyGenRef: { current: 1 },
+			selectedAgentId: "agent-1",
+			vaultPath: "/vault",
+			setSessionHistory,
+		});
+
+		const updater = setSessionHistory.mock.calls[0][0] as (
+			prev: AgentSessionRecord[],
+		) => AgentSessionRecord[];
+		expect(updater(items)).toHaveLength(0);
+		expect(loadCachedTranscript("agent-1", ["s1"])).toBeNull();
+	});
+});
+
+describe("pruneCachedDeletedSessions", () => {
+	beforeEach(() => {
+		vi.stubGlobal("localStorage", transcriptStorage());
+	});
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	it("forgets cache for rows gone from a complete provider listing", () => {
+		saveCachedTranscript("agent-1", "gone", cachedAnswerLines("answer"));
+		const previous = [makeRecord({ id: "gone", providerSessionId: "gone" })];
+
+		pruneCachedDeletedSessions("agent-1", previous, [], true);
+
+		expect(loadCachedTranscript("agent-1", ["gone"])).toBeNull();
+	});
+
+	it("never prunes while the listing may be paginated", () => {
+		saveCachedTranscript("agent-1", "gone", cachedAnswerLines("answer"));
+		const previous = [makeRecord({ id: "gone", providerSessionId: "gone" })];
+
+		pruneCachedDeletedSessions("agent-1", previous, [], false);
+
+		expect(loadCachedTranscript("agent-1", ["gone"])).not.toBeNull();
+	});
+
+	it("keeps running sessions, local transcripts and still-listed sessions", () => {
+		for (const id of ["running", "local", "listed"]) {
+			saveCachedTranscript("agent-1", id, cachedAnswerLines("answer"));
+		}
+		const previous = [
+			makeRecord({
+				id: "running",
+				providerSessionId: "running",
+				status: "running",
+			}),
+			makeRecord({
+				id: "local",
+				providerSessionId: "local",
+				lines: [userChatLine("u1", "question")],
+			}),
+			makeRecord({ id: "listed", providerSessionId: "listed" }),
+		];
+
+		pruneCachedDeletedSessions(
+			"agent-1",
+			previous,
+			[makeRecord({ id: "listed", providerSessionId: "listed" })],
+			true,
+		);
+
+		for (const id of ["running", "local", "listed"]) {
+			expect(loadCachedTranscript("agent-1", [id])).not.toBeNull();
+		}
 	});
 });

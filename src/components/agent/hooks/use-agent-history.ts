@@ -47,6 +47,12 @@ import {
 	isMachineHistoryTitle,
 	stripPromptEnvelopeForDisplay,
 } from "@/lib/agent/prompt-display";
+import {
+	loadCachedTranscript,
+	mergeTranscriptLines,
+	removeCachedTranscript,
+	resolveCachedTranscript,
+} from "@/lib/agent/transcript-cache";
 import { hasHostTransport } from "@/lib/core/tauri";
 import { mapLimit } from "@/lib/core/utils";
 import { nextLineId } from "@/lib/pdf-visual/ids";
@@ -70,6 +76,85 @@ export const sanitizeChatLines = (raw: ChatLine[]): ChatLine[] =>
 			};
 		})
 		.filter((line): line is ChatLine => line !== null);
+
+/** Cache keys that can identify one history row (provider id first, runtime id second). */
+function historyCacheSessionIds(item: {
+	id: string;
+	providerSessionId?: string | null;
+}): string[] {
+	const providerId = item.providerSessionId?.trim();
+	return providerId && providerId !== item.id
+		? [providerId, item.id]
+		: [item.id];
+}
+
+/**
+ * Merge the Agentero-side transcript cache into a durable/ACP transcript.
+ *
+ * The provider transcript always wins: cached lines only fill assistant text
+ * that never made it into the provider log (e.g. an interrupted Dsh turn) and
+ * append turns the provider lost entirely.
+ */
+export function mergeCachedHistoryLines(
+	agentId: string,
+	item: { id: string; providerSessionId?: string | null },
+	durableLines: ChatLine[],
+): ChatLine[] {
+	const cached = resolveCachedTranscript({
+		agentId,
+		sessionIds: historyCacheSessionIds(item),
+		referenceLines: durableLines,
+	});
+	if (!cached) return durableLines;
+	return sanitizeChatLines(mergeTranscriptLines(durableLines, cached));
+}
+
+/** Drop browser-cached transcripts for a session that is gone (deleted/expired). */
+export function forgetCachedHistorySession(
+	agentId: string,
+	item: { id: string; providerSessionId?: string | null },
+): void {
+	removeCachedTranscript(agentId, historyCacheSessionIds(item));
+}
+
+/**
+ * Drop browser-cached transcripts for history rows that disappeared from a
+ * complete provider listing and never had a local transcript (session deleted
+ * in the agent CLI). Rows with local lines / running turns are kept, and a
+ * paginated listing is never treated as authoritative.
+ */
+export function pruneCachedDeletedSessions(
+	agentId: string,
+	previousSessions: AgentSessionRecord[],
+	nextSessions: AgentSessionRecord[],
+	listingComplete: boolean,
+): void {
+	if (!listingComplete) return;
+	const liveKeys = new Set(
+		nextSessions
+			.filter((session) => session.agentId === agentId)
+			.map((session) => providerSessionIdForHistoryLoad(session)),
+	);
+	for (const previous of previousSessions) {
+		if (previous.agentId !== agentId) continue;
+		if (previous.status === "running" || previous.lines.length > 0) continue;
+		if (liveKeys.has(providerSessionIdForHistoryLoad(previous))) continue;
+		forgetCachedHistorySession(agentId, previous);
+	}
+}
+
+/**
+ * Title recovered from a cached transcript for a session the provider can no
+ * longer replay (e.g. the durable session directory was removed).
+ */
+function cachedHistoryTitle(
+	agentId: string,
+	item: { id: string; providerSessionId?: string | null },
+): string {
+	const cached = loadCachedTranscript(agentId, historyCacheSessionIds(item));
+	if (!cached || cached.length === 0) return "";
+	return titleFromSessionLines(cached);
+}
 
 /** Derive a human-readable title from a loaded ACP session's first user turn. */
 export function titleFromLoadedHistory(history: AcpLoadSessionResult): string {
@@ -195,8 +280,26 @@ export async function hydrateSessionTitles(
 			const title = titleFromLoadedHistory(history);
 			const hasContent = history.lines.length > 0;
 			if (!title && !hasContent) {
-				// Drop ACP sessions that have neither a title nor any replayable
-				// content so the history drawer doesn't list empty rows.
+				// The provider cannot replay anything (deleted / expired session).
+				// Keep the row when the browser cache still holds the transcript the
+				// user saw, otherwise drop it so the drawer doesn't list empty rows.
+				const cachedTitle = cachedHistoryTitle(selectedAgentId, item);
+				if (cachedTitle) {
+					setCachedHistoryTitle(
+						selectedAgentId,
+						providerSessionId,
+						cachedTitle,
+					);
+					setSessionHistory((prev) =>
+						prev.map((s) =>
+							s.id === item.id && s.agentId === item.agentId && !s.titleLocked
+								? { ...s, title: cachedTitle }
+								: s,
+						),
+					);
+					return;
+				}
+				forgetCachedHistorySession(selectedAgentId, item);
 				setSessionHistory((prev) =>
 					prev.filter((s) => !(s.id === item.id && s.agentId === item.agentId)),
 				);
@@ -488,9 +591,10 @@ export function useAgentHistory({
 			const chatSessions = result.sessions.filter(
 				(s) => !isBackgroundWorkflowHistoryTitle(s.title ?? ""),
 			);
+			const previousSessions = agentSessionStore.getState().sessions;
 			const { sessions: mergedSessions, hydrationCandidates } =
 				mergeImportedSessions(
-					agentSessionStore.getState().sessions,
+					previousSessions,
 					chatSessions,
 					selectedAgentId,
 					selected?.name ?? "Agent",
@@ -502,6 +606,13 @@ export function useAgentHistory({
 				mergedSessions,
 			) as AgentSessionRecord[];
 			setSessionHistory(nextSessions);
+			pruneCachedDeletedSessions(
+				selectedAgentId,
+				previousSessions,
+				nextSessions,
+				// Only trust a complete, unpaginated provider listing.
+				result.nextCursor == null,
+			);
 
 			const needHydration = sessionsNeedingTitleHydration(
 				nextSessions,
@@ -562,8 +673,14 @@ export function useAgentHistory({
 		setHistoryOpen(false);
 		clearMessageQueue();
 		if (!supportsResume || item.lines.length > 0) {
+			// Local transcript first; the cache only fills a missing assistant
+			// answer (e.g. an interrupted turn whose text never hit the provider).
 			const localLines = withMissingAnswerHint(
-				sanitizeChatLines(item.lines),
+				mergeCachedHistoryLines(
+					item.agentId,
+					item,
+					sanitizeChatLines(item.lines),
+				),
 				t("messages.sessionAnswerNotSaved"),
 			);
 			setHydratingSessionId(null);
@@ -607,7 +724,7 @@ export function useAgentHistory({
 				) {
 					return;
 				}
-				const nextLines = sanitizeChatLines(
+				const durableLines = sanitizeChatLines(
 					history.lines.map((line) => {
 						if (line.kind === "user") {
 							return {
@@ -682,18 +799,26 @@ export function useAgentHistory({
 						};
 					}),
 				);
+				// Durable/ACP history is authoritative; the cached transcript only
+				// restores assistant text the provider never persisted.
+				let nextLines = mergeCachedHistoryLines(
+					requestAgentId,
+					item,
+					durableLines,
+				);
 				if (nextLines.length === 0) {
-					nextLines.push({
-						id: nextLineId("sys"),
-						kind: "system",
-						text: t("messages.sessionEmpty"),
-					});
+					nextLines = [
+						{
+							id: nextLineId("sys"),
+							kind: "system",
+							text: t("messages.sessionEmpty"),
+						},
+					];
 				} else {
-					const hinted = withMissingAnswerHint(
+					nextLines = withMissingAnswerHint(
 						nextLines,
 						t("messages.sessionAnswerNotSaved"),
 					);
-					nextLines.splice(0, nextLines.length, ...hinted);
 				}
 				const firstUser = nextLines.find((l) => l.kind === "user");
 				const titleFromBody =

@@ -15,6 +15,7 @@ import { useAgentPanelContext } from "@/components/agent/hooks/use-agent-panel-c
 import { useAgentPermissionSurfaces } from "@/components/agent/hooks/use-agent-permission-surfaces";
 import { useAgentSend } from "@/components/agent/hooks/use-agent-send";
 import { useAgentSessionRuntime } from "@/components/agent/hooks/use-agent-session-runtime";
+import { useAgentTranscriptPersistence } from "@/components/agent/hooks/use-agent-transcript-persistence";
 import type { AgentPanelProps } from "@/components/agent/types";
 import { useSessionComposerState } from "@/hooks/use-session-composer-state";
 import {
@@ -129,6 +130,10 @@ export function useAgentPanel({
 	const hydrateAndActivateSession = useAgentSessionStore(
 		(s) => s.hydrateAndActivateSession,
 	);
+
+	// Mirror the visible transcript into the browser cache so an interrupted
+	// Dsh turn (answer only streamed, never persisted) survives a refresh.
+	useAgentTranscriptPersistence();
 
 	const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
 	const [switching, setSwitching] = useState(false);

@@ -162,6 +162,7 @@ nav:
       - "Settings 切换语言不立即生效（#437）": bug_fix/settings-locale-no-immediate-switch.md
       - 左侧文件树偶发黑屏: bug_fix/vault-sidebar-blank-until-scroll.md
       - 左侧栏收起后文件树跳回顶部: bug_fix/vault-sidebar-jump-to-top.md
+      - 中断会话最终回答刷新后丢失（浏览器 transcript 兜底）: bug_fix/agent-transcript-cache.md
 
 markdown_extensions:
   - admonition
